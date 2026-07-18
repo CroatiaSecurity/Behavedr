@@ -1,33 +1,22 @@
 using Behavedr.Core;
-using Behavedr.Windows;
-using Behavedr.Linux;
-using Behavedr.MacOS;
-using System.Drawing;
-using System.Windows.Forms;
-using System.IO;
+using Behavedr.Core.Monitors;
+using Behavedr.Core.Platform;
 
 var engine = new DetectionEngine();
-engine.RegisterMonitor(new WindowsMonitor());
-engine.RegisterMonitor(new LinuxMonitor());
-engine.RegisterMonitor(new MacOSMonitor());
 
-Console.WriteLine("Behavedr Agent started. Behavioral monitoring active.");
+IPlatformMonitor[] monitors =
+[
+    new WindowsMonitor(),
+    new LinuxMonitor(),
+    new MacOSMonitor(),
+];
 
-// Windows Tray with your icon
-if (OperatingSystem.IsWindows())
+foreach (var monitor in monitors.Where(m => m.IsSupported))
 {
-    var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "Behavedr.ico");
-    if (File.Exists(iconPath))
-    {
-        var tray = new NotifyIcon 
-        { 
-            Icon = new Icon(iconPath), 
-            Visible = true, 
-            Text = "Behavedr EDR - Active" 
-        };
-        // TODO: context menu, double click etc.
-        Console.WriteLine("Tray icon loaded.");
-    }
+    engine.RegisterMonitor(monitor);
+    Console.WriteLine($"Registered monitor: {monitor.GetType().Name}");
 }
 
-// TODO: systemd on Linux, full response engine, loop
+Console.WriteLine("Behavedr Agent started. Behavioral monitoring active.");
+Console.WriteLine($"OS: {Environment.OSVersion}");
+// TODO: tray (Windows), systemd (Linux), launchd (macOS), response engine loop

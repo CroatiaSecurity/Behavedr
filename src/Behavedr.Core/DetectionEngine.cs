@@ -1,6 +1,7 @@
 namespace Behavedr.Core;
 
 using Behavedr.Core.Models;
+using Behavedr.Core.Platform;
 
 /// <summary>
 /// Main behavioral detection with GIDR President authority.
@@ -28,7 +29,5 @@ public class DetectionEngine
         return new List<Signal>();
     }
 }
-
-public interface IPlatformMonitor { Task<IEnumerable<Signal>> MonitorAsync(); }
 
 public record DetectionResult(DetectionEvent Event, double Score, bool PresidentKill, List<Signal> Signals);

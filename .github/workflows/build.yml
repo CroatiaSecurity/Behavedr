@@ -8,8 +8,15 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-latest
+            rid: osx-arm64
 
     runs-on: ${{ matrix.os }}
 
@@ -25,4 +32,4 @@ jobs:
       run: dotnet build --configuration Release
 
     - name: Publish
-      run: dotnet publish -c Release -r ${{ matrix.os == 'windows-latest' && 'win-x64' || matrix.os == 'ubuntu-latest' && 'linux-x64' || 'osx-x64' }} --self-contained
+      run: dotnet publish src/Behavedr.Agent/Behavedr.Agent.csproj -c Release -r ${{ matrix.rid }} --self-contained -o publish
