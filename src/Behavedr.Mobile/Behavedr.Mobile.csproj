@@ -14,9 +14,9 @@
 
     <ApplicationTitle>Behavedr</ApplicationTitle>
     <ApplicationId>com.croatiasecurity.behavedr</ApplicationId>
-    <ApplicationDisplayVersion>0.0.1</ApplicationDisplayVersion>
-    <ApplicationVersion>1</ApplicationVersion>
-    <Version>0.0.1</Version>
+    <ApplicationDisplayVersion>0.0.2</ApplicationDisplayVersion>
+    <ApplicationVersion>2</ApplicationVersion>
+    <Version>0.0.2</Version>
 
     <!-- Avoid host RID Mono.* packages that are not published for .NET 10. -->
     <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">android-arm64;android-x64</RuntimeIdentifiers>

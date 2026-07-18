@@ -2,7 +2,13 @@
 
 Multi-platform behavioral EDR: **Windows, Linux, macOS, Android, iOS**.
 
-**Current release:** [v0.0.1](https://github.com/CroatiaSecurity/Behavedr/releases/tag/v0.0.1)
+**Current release:** [v0.0.2](https://github.com/CroatiaSecurity/Behavedr/releases/tag/v0.0.2)
+
+### Windows install
+
+1. Download **`Behavedr-Setup-*-win-x64.exe`** from [Releases](https://github.com/CroatiaSecurity/Behavedr/releases)
+2. Run the installer (Program Files + Start Menu)
+3. Or use **Portable** zip → single `Behavedr.exe`
 
 **Core:** GIDR President (closed-list kills), Council of Elders weighted signals, userland-first.
 

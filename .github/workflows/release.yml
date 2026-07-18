@@ -40,31 +40,82 @@ jobs:
       with:
         dotnet-version: '10.0.x'
 
-    - name: Publish Agent
+    - name: Publish Agent (single-file)
       run: >
         dotnet publish src/Behavedr.Agent/Behavedr.Agent.csproj
         -c Release
         -r ${{ matrix.rid }}
         --self-contained
+        -p:PublishSingleFile=true
+        -p:IncludeNativeLibrariesForSelfExtract=true
+        -p:EnableCompressionInSingleFile=true
+        -p:DebugType=none
+        -p:DebugSymbols=false
         -p:Version=${{ steps.ver.outputs.version }}
         -o publish/agent-${{ matrix.rid }}
 
-    - name: Zip (Windows)
+    - name: Stage portable package (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        Compress-Archive -Path "publish/agent-${{ matrix.rid }}/*" -DestinationPath "behavedr-agent-${{ matrix.rid }}.zip"
+        $rid = '${{ matrix.rid }}'
+        $ver = '${{ steps.ver.outputs.version }}'
+        $src = "publish/agent-$rid"
+        $stage = "dist/portable-$rid"
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+        Copy-Item "$src/Behavedr.exe" $stage
+        if (Test-Path "$src/Assets") { Copy-Item "$src/Assets" $stage -Recurse -Force }
+        Copy-Item packaging/windows/README.txt $stage
+        Compress-Archive -Path "$stage/*" -DestinationPath "Behavedr-Portable-$ver-$rid.zip" -Force
+        Get-ChildItem $stage | Format-Table Name, Length
 
-    - name: Zip (Unix)
-      if: runner.os != 'Windows'
+    - name: Build Windows installer (Inno Setup)
+      if: runner.os == 'Windows'
+      shell: pwsh
       run: |
-        (cd "publish/agent-${{ matrix.rid }}" && zip -r "../../behavedr-agent-${{ matrix.rid }}.zip" .)
+        choco install innosetup -y --no-progress
+        $iscc = @(
+          "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+          "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $iscc) { throw "ISCC.exe not found after Inno Setup install" }
+        New-Item -ItemType Directory -Force -Path dist/windows | Out-Null
+        Copy-Item packaging/windows/README.txt publish/agent-win-x64/ -Force
+        $publish = (Resolve-Path "publish/agent-win-x64").Path
+        $outDir = Join-Path (Get-Location) "dist\windows"
+        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+        & $iscc "packaging\windows\behavedr.iss" `
+          "/DMyAppVersion=${{ steps.ver.outputs.version }}" `
+          "/DPublishDir=$publish" `
+          "/DOutputDir=$outDir"
+        if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed: $LASTEXITCODE" }
+        Get-ChildItem dist/windows
 
-    - name: Upload desktop artifact
+    - name: Stage portable package (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -e
+        RID="${{ matrix.rid }}"
+        VER="${{ steps.ver.outputs.version }}"
+        SRC="publish/agent-${RID}"
+        STAGE="dist/portable-${RID}"
+        mkdir -p "$STAGE"
+        cp "$SRC/Behavedr" "$STAGE/"
+        chmod +x "$STAGE/Behavedr"
+        [ -d "$SRC/Assets" ] && cp -r "$SRC/Assets" "$STAGE/" || true
+        cp packaging/unix/README.txt "$STAGE/"
+        (cd "$STAGE" && zip -r "../../Behavedr-Portable-${VER}-${RID}.zip" .)
+        ls -la "$STAGE"
+
+    - name: Upload desktop artifacts
       uses: actions/upload-artifact@v4
       with:
         name: agent-${{ matrix.rid }}
-        path: behavedr-agent-${{ matrix.rid }}.zip
+        path: |
+          Behavedr-Portable-*.zip
+          dist/windows/Behavedr-Setup-*.exe
+        if-no-files-found: error
 
   android:
     name: Android
@@ -116,16 +167,15 @@ jobs:
       run: |
         mkdir -p dist
         VER="${{ steps.ver.outputs.version }}"
-        find publish/android -type f \( -name '*.apk' -o -name '*.aab' \) -print -exec cp -v {} dist/ \;
-        if [ -z "$(ls -A dist 2>/dev/null)" ]; then
-          (cd publish/android && zip -r "../../dist/behavedr-android-${VER}.zip" .)
+        find publish/android -type f -name '*.apk' -print -exec cp -v {} dist/ \;
+        apk=$(find dist -name '*Signed.apk' -o -name '*.apk' | head -1)
+        if [ -n "$apk" ]; then
+          cp -v "$apk" "dist/Behavedr-${VER}-android.apk"
         else
-          # Prefer a stable name for the primary APK
-          apk=$(find dist -name '*.apk' | head -1)
-          if [ -n "$apk" ]; then
-            cp -v "$apk" "dist/behavedr-android-${VER}.apk"
-          fi
+          echo "No APK produced" && exit 1
         fi
+        # Drop redundant intermediate packages from release assets
+        find dist -type f ! -name "Behavedr-${VER}-android.apk" -delete
         ls -la dist
 
     - name: Upload Android artifact
@@ -150,9 +200,11 @@ jobs:
     - name: Flatten artifacts
       run: |
         mkdir -p release-assets
-        find artifacts -type f \( -name '*.zip' -o -name '*.apk' -o -name '*.aab' \) -exec cp -v {} release-assets/ \;
+        find artifacts -type f \( -name '*.zip' -o -name '*.apk' -o -name '*.exe' \) -exec cp -v {} release-assets/ \;
         ls -la release-assets
         test -n "$(ls -A release-assets)"
+        # Must include Windows installer
+        ls release-assets/Behavedr-Setup-*-win-x64.exe
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
@@ -166,22 +218,23 @@ jobs:
         body: |
           ## Behavedr ${{ github.ref_name }}
 
-          First public build of multi-platform behavioral EDR.
+          ### Windows (recommended)
+          | Asset | What to do |
+          |-------|------------|
+          | **`Behavedr-Setup-*-win-x64.exe`** | **Run the installer** → Program Files, Start Menu, uninstall |
+          | `Behavedr-Portable-*-win-x64.zip` | Optional: single `Behavedr.exe`, no install |
 
-          ### Downloads
+          ### Other platforms
           | Asset | Platform |
           |-------|----------|
-          | `behavedr-agent-win-x64.zip` | Windows x64 (self-contained agent) |
-          | `behavedr-agent-linux-x64.zip` | Linux x64 (self-contained agent) |
-          | `behavedr-agent-osx-arm64.zip` | macOS Apple Silicon (self-contained agent) |
-          | `behavedr-android-*.apk` (or zip) | Android arm64 |
+          | `Behavedr-Portable-*-linux-x64.zip` | Linux x64 — extract, `chmod +x Behavedr`, run |
+          | `Behavedr-Portable-*-osx-arm64.zip` | macOS Apple Silicon — extract and run |
+          | `Behavedr-*-android.apk` | Android arm64 |
 
           ### Notes
-          - Detection engines are early stubs (desktop + mobile).
-          - **iOS** is not included as a device IPA (simulator-only in CI; Apple signing not configured).
-          - Packages are for testing; not store-signed production builds.
-
-          See `CHANGELOG.md` for details.
+          - Windows portable/installer use a **single-file** agent (`Behavedr.exe`), not a folder of runtime DLLs.
+          - Detection engines are early stubs.
+          - No iOS device IPA yet (Apple signing not configured).
         files: release-assets/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
