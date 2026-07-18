@@ -89,6 +89,33 @@ jobs:
       with:
         dotnet-version: '10.0.x'
 
+    - name: Select Xcode for .NET iOS workload
+      run: |
+        set -e
+        echo "Available Xcode apps:"
+        ls -d /Applications/Xcode*.app 2>/dev/null || true
+        # Prefer Xcode 26.6+ (required by current Microsoft.iOS 26.5.x), else newest installed.
+        for candidate in \
+          /Applications/Xcode_26.6.app \
+          /Applications/Xcode_26.6.0.app \
+          /Applications/Xcode_26.7.app \
+          /Applications/Xcode.app
+        do
+          if [ -d "$candidate" ]; then
+            sudo xcode-select -s "$candidate"
+            break
+          fi
+        done
+        # Fall back to highest Xcode_26.* if still mismatched
+        if ! xcodebuild -version | head -1 | grep -Eq 'Xcode 26\.(6|7|8|9)'; then
+          latest=$(ls -d /Applications/Xcode_26.*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$latest" ]; then
+            sudo xcode-select -s "$latest"
+          fi
+        fi
+        xcodebuild -version
+        xcode-select -p
+
     - name: Install MAUI iOS workload
       run: dotnet workload install maui-ios
 
