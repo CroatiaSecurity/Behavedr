@@ -160,7 +160,8 @@ jobs:
         tag_name: ${{ github.ref_name }}
         name: Behavedr ${{ github.ref_name }}
         draft: false
-        prerelease: true
+        prerelease: false
+        make_latest: true
         generate_release_notes: true
         body: |
           ## Behavedr ${{ github.ref_name }}
