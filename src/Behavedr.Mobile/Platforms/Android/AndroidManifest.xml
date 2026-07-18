@@ -1,10 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <application android:allowBackup="false" android:supportsRtl="true" android:label="Behavedr" />
+
+  <!-- Basic connectivity for telemetry/updates -->
   <uses-permission android:name="android.permission.INTERNET" />
-  <!-- Behavioral EDR permissions (declared; runtime grant UX TBD) -->
-  <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
-  <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+  <!--
+    Behavioral EDR permissions — requested at RUNTIME only when the user
+    explicitly enables the corresponding monitoring feature.
+    Declaring here is required by the Android platform, but the app will
+    NOT exercise these until runtime consent is granted.
+  -->
+
+  <!-- Usage stats: requires Settings.ACTION_USAGE_ACCESS_SETTINGS intent -->
+  <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+                   android:maxSdkVersion="99" />
+
+  <!-- Package enumeration: required for sideload detection on API 30+ -->
+  <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+                   android:maxSdkVersion="99" />
+
+  <!-- Foreground service for continuous monitoring (user must opt-in) -->
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+  <!-- Boot receiver: only if user enables persistent monitoring -->
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+  <!-- Notifications for alerts (Android 13+) — requested at runtime -->
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+  <!--
+    NOTE: Accessibility service (for behavior interception) is NOT declared here.
+    It requires a separate service declaration and will only be added when the
+    feature is implemented with proper user disclosure.
+  -->
 </manifest>

@@ -1,0 +1,22 @@
+<Project>
+
+  <PropertyGroup>
+    <Version>0.0.3</Version>
+    <AssemblyVersion>0.0.3.0</AssemblyVersion>
+    <FileVersion>0.0.3.0</FileVersion>
+    <InformationalVersion>0.0.3</InformationalVersion>
+    <Product>Behavedr</Product>
+    <Company>CroatiaSecurity</Company>
+    <Authors>CroatiaSecurity</Authors>
+    <Copyright>Copyright © CroatiaSecurity 2026</Copyright>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+</Project>

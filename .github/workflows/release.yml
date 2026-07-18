@@ -25,7 +25,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
     - name: Version from tag
       id: ver
@@ -36,9 +36,12 @@ jobs:
         echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
     - name: Setup .NET
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9  # v4.3.1
       with:
         dotnet-version: '10.0.x'
+
+    - name: Run tests
+      run: dotnet test tests/Behavedr.Tests/Behavedr.Tests.csproj -c Release --verbosity normal
 
     - name: Publish Agent (single-file)
       run: >
@@ -47,12 +50,25 @@ jobs:
         -r ${{ matrix.rid }}
         --self-contained
         -p:PublishSingleFile=true
-        -p:IncludeNativeLibrariesForSelfExtract=true
+        -p:IncludeAllContentForSelfExtract=true
         -p:EnableCompressionInSingleFile=true
         -p:DebugType=none
         -p:DebugSymbols=false
         -p:Version=${{ steps.ver.outputs.version }}
         -o publish/agent-${{ matrix.rid }}
+
+    - name: Generate SBOM
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        dotnet tool install --global Microsoft.Sbom.DotNetTool 2>/dev/null || true
+        sbom-tool generate \
+          -b "publish/agent-${{ matrix.rid }}" \
+          -bc src/Behavedr.Agent \
+          -pn Behavedr \
+          -pv "${{ steps.ver.outputs.version }}" \
+          -ps CroatiaSecurity \
+          -nsb https://github.com/CroatiaSecurity/Behavedr || echo "SBOM generation skipped"
 
     - name: Stage portable package (Windows)
       if: runner.os == 'Windows'
@@ -73,7 +89,7 @@ jobs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        choco install innosetup -y --no-progress
+        choco install innosetup -y --no-progress --checksum-type sha256
         $iscc = @(
           "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
           "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
@@ -109,7 +125,7 @@ jobs:
         ls -la "$STAGE"
 
     - name: Upload desktop artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
       with:
         name: agent-${{ matrix.rid }}
         path: |
@@ -121,7 +137,7 @@ jobs:
     name: Android
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
     - name: Version from tag
       id: ver
@@ -132,18 +148,18 @@ jobs:
         echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
     - name: Setup .NET
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9  # v4.3.1
       with:
         dotnet-version: '10.0.x'
 
     - name: Setup Java
-      uses: actions/setup-java@v4
+      uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00  # v4.7.1
       with:
         distribution: temurin
         java-version: '17'
 
     - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
+      uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407  # v3.2.2
 
     - name: Install Android platform packages
       run: |
@@ -174,12 +190,11 @@ jobs:
         else
           echo "No APK produced" && exit 1
         fi
-        # Drop redundant intermediate packages from release assets
         find dist -type f ! -name "Behavedr-${VER}-android.apk" -delete
         ls -la dist
 
     - name: Upload Android artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
       with:
         name: android
         path: dist/*
@@ -190,10 +205,10 @@ jobs:
     needs: [desktop, android]
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
     - name: Download all artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
       with:
         path: artifacts
 
@@ -203,11 +218,10 @@ jobs:
         find artifacts -type f \( -name '*.zip' -o -name '*.apk' -o -name '*.exe' \) -exec cp -v {} release-assets/ \;
         ls -la release-assets
         test -n "$(ls -A release-assets)"
-        # Must include Windows installer
         ls release-assets/Behavedr-Setup-*-win-x64.exe
 
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631  # v2.2.2
       with:
         tag_name: ${{ github.ref_name }}
         name: Behavedr ${{ github.ref_name }}
@@ -232,9 +246,7 @@ jobs:
           | `Behavedr-*-android.apk` | Android arm64 |
 
           ### Notes
-          - Windows portable/installer use a **single-file** agent (`Behavedr.exe`), not a folder of runtime DLLs.
-          - Detection engines are early stubs.
+          - Windows portable/installer use a **single-file** agent (`Behavedr.exe`).
+          - Agent includes self-protection, structured logging, and configurable detection thresholds.
           - No iOS device IPA yet (Apple signing not configured).
         files: release-assets/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
