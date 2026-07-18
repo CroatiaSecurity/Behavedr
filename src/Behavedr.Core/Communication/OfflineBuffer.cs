@@ -1,0 +1,141 @@
+namespace Behavedr.Core.Communication;
+
+using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+/// <summary>
+/// Buffers detection reports locally when the server is unreachable.
+/// Uses a simple file-based queue in the agent's data directory.
+/// On reconnection, queued reports are replayed in order.
+/// </summary>
+public class OfflineBuffer
+{
+    private readonly string _bufferPath;
+    private readonly ILogger<OfflineBuffer> _logger;
+    private readonly int _maxBufferedReports;
+
+    public OfflineBuffer(string? bufferPath = null, int maxBufferedReports = 1000, ILogger<OfflineBuffer>? logger = null)
+    {
+        _bufferPath = bufferPath ?? Path.Combine(AppContext.BaseDirectory, "buffer");
+        _maxBufferedReports = maxBufferedReports;
+        _logger = logger ?? NullLogger<OfflineBuffer>.Instance;
+
+        Directory.CreateDirectory(_bufferPath);
+    }
+
+    /// <summary>Number of buffered reports waiting to be sent.</summary>
+    public int PendingCount => Directory.Exists(_bufferPath)
+        ? Directory.GetFiles(_bufferPath, "*.json").Length
+        : 0;
+
+    /// <summary>
+    /// Enqueue a report for later delivery.
+    /// </summary>
+    public async Task EnqueueAsync(DetectionReport report, CancellationToken ct = default)
+    {
+        // Enforce max buffer size
+        if (PendingCount >= _maxBufferedReports)
+        {
+            _logger.LogWarning("Offline buffer full ({Max} reports), dropping oldest", _maxBufferedReports);
+            DropOldest();
+        }
+
+        var fileName = $"{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}_{Guid.NewGuid():N}.json";
+        var filePath = Path.Combine(_bufferPath, fileName);
+
+        var json = JsonSerializer.Serialize(report, BufferJsonOptions);
+        await File.WriteAllTextAsync(filePath, json, ct);
+
+        _logger.LogDebug("Buffered report for {Process} (score={Score:F1})",
+            report.Event.ProcessName, report.Score);
+    }
+
+    /// <summary>
+    /// Replay all buffered reports through the client.
+    /// Reports are sent in chronological order and removed on successful delivery.
+    /// </summary>
+    public async Task<int> ReplayAsync(IBehavedrClient client, CancellationToken ct = default)
+    {
+        if (!Directory.Exists(_bufferPath)) return 0;
+
+        var files = Directory.GetFiles(_bufferPath, "*.json")
+            .OrderBy(f => f) // Filename starts with timestamp, so alphabetical = chronological
+            .ToList();
+
+        if (files.Count == 0) return 0;
+
+        _logger.LogInformation("Replaying {Count} buffered reports", files.Count);
+
+        var sentCount = 0;
+        foreach (var file in files)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            try
+            {
+                var json = await File.ReadAllTextAsync(file, ct);
+                var report = JsonSerializer.Deserialize<DetectionReport>(json, BufferJsonOptions);
+
+                if (report is null)
+                {
+                    File.Delete(file);
+                    continue;
+                }
+
+                await client.ReportDetectionAsync(report, ct);
+                File.Delete(file);
+                sentCount++;
+            }
+            catch (HttpRequestException)
+            {
+                // Server still unreachable — stop replay
+                _logger.LogDebug("Replay stopped: server unreachable after {Sent} reports", sentCount);
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to replay buffered report {File}", Path.GetFileName(file));
+                // Move to a dead-letter directory instead of infinite retries
+                MoveToDeadLetter(file);
+            }
+        }
+
+        if (sentCount > 0)
+            _logger.LogInformation("Replayed {Count} buffered reports successfully", sentCount);
+
+        return sentCount;
+    }
+
+    private void DropOldest()
+    {
+        try
+        {
+            var oldest = Directory.GetFiles(_bufferPath, "*.json")
+                .OrderBy(f => f)
+                .FirstOrDefault();
+
+            if (oldest is not null)
+                File.Delete(oldest);
+        }
+        catch { }
+    }
+
+    private void MoveToDeadLetter(string filePath)
+    {
+        try
+        {
+            var deadLetterDir = Path.Combine(_bufferPath, "dead-letter");
+            Directory.CreateDirectory(deadLetterDir);
+            var dest = Path.Combine(deadLetterDir, Path.GetFileName(filePath));
+            File.Move(filePath, dest, overwrite: true);
+        }
+        catch { }
+    }
+
+    private static readonly JsonSerializerOptions BufferJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = false,
+    };
+}
