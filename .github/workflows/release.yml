@@ -1,0 +1,186 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  desktop:
+    name: Desktop (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-latest
+            rid: osx-arm64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Version from tag
+      id: ver
+      shell: bash
+      run: |
+        TAG="${GITHUB_REF_NAME}"
+        echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+        echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Publish Agent
+      run: >
+        dotnet publish src/Behavedr.Agent/Behavedr.Agent.csproj
+        -c Release
+        -r ${{ matrix.rid }}
+        --self-contained
+        -p:Version=${{ steps.ver.outputs.version }}
+        -o publish/agent-${{ matrix.rid }}
+
+    - name: Zip (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        Compress-Archive -Path "publish/agent-${{ matrix.rid }}/*" -DestinationPath "behavedr-agent-${{ matrix.rid }}.zip"
+
+    - name: Zip (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        (cd "publish/agent-${{ matrix.rid }}" && zip -r "../../behavedr-agent-${{ matrix.rid }}.zip" .)
+
+    - name: Upload desktop artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: agent-${{ matrix.rid }}
+        path: behavedr-agent-${{ matrix.rid }}.zip
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Version from tag
+      id: ver
+      shell: bash
+      run: |
+        TAG="${GITHUB_REF_NAME}"
+        echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+        echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Install Android platform packages
+      run: |
+        sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+        yes | sdkmanager --licenses || true
+
+    - name: Install MAUI Android workload
+      run: dotnet workload install maui-android
+
+    - name: Publish Android
+      run: >
+        dotnet publish src/Behavedr.Mobile/Behavedr.Mobile.csproj
+        -c Release
+        -f net10.0-android
+        -r android-arm64
+        -p:Version=${{ steps.ver.outputs.version }}
+        -p:ApplicationDisplayVersion=${{ steps.ver.outputs.version }}
+        -o publish/android
+
+    - name: Package Android
+      run: |
+        mkdir -p dist
+        VER="${{ steps.ver.outputs.version }}"
+        find publish/android -type f \( -name '*.apk' -o -name '*.aab' \) -print -exec cp -v {} dist/ \;
+        if [ -z "$(ls -A dist 2>/dev/null)" ]; then
+          (cd publish/android && zip -r "../../dist/behavedr-android-${VER}.zip" .)
+        else
+          # Prefer a stable name for the primary APK
+          apk=$(find dist -name '*.apk' | head -1)
+          if [ -n "$apk" ]; then
+            cp -v "$apk" "dist/behavedr-android-${VER}.apk"
+          fi
+        fi
+        ls -la dist
+
+    - name: Upload Android artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: android
+        path: dist/*
+        if-no-files-found: error
+
+  publish-release:
+    name: GitHub Release
+    needs: [desktop, android]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Flatten artifacts
+      run: |
+        mkdir -p release-assets
+        find artifacts -type f \( -name '*.zip' -o -name '*.apk' -o -name '*.aab' \) -exec cp -v {} release-assets/ \;
+        ls -la release-assets
+        test -n "$(ls -A release-assets)"
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: Behavedr ${{ github.ref_name }}
+        draft: false
+        prerelease: true
+        generate_release_notes: true
+        body: |
+          ## Behavedr ${{ github.ref_name }}
+
+          First public build of multi-platform behavioral EDR.
+
+          ### Downloads
+          | Asset | Platform |
+          |-------|----------|
+          | `behavedr-agent-win-x64.zip` | Windows x64 (self-contained agent) |
+          | `behavedr-agent-linux-x64.zip` | Linux x64 (self-contained agent) |
+          | `behavedr-agent-osx-arm64.zip` | macOS Apple Silicon (self-contained agent) |
+          | `behavedr-android-*.apk` (or zip) | Android arm64 |
+
+          ### Notes
+          - Detection engines are early stubs (desktop + mobile).
+          - **iOS** is not included as a device IPA (simulator-only in CI; Apple signing not configured).
+          - Packages are for testing; not store-signed production builds.
+
+          See `CHANGELOG.md` for details.
+        files: release-assets/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -2,6 +2,8 @@
 
 Multi-platform behavioral EDR: **Windows, Linux, macOS, Android, iOS**.
 
+**Current release:** [v0.0.1](https://github.com/CroatiaSecurity/Behavedr/releases/tag/v0.0.1)
+
 **Core:** GIDR President (closed-list kills), Council of Elders weighted signals, userland-first.
 
 Built with .NET 10. Desktop agent + .NET MAUI phone app share `Behavedr.Core`.
@@ -43,5 +45,16 @@ dotnet build src/Behavedr.Mobile/Behavedr.Mobile.csproj -c Release -f net10.0-io
 ## CI
 
 GitHub Actions builds desktop (3 OS), Android APK, and iOS (simulator, no codesign).
+
+## Releases
+
+Tag a version to publish binaries:
+
+```bash
+git tag v0.0.1
+git push origin v0.0.1
+```
+
+The **Release** workflow attaches self-contained agent zips + Android package to [GitHub Releases](https://github.com/CroatiaSecurity/Behavedr/releases).
 
 Icon: use assets under `Assets/` / MAUI `Resources/`.
