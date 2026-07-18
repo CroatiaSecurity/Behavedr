@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Android on all hosts; iOS only on macOS (Xcode + maui-ios). -->
-    <TargetFrameworks>net10.0-android</TargetFrameworks>
-    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('osx')) OR '$(IncludeIos)' == 'true'">net10.0-android;net10.0-ios</TargetFrameworks>
+    <!-- Override per build: -p:MobileTfms=net10.0-ios or net10.0-android;net10.0-ios -->
+    <MobileTfms Condition="'$(MobileTfms)' == ''">net10.0-android</MobileTfms>
+    <TargetFrameworks>$(MobileTfms)</TargetFrameworks>
 
     <OutputType>Exe</OutputType>
     <RootNamespace>Behavedr.Mobile</RootNamespace>

@@ -96,6 +96,7 @@ jobs:
       run: >
         dotnet build src/Behavedr.Mobile/Behavedr.Mobile.csproj
         -c Release
+        -p:MobileTfms=net10.0-ios
         -f net10.0-ios
         -r iossimulator-arm64
         -p:CodesignKey=
