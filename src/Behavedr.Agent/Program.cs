@@ -1,22 +1,11 @@
 using Behavedr.Core;
-using Behavedr.Core.Monitors;
 using Behavedr.Core.Platform;
 
-var engine = new DetectionEngine();
+var engine = AgentBootstrap.CreateEngine();
 
-IPlatformMonitor[] monitors =
-[
-    new WindowsMonitor(),
-    new LinuxMonitor(),
-    new MacOSMonitor(),
-];
+Console.WriteLine($"Behavedr Agent started on {PlatformMonitors.CurrentPlatformSummary()}.");
+foreach (var name in AgentBootstrap.RegisteredMonitorNames(engine))
+    Console.WriteLine($"  Registered monitor: {name}");
 
-foreach (var monitor in monitors.Where(m => m.IsSupported))
-{
-    engine.RegisterMonitor(monitor);
-    Console.WriteLine($"Registered monitor: {monitor.GetType().Name}");
-}
-
-Console.WriteLine("Behavedr Agent started. Behavioral monitoring active.");
-Console.WriteLine($"OS: {Environment.OSVersion}");
+Console.WriteLine("Behavioral monitoring active (desktop + mobile cores share detection).");
 // TODO: tray (Windows), systemd (Linux), launchd (macOS), response engine loop

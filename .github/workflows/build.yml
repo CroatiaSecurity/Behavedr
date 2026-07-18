@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  build:
+  desktop:
+    name: Desktop (${{ matrix.rid }})
     strategy:
       fail-fast: false
       matrix:
@@ -28,8 +29,75 @@ jobs:
       with:
         dotnet-version: '10.0.x'
 
-    - name: Build
-      run: dotnet build --configuration Release
+    - name: Build Core + Agent
+      run: |
+        dotnet build src/Behavedr.Core/Behavedr.Core.csproj -c Release
+        dotnet build src/Behavedr.Agent/Behavedr.Agent.csproj -c Release
 
-    - name: Publish
-      run: dotnet publish src/Behavedr.Agent/Behavedr.Agent.csproj -c Release -r ${{ matrix.rid }} --self-contained -o publish
+    - name: Publish Agent
+      run: dotnet publish src/Behavedr.Agent/Behavedr.Agent.csproj -c Release -r ${{ matrix.rid }} --self-contained -o publish/agent
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Install Android platform packages
+      run: |
+        sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+        yes | sdkmanager --licenses || true
+
+    - name: Install MAUI Android workload
+      run: dotnet workload install maui-android
+
+    - name: Build Android
+      run: dotnet build src/Behavedr.Mobile/Behavedr.Mobile.csproj -c Release -f net10.0-android -r android-arm64
+
+    - name: Publish Android
+      run: dotnet publish src/Behavedr.Mobile/Behavedr.Mobile.csproj -c Release -f net10.0-android -r android-arm64 -o publish/android
+
+    - name: Upload Android artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: behavedr-android
+        path: publish/android
+        if-no-files-found: warn
+
+  ios:
+    name: iOS
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Install MAUI iOS workload
+      run: dotnet workload install maui-ios
+
+    - name: Build iOS (simulator, no codesign)
+      run: >
+        dotnet build src/Behavedr.Mobile/Behavedr.Mobile.csproj
+        -c Release
+        -f net10.0-ios
+        -r iossimulator-arm64
+        -p:CodesignKey=
+        -p:CodesignProvision=
+        -p:EnableCodeSigning=false

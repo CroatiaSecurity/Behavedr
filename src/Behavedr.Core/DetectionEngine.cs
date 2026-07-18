@@ -11,6 +11,8 @@ public class DetectionEngine
     private readonly ScoringEngine _scoring = new();
     private readonly List<IPlatformMonitor> _monitors = new();
 
+    public IReadOnlyList<IPlatformMonitor> RegisteredMonitors => _monitors;
+
     public void RegisterMonitor(IPlatformMonitor monitor) => _monitors.Add(monitor);
 
     public DetectionResult ProcessEvent(DetectionEvent evt)
@@ -25,7 +27,7 @@ public class DetectionEngine
 
     private List<Signal> CollectSignals(DetectionEvent evt)
     {
-        // Platform-specific + correlation
+        // Platform-specific + correlation (hooks into monitors next)
         return new List<Signal>();
     }
 }

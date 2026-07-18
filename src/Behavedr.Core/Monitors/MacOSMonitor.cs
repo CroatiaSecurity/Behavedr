@@ -5,6 +5,8 @@ using Behavedr.Core.Platform;
 
 public class MacOSMonitor : IPlatformMonitor
 {
+    public string PlatformName => "macOS";
+
     public bool IsSupported => OperatingSystem.IsMacOS();
 
     public Task<IEnumerable<Signal>> GetSignalsAsync(CancellationToken ct = default)

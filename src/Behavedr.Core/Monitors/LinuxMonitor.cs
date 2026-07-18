@@ -5,6 +5,8 @@ using Behavedr.Core.Platform;
 
 public class LinuxMonitor : IPlatformMonitor
 {
+    public string PlatformName => "Linux";
+
     public bool IsSupported => OperatingSystem.IsLinux();
 
     public Task<IEnumerable<Signal>> GetSignalsAsync(CancellationToken ct = default)

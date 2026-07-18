@@ -5,6 +5,8 @@ using Behavedr.Core.Platform;
 
 public class WindowsMonitor : IPlatformMonitor
 {
+    public string PlatformName => "Windows";
+
     public bool IsSupported => OperatingSystem.IsWindows();
 
     public Task<IEnumerable<Signal>> GetSignalsAsync(CancellationToken ct = default)

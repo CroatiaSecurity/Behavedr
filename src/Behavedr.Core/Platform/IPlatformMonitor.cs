@@ -2,6 +2,10 @@ namespace Behavedr.Core.Platform;
 
 public interface IPlatformMonitor
 {
-    Task<IEnumerable<Models.Signal>> GetSignalsAsync(CancellationToken ct = default);
+    /// <summary>Human-readable platform label (Windows, Android, …).</summary>
+    string PlatformName { get; }
+
     bool IsSupported { get; }
+
+    Task<IEnumerable<Models.Signal>> GetSignalsAsync(CancellationToken ct = default);
 }
