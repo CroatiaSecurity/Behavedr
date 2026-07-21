@@ -83,20 +83,20 @@ public class DetectionEngineTests
         var engine = new DetectionEngine(scoring);
         engine.RegisterMonitor(new FakeMonitor("High", true, [new Signal("critical", 100, 1.0)]));
 
-        var evt = new DetectionEvent("1", "malware.exe", "injection", DateTime.UtcNow, 0, true, "test");
+        var evt = new DetectionEvent("1", "malware.exe", "injection", DateTime.UtcNow, true, "test");
         var result = await engine.ProcessEventAsync(evt);
 
         Assert.True(result.PresidentKill);
     }
 
     [Fact]
-    public void ProcessEvent_Sync_Works()
+    public async Task ProcessEvent_Sync_Works()
     {
         var engine = new DetectionEngine();
         engine.RegisterMonitor(new FakeMonitor("Sync", true, [new Signal("s", 10, 0.5)]));
 
         var evt = DetectionEvent.Create("1", "proc", "behavior", "test");
-        var result = engine.ProcessEvent(evt);
+        var result = await engine.ProcessEventAsync(evt);
 
         Assert.Single(result.Signals);
     }

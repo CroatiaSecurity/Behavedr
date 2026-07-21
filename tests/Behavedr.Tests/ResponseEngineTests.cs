@@ -108,7 +108,7 @@ public class ResponseEngineTests
     {
         var evt = new DetectionEvent(
             "1234", "malware.exe", "injection",
-            DateTime.UtcNow, 0, true, "test");
+            DateTime.UtcNow, true, "test");
 
         return new DetectionResult(evt, score, presidentKill,
             [new Signal("test_signal", 90, 0.95)]);

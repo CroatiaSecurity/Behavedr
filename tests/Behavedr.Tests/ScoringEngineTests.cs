@@ -121,5 +121,5 @@ public class ScoringEngineTests
     }
 
     private static DetectionEvent CreateEvent(bool isUserTargeted = false) =>
-        new("1234", "test.exe", "test_behavior", DateTime.UtcNow, 0.0, isUserTargeted, "unit_test");
+        new("1234", "test.exe", "test_behavior", DateTime.UtcNow, isUserTargeted, "unit_test");
 }

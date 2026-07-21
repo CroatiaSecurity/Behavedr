@@ -40,7 +40,7 @@ public class IntegrationTests
         // Act: process a user-targeted event
         var evt = new DetectionEvent(
             "999", "evil.exe", "credential_theft",
-            DateTime.UtcNow, 0, true, "integration_test");
+            DateTime.UtcNow, true, "integration_test");
 
         var result = await engine.ProcessEventAsync(evt);
         var responses = await responseEngine.RespondAsync(result);
@@ -97,7 +97,7 @@ public class IntegrationTests
 
         var evt = new DetectionEvent(
             "1", "malware.exe", "injection",
-            DateTime.UtcNow, 0, true, "test");
+            DateTime.UtcNow, true, "test");
 
         var result = await engine.ProcessEventAsync(evt);
         var responses = await responseEngine.RespondAsync(result);

@@ -18,7 +18,7 @@ Log.Logger = new LoggerConfiguration()
 try
 {
     Log.Information("Behavedr Agent v{Version} starting on {Platform}",
-        typeof(DetectionEngine).Assembly.GetName().Version?.ToString(3) ?? "0.1.3",
+        typeof(DetectionEngine).Assembly.GetName().Version?.ToString(3) ?? "0.1.4",
         PlatformMonitors.CurrentPlatformSummary());
 
     var builder = Host.CreateApplicationBuilder(args);

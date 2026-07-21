@@ -53,7 +53,7 @@ public sealed class CommunicationService : BackgroundService
                 var heartbeat = new AgentHeartbeat(
                     _config.AgentId,
                     Behavedr.Core.Platform.PlatformMonitors.CurrentPlatformSummary(),
-                    typeof(Behavedr.Core.DetectionEngine).Assembly.GetName().Version?.ToString(3) ?? "0.1.3",
+                    typeof(Behavedr.Core.DetectionEngine).Assembly.GetName().Version?.ToString(3) ?? "0.1.4",
                     Behavedr.Core.Platform.PlatformMonitors.All.Count(m => m.IsSupported),
                     (long)(DateTime.UtcNow - System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime()).TotalSeconds,
                     DateTime.UtcNow);
