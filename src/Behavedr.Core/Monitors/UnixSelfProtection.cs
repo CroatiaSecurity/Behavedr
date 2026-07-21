@@ -67,10 +67,17 @@ public class UnixSelfProtection : IPlatformMonitor
         // Record initial fd count for later comparison
         try
         {
-            var fdDir = "/proc/self/fd";
-            if (Directory.Exists(fdDir))
+            if (OperatingSystem.IsLinux())
             {
-                _initialFdCount = Directory.GetFiles(fdDir).Length;
+                var fdDir = "/proc/self/fd";
+                if (Directory.Exists(fdDir))
+                {
+                    _initialFdCount = Directory.GetFiles(fdDir).Length;
+                }
+            }
+            else if (OperatingSystem.IsMacOS())
+            {
+                _initialFdCount = GetMacOSFdCount();
             }
         }
         catch { }
@@ -165,6 +172,8 @@ public class UnixSelfProtection : IPlatformMonitor
     /// <summary>
     /// Detect file descriptor leakage or manipulation.
     /// An attacker might inject FDs to redirect our I/O or leak information.
+    /// Linux: /proc/self/fd enumeration.
+    /// macOS: proc_pidinfo via libproc P/Invoke.
     /// </summary>
     private void CheckFdLeakage(List<Signal> signals)
     {
@@ -172,10 +181,22 @@ public class UnixSelfProtection : IPlatformMonitor
 
         try
         {
-            var fdDir = "/proc/self/fd";
-            if (!Directory.Exists(fdDir)) return;
-
-            var currentCount = Directory.GetFiles(fdDir).Length;
+            int currentCount;
+            if (OperatingSystem.IsLinux())
+            {
+                var fdDir = "/proc/self/fd";
+                if (!Directory.Exists(fdDir)) return;
+                currentCount = Directory.GetFiles(fdDir).Length;
+            }
+            else if (OperatingSystem.IsMacOS())
+            {
+                currentCount = GetMacOSFdCount();
+                if (currentCount < 0) return;
+            }
+            else
+            {
+                return;
+            }
 
             // Sudden large increase in FDs could indicate fd injection or resource exhaustion attack
             if (currentCount > _initialFdCount + 50)
@@ -187,6 +208,35 @@ public class UnixSelfProtection : IPlatformMonitor
         }
         catch { }
     }
+
+    /// <summary>
+    /// Get the number of open file descriptors on macOS using proc_pidinfo.
+    /// Uses libproc.dylib PROC_PIDLISTFDS to enumerate FDs without /proc.
+    /// </summary>
+    private static int GetMacOSFdCount()
+    {
+        try
+        {
+            var pid = Environment.ProcessId;
+            // First call with 0 buffer to get required size
+            var bufSize = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, IntPtr.Zero, 0);
+            if (bufSize <= 0) return -1;
+            // Each fd info struct is 8 bytes (proc_fdtype + fd number)
+            return bufSize / PROC_PIDLISTFD_SIZE;
+        }
+        catch { return -1; }
+    }
+
+    private const int PROC_PIDLISTFDS = 1;
+    private const int PROC_PIDLISTFD_SIZE = 8;
+
+    /// <summary>
+    /// macOS libproc: proc_pidinfo returns information about open file descriptors.
+    /// When flavor=PROC_PIDLISTFDS and buffer=null, returns the buffer size needed.
+    /// The count of FDs = returnValue / sizeof(proc_fdinfo) where sizeof = 8.
+    /// </summary>
+    [DllImport("libproc.dylib", EntryPoint = "proc_pidinfo")]
+    private static extern int proc_pidinfo(int pid, int flavor, ulong arg, IntPtr buffer, int buffersize);
 
     // P/Invoke for Linux prctl
     [DllImport("libc", EntryPoint = "prctl", SetLastError = true)]

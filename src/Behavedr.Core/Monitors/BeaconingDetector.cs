@@ -19,7 +19,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 public class BeaconingDetector : IPlatformMonitor
 {
     private readonly ILogger<BeaconingDetector> _logger;
-    private readonly Dictionary<string, List<DateTime>> _connectionTimestamps = new();
+    private readonly Dictionary<string, List<long>> _connectionTimestamps = new();
     private readonly object _lock = new();
     private const int MinObservations = 5;
     private const double CvThreshold = 0.40;
@@ -36,6 +36,9 @@ public class BeaconingDetector : IPlatformMonitor
     /// <summary>
     /// Record a connection observation for beaconing analysis.
     /// Call from NetworkMonitor when established connections are seen.
+    /// Uses monotonic clock (Environment.TickCount64) to prevent evasion via
+    /// system clock manipulation. An attacker adjusting wall clock cannot disrupt
+    /// interval regularity detection.
     /// </summary>
     public void RecordConnection(int pid, string remoteAddr, int remotePort)
     {
@@ -50,10 +53,10 @@ public class BeaconingDetector : IPlatformMonitor
                     var oldest = _connectionTimestamps.OrderBy(kv => kv.Value.LastOrDefault()).Take(1000).Select(kv => kv.Key).ToList();
                     foreach (var k in oldest) _connectionTimestamps.Remove(k);
                 }
-                timestamps = new List<DateTime>();
+                timestamps = new List<long>();
                 _connectionTimestamps[key] = timestamps;
             }
-            timestamps.Add(DateTime.UtcNow);
+            timestamps.Add(Environment.TickCount64);
 
             // Keep only last 60 observations
             if (timestamps.Count > 60)
@@ -89,10 +92,10 @@ public class BeaconingDetector : IPlatformMonitor
                 }
             }
 
-            // Prune entries older than 10 minutes
-            var cutoff = DateTime.UtcNow.AddMinutes(-10);
+            // Prune entries older than 10 minutes (600,000 ms monotonic)
+            var cutoffMs = Environment.TickCount64 - 600_000;
             var toRemove = _connectionTimestamps
-                .Where(kv => kv.Value.All(t => t < cutoff))
+                .Where(kv => kv.Value.All(t => t < cutoffMs))
                 .Select(kv => kv.Key).ToList();
             foreach (var k in toRemove) _connectionTimestamps.Remove(k);
         }
@@ -100,14 +103,14 @@ public class BeaconingDetector : IPlatformMonitor
         return Task.FromResult<IEnumerable<Signal>>(signals);
     }
 
-    private static double CalculateCv(List<DateTime> timestamps)
+    private static double CalculateCv(List<long> timestamps)
     {
         if (timestamps.Count < 2) return -1;
 
         var intervals = new List<double>();
         for (int i = 1; i < timestamps.Count; i++)
         {
-            intervals.Add((timestamps[i] - timestamps[i - 1]).TotalSeconds);
+            intervals.Add((timestamps[i] - timestamps[i - 1]) / 1000.0); // Convert ms to seconds
         }
 
         if (intervals.Count == 0) return -1;

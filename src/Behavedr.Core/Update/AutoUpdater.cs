@@ -152,7 +152,7 @@ public class AutoUpdater
             var hash = ComputeHash(tempPath);
             _logger.LogInformation("Update SHA-256: {Hash}", hash[..16] + "...");
 
-            // Stage the update (extract alongside current binary)
+            // Stage the update with rollback support
             var currentExe = Environment.ProcessPath;
             if (currentExe is null)
             {
@@ -161,8 +161,16 @@ public class AutoUpdater
                 return false;
             }
 
-            // Extract from zip with Zip Slip protection
+            // Extract from zip with Zip Slip protection — staged with rollback
             var targetDir = Path.GetFullPath(Path.GetDirectoryName(currentExe)!);
+            var stagingDir = Path.Combine(targetDir, ".update-staging");
+            var previousDir = Path.Combine(targetDir, ".previous");
+
+            // Clean up any prior failed staging
+            if (Directory.Exists(stagingDir))
+                Directory.Delete(stagingDir, recursive: true);
+            Directory.CreateDirectory(stagingDir);
+
             using (var archive = System.IO.Compression.ZipFile.OpenRead(tempPath))
             {
                 foreach (var entry in archive.Entries)
@@ -171,14 +179,15 @@ public class AutoUpdater
                     if (string.IsNullOrEmpty(entry.Name))
                         continue;
 
-                    var destPath = Path.GetFullPath(Path.Combine(targetDir, entry.FullName));
+                    var destPath = Path.GetFullPath(Path.Combine(stagingDir, entry.FullName));
 
                     // SECURITY: Reject entries that escape the target directory (Zip Slip)
-                    if (!destPath.StartsWith(targetDir + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
-                        !destPath.Equals(targetDir, StringComparison.Ordinal))
+                    if (!destPath.StartsWith(stagingDir + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
+                        !destPath.Equals(stagingDir, StringComparison.Ordinal))
                     {
                         _logger.LogCritical("SECURITY: Zip Slip detected — entry '{Entry}' resolves outside target directory. Aborting update.",
                             entry.FullName);
+                        Directory.Delete(stagingDir, recursive: true);
                         CleanupTempFiles(tempPath, sigPath);
                         return false;
                     }
@@ -191,8 +200,67 @@ public class AutoUpdater
                 }
             }
 
+            // Verify staged binary can be found
+            var stagedExe = Path.Combine(stagingDir, Path.GetFileName(currentExe));
+            if (!File.Exists(stagedExe))
+            {
+                // Try finding any executable in staging
+                stagedExe = Directory.GetFiles(stagingDir, "Behavedr*").FirstOrDefault() ?? "";
+            }
+
+            if (!File.Exists(stagedExe))
+            {
+                _logger.LogError("Staged update does not contain expected binary");
+                Directory.Delete(stagingDir, recursive: true);
+                CleanupTempFiles(tempPath, sigPath);
+                return false;
+            }
+
+            // Move current to .previous (rollback point)
+            if (Directory.Exists(previousDir))
+                Directory.Delete(previousDir, recursive: true);
+            Directory.CreateDirectory(previousDir);
+
+            // Back up current binaries (only .dll and executable files)
+            foreach (var file in Directory.GetFiles(targetDir))
+            {
+                var ext = Path.GetExtension(file).ToLowerInvariant();
+                if (ext is ".dll" or ".exe" or ".json" or "" or ".so" or ".dylib")
+                {
+                    var backupDest = Path.Combine(previousDir, Path.GetFileName(file));
+                    try { File.Copy(file, backupDest, overwrite: true); }
+                    catch { }
+                }
+            }
+
+            // Swap: move staged files to target directory
+            foreach (var file in Directory.GetFiles(stagingDir, "*", SearchOption.AllDirectories))
+            {
+                var relativePath = Path.GetRelativePath(stagingDir, file);
+                var finalPath = Path.Combine(targetDir, relativePath);
+                var finalDir = Path.GetDirectoryName(finalPath)!;
+                Directory.CreateDirectory(finalDir);
+
+                try
+                {
+                    // On Unix, rename over a running binary works (old inode kept until exit)
+                    File.Move(file, finalPath, overwrite: true);
+                }
+                catch (IOException)
+                {
+                    // Windows: file locked — rename current first
+                    var bakPath = finalPath + ".bak";
+                    try { File.Move(finalPath, bakPath, overwrite: true); } catch { }
+                    File.Move(file, finalPath, overwrite: true);
+                }
+            }
+
+            // Clean up staging
+            try { Directory.Delete(stagingDir, recursive: true); } catch { }
+
             _logger.LogInformation(
-                "Update staged. Restart the agent to complete the update.");
+                "Update v{Version} staged successfully. Previous version backed up to .previous/. " +
+                "Restart the agent to complete the update.", update.Version);
 
             // Clean up temp
             CleanupTempFiles(tempPath, sigPath);

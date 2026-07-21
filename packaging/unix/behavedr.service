@@ -1,0 +1,48 @@
+[Unit]
+Description=Behavedr Behavioral EDR Agent
+Documentation=https://github.com/CroatiaSecurity/Behavedr
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/opt/behavedr/Behavedr
+WorkingDirectory=/opt/behavedr
+Restart=always
+RestartSec=1
+WatchdogSec=30
+KillMode=process
+TimeoutStopSec=10
+
+# Run as dedicated service user
+User=behavedr
+Group=behavedr
+
+# Grant only the capabilities needed for EDR monitoring (userland mode)
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ
+AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ
+
+# Hardening directives
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/behavedr/logs /opt/behavedr/quarantine /var/lib/behavedr
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=false
+PrivateDevices=false
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=behavedr
+
+[Install]
+WantedBy=multi-user.target

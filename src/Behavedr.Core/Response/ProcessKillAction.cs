@@ -1,6 +1,8 @@
 namespace Behavedr.Core.Response;
 
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using Behavedr.Core.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -127,6 +129,15 @@ public class ProcessKillAction : IResponseAction
                     $"PID reused: expected {processName}, found {process.ProcessName}"));
             }
 
+            // Linux: Use pidfd for race-free process kill (eliminates TOCTOU PID reuse)
+            if (OperatingSystem.IsLinux())
+            {
+                var pidfdResult = TryKillViaPidfd(pid, processName, result.Score);
+                if (pidfdResult is not null)
+                    return Task.FromResult(pidfdResult);
+                // pidfd unavailable — fall through to standard kill
+            }
+
             _logger.LogWarning("KILLING process: {Process} (PID {Pid}) — score={Score:F1}",
                 processName, pid, result.Score);
 
@@ -165,4 +176,91 @@ public class ProcessKillAction : IResponseAction
             return Task.FromResult(ResponseOutcome.Failed(Name, ex.Message));
         }
     }
+
+    /// <summary>
+    /// Kill a process using pidfd_open + pidfd_send_signal (Linux 5.1+).
+    /// This is race-free: pidfd references the exact process instance, not a reusable PID number.
+    /// If the PID has been reused between detection and kill, pidfd_open returns a handle to
+    /// the new (innocent) process, but we verify /proc/PID/exe before sending the signal.
+    /// Returns null if pidfd is unavailable (older kernel) — caller falls back to Process.Kill().
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    private ResponseOutcome? TryKillViaPidfd(int pid, string processName, double score)
+    {
+        try
+        {
+            // Verify /proc/PID/exe before opening pidfd
+            var exePath = $"/proc/{pid}/exe";
+            string? resolvedPath = null;
+            try
+            {
+                resolvedPath = File.ResolveLinkTarget(exePath, returnFinalTarget: true)?.ToString();
+            }
+            catch { }
+
+            // If we can resolve exe and it's a system binary, re-verify process name
+            if (resolvedPath is not null)
+            {
+                var exeName = Path.GetFileNameWithoutExtension(resolvedPath);
+                if (!exeName.Contains(processName, StringComparison.OrdinalIgnoreCase) &&
+                    !processName.Contains(exeName, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning(
+                        "[pidfd] PID {Pid} exe={Exe} doesn't match expected {Expected} — aborting kill (PID reuse?)",
+                        pid, resolvedPath, processName);
+                    return ResponseOutcome.Skipped(Name,
+                        $"PID reuse detected via /proc/PID/exe: expected {processName}, got {resolvedPath}");
+                }
+            }
+
+            // pidfd_open(pid, 0) — returns a file descriptor referencing this exact process
+            var pidfd = syscall_pidfd_open(434, pid, 0);
+            if (pidfd < 0)
+            {
+                return null; // Fall back to standard kill
+            }
+
+            try
+            {
+                _logger.LogWarning(
+                    "KILLING process via pidfd: {Process} (PID {Pid}) — score={Score:F1}",
+                    processName, pid, score);
+
+                // pidfd_send_signal(pidfd, SIGKILL, NULL, 0)
+                const int SIGKILL = 9;
+                var result = syscall_pidfd_send_signal(424, pidfd, SIGKILL, IntPtr.Zero, 0);
+
+                if (result == 0)
+                {
+                    return ResponseOutcome.Ok(Name,
+                        $"Killed {processName} (PID {pid}) via pidfd (race-free)");
+                }
+                else
+                {
+                    var errno = Marshal.GetLastWin32Error();
+                    return ResponseOutcome.Failed(Name,
+                        $"pidfd_send_signal failed for {processName} (errno {errno})");
+                }
+            }
+            finally
+            {
+                libc_close(pidfd);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[pidfd] Failed, falling back to standard kill");
+            return null;
+        }
+    }
+
+    // P/Invoke: Linux pidfd syscalls (kernel 5.1+, x86_64 syscall numbers)
+    [DllImport("libc", EntryPoint = "syscall", SetLastError = true)]
+    private static extern int syscall_pidfd_open(long sysno, int pid, uint flags);
+
+    [DllImport("libc", EntryPoint = "syscall", SetLastError = true)]
+    private static extern int syscall_pidfd_send_signal(long sysno, int pidfd, int sig, IntPtr info, uint flags);
+
+    [DllImport("libc", EntryPoint = "close")]
+    private static extern int libc_close(int fd);
 }

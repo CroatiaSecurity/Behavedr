@@ -87,6 +87,12 @@ try
     builder.Services.AddSingleton<ProcessKillAction>();
     builder.Services.AddSingleton<FileQuarantineAction>();
     builder.Services.AddSingleton<IsolationResponseEngine>();
+
+    // v0.2.0: Linux nftables-based network isolation
+    if (OperatingSystem.IsLinux())
+    {
+        builder.Services.AddSingleton<LinuxNetworkIsolation>();
+    }
     builder.Services.AddSingleton<ChainTracer>(sp =>
         new ChainTracer(PlatformMonitors.SharedAncestryCache,
             sp.GetService<ILogger<ChainTracer>>()));
@@ -108,6 +114,12 @@ try
 
     // Agent watchdog service (mutual monitoring, last-gasp logging)
     builder.Services.AddHostedService<AgentWatchdog>();
+
+    // Unix watchdog (suspension detection, forensic logging, /proc verification)
+    if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+    {
+        builder.Services.AddHostedService<UnixWatchdog>();
+    }
 
     // Core monitoring background service
     builder.Services.AddHostedService<MonitoringService>();
@@ -131,6 +143,12 @@ try
     var responseEngine = host.Services.GetRequiredService<ResponseEngine>();
     responseEngine.RegisterAction(host.Services.GetRequiredService<ProcessKillAction>());
     responseEngine.RegisterAction(host.Services.GetRequiredService<FileQuarantineAction>());
+
+    // v0.2.0: Register Linux network isolation response action
+    if (OperatingSystem.IsLinux())
+    {
+        responseEngine.RegisterAction(host.Services.GetRequiredService<LinuxNetworkIsolation>());
+    }
 
     await host.RunAsync();
 }

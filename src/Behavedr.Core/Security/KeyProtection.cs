@@ -1,32 +1,52 @@
 namespace Behavedr.Core.Security;
 
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
-/// DPAPI-based key protection for the machine key on Windows.
-/// Wraps the raw key material with ProtectedData (LocalMachine scope) so that
-/// only SYSTEM on the same machine can unwrap it. Prevents offline key extraction
-/// from disk images or backups.
+/// Platform-adaptive key protection for the machine key:
 ///
-/// On Linux/macOS: falls back to file-permission-based protection (chmod 600).
+/// Windows: DPAPI (DataProtectionScope.LocalMachine) + per-installation entropy.
+///   Only SYSTEM on the same machine can unwrap. Prevents offline extraction.
+///
+/// Linux: Kernel keyring (add_key/request_key syscalls) stores key in kernel memory.
+///   Key is NOT on the filesystem and cannot be read via /proc or disk access.
+///   Falls back to file-permission (chmod 600) if keyring is unavailable (containers).
+///
+/// macOS: File-permission-based (chmod 600) with machine-id binding.
+///   TODO: Keychain Services integration for hardware-backed keys on Apple Silicon.
 ///
 /// Key file format:
 ///   Unprotected (legacy): raw base64 key
 ///   Protected (v2): "DPAPI:" prefix + base64 of DPAPI-encrypted blob
+///   Keyring (v3): "KEYRING:" prefix — key is in kernel keyring, file is a marker only
 /// </summary>
 public static class KeyProtection
 {
     private const string DpapiPrefix = "DPAPI:";
+    private const string KeyringPrefix = "KEYRING:";
     private const string KeyFileName = ".behavedr-key";
+    private const string KeyringDescription = "behavedr:machine-key";
 
     /// <summary>
-    /// Get the machine key, unwrapping DPAPI protection if present.
-    /// On first call with a legacy (unprotected) key, upgrades it to DPAPI-protected.
+    /// Get the machine key using the most secure storage available:
+    /// - Windows: DPAPI (LocalMachine scope)
+    /// - Linux: Kernel keyring (key lives in kernel memory, not on disk)
+    /// - macOS/fallback: File with chmod 600
+    /// On first call with a legacy (unprotected) key, upgrades to best available protection.
     /// </summary>
     public static byte[] GetMachineKey()
     {
+        // Linux: Try kernel keyring first (key never touches disk)
+        if (OperatingSystem.IsLinux())
+        {
+            var keyringKey = TryGetKeyFromKeyring();
+            if (keyringKey is not null)
+                return keyringKey;
+        }
+
         var keyDir = GetKeyDirectory();
         Directory.CreateDirectory(keyDir);
         var keyPath = Path.Combine(keyDir, KeyFileName);
@@ -34,6 +54,20 @@ public static class KeyProtection
         if (File.Exists(keyPath))
         {
             var content = File.ReadAllText(keyPath).Trim();
+
+            if (content.StartsWith(KeyringPrefix, StringComparison.Ordinal))
+            {
+                // Keyring marker file — key should be in keyring but isn't (reboot?)
+                // Re-generate and store in keyring
+                var newKey = RandomNumberGenerator.GetBytes(32);
+                if (OperatingSystem.IsLinux() && TryStoreKeyInKeyring(newKey))
+                {
+                    return newKey;
+                }
+                // Keyring unavailable — fall back to file storage
+                WriteProtectedKey(keyPath, newKey);
+                return newKey;
+            }
 
             if (content.StartsWith(DpapiPrefix, StringComparison.Ordinal))
             {
@@ -49,14 +83,36 @@ public static class KeyProtection
                 // Upgrade to DPAPI-protected format
                 ProtectAndWriteKey(keyPath, rawKey);
             }
+            else if (OperatingSystem.IsLinux())
+            {
+                // Upgrade to kernel keyring storage
+                if (TryStoreKeyInKeyring(rawKey))
+                {
+                    // Write marker file and remove raw key from disk
+                    File.WriteAllText(keyPath, KeyringPrefix + "v1");
+                    try { File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
+                    catch { }
+                }
+            }
 
             return rawKey;
         }
 
         // Generate new key
-        var newKey = RandomNumberGenerator.GetBytes(32);
-        WriteProtectedKey(keyPath, newKey);
-        return newKey;
+        var newKey2 = RandomNumberGenerator.GetBytes(32);
+
+        // Linux: store in kernel keyring if possible
+        if (OperatingSystem.IsLinux() && TryStoreKeyInKeyring(newKey2))
+        {
+            // Write marker file so we know key is in keyring
+            File.WriteAllText(keyPath, KeyringPrefix + "v1");
+            try { File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
+            catch { }
+            return newKey2;
+        }
+
+        WriteProtectedKey(keyPath, newKey2);
+        return newKey2;
     }
 
     /// <summary>
@@ -274,6 +330,82 @@ public static class KeyProtection
             // Best effort — may fail in non-admin context
         }
     }
+
+    // =========================================================================
+    // Linux Kernel Keyring Integration
+    // =========================================================================
+    // The kernel keyring stores keys in kernel memory, inaccessible via /proc
+    // or filesystem. Keys survive until session ends or explicit revocation.
+    // We use KEY_SPEC_USER_KEYRING (-4) which persists per-UID across processes.
+    //
+    // Syscall numbers (x86_64):
+    //   add_key    = 248
+    //   request_key = 249
+    //   keyctl     = 250
+    // =========================================================================
+
+    private const int KEY_SPEC_USER_KEYRING = -4;
+    private const int KEYCTL_READ = 11;
+
+    /// <summary>
+    /// Try to retrieve the machine key from the Linux kernel keyring.
+    /// Returns null if key is not in the keyring (first run, or after reboot).
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    private static byte[]? TryGetKeyFromKeyring()
+    {
+        try
+        {
+            // request_key("user", "behavedr:machine-key", null, KEY_SPEC_USER_KEYRING)
+            var keyId = request_key("user", KeyringDescription, null, KEY_SPEC_USER_KEYRING);
+            if (keyId < 0)
+                return null;
+
+            // Read the key data: keyctl(KEYCTL_READ, key_id, buffer, buflen)
+            var buffer = new byte[32];
+            var bytesRead = keyctl_read(KEYCTL_READ, keyId, buffer, buffer.Length);
+            if (bytesRead == 32)
+                return buffer;
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Store a key in the Linux kernel keyring. Returns true if successful.
+    /// The key will persist in kernel memory for the lifetime of the user session
+    /// (or until explicitly revoked). It is NOT accessible via the filesystem.
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    private static bool TryStoreKeyInKeyring(byte[] key)
+    {
+        try
+        {
+            // add_key("user", "behavedr:machine-key", payload, payload_len, KEY_SPEC_USER_KEYRING)
+            var keyId = add_key("user", KeyringDescription, key, key.Length, KEY_SPEC_USER_KEYRING);
+            return keyId >= 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // P/Invoke: Linux keyring syscalls via libc wrappers
+    [DllImport("libc", EntryPoint = "add_key", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int add_key(
+        string type, string description, byte[] payload, int plen, int keyring);
+
+    [DllImport("libc", EntryPoint = "request_key", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int request_key(
+        string type, string description, string? callout_info, int dest_keyring);
+
+    [DllImport("libc", EntryPoint = "keyctl", SetLastError = true)]
+    private static extern int keyctl_read(int operation, int key_id, byte[] buffer, int buflen);
 
     private static string GetKeyDirectory()
     {

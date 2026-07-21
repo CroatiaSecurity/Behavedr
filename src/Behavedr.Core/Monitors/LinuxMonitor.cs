@@ -77,6 +77,7 @@ public class LinuxMonitor : IPlatformMonitor
             DetectSuidAbuse(signals, ct);
             ScanAuditLog(signals, ct);
             DetectCapabilityAbuse(signals, ct);
+            DetectProcBindMounts(signals, ct);
         }
         catch (Exception ex)
         {
@@ -405,6 +406,52 @@ public class LinuxMonitor : IPlatformMonitor
             }
             catch (UnauthorizedAccessException) { }
         }
+    }
+
+    /// <summary>
+    /// Detect bind mounts over /proc paths used to blind the agent's monitors.
+    /// An attacker with root can: mount --bind /dev/null /proc/$(pidof target)/maps
+    /// This makes the memory analyzer, process scanner, and network monitor blind.
+    /// Detection: parse /proc/mounts for bind mounts targeting /proc subdirectories.
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    private void DetectProcBindMounts(List<Signal> signals, CancellationToken ct)
+    {
+        try
+        {
+            if (!File.Exists("/proc/mounts")) return;
+
+            foreach (var line in File.ReadLines("/proc/mounts"))
+            {
+                if (ct.IsCancellationRequested) break;
+
+                // Bind mounts show as "device mountpoint type options"
+                // A bind mount over /proc will appear as a mount with target under /proc
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 3) continue;
+
+                var mountPoint = parts[1];
+
+                // Suspicious: anything mounted OVER a /proc path (except /proc itself and /proc/sys)
+                if (mountPoint.StartsWith("/proc/", StringComparison.Ordinal) &&
+                    !mountPoint.StartsWith("/proc/sys", StringComparison.Ordinal) &&
+                    mountPoint != "/proc")
+                {
+                    // Check if it's targeting a PID directory or self
+                    if (mountPoint.Contains("/proc/self", StringComparison.Ordinal) ||
+                        mountPoint.Contains("/proc/net", StringComparison.Ordinal) ||
+                        System.Text.RegularExpressions.Regex.IsMatch(mountPoint, @"/proc/\d+"))
+                    {
+                        signals.Add(new Signal(
+                            $"proc_bind_mount_evasion:{mountPoint}", 92, 0.95));
+                        _logger.LogCritical(
+                            "SECURITY: Suspicious bind mount over {MountPoint} — possible detection evasion",
+                            mountPoint);
+                    }
+                }
+            }
+        }
+        catch { }
     }
 
     /// <summary>

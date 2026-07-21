@@ -99,6 +99,10 @@ public static class PlatformMonitors
             monitors.Add(new LinuxEphemeralProcessMonitor());
             monitors.Add(new UnixAntiTamperGuard());
             monitors.Add(new UnixSelfProtection());
+
+            // v0.2.0: Real-time event sourcing (eliminates polling blind spots)
+            monitors.Add(new LinuxProcessConnector());
+            monitors.Add(new LinuxFanotifyMonitor());
         }
 
         // v0.1.5: macOS full detection suite (cross-platform parity)
