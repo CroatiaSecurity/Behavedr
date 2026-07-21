@@ -61,7 +61,7 @@ public class BehavedrForegroundService : Service
                     {
                         await monitor.GetSignalsAsync(ct);
                     }
-                    catch (OperationCanceledException)
+                    catch (System.OperationCanceledException)
                     {
                         return;
                     }
@@ -76,7 +76,7 @@ public class BehavedrForegroundService : Service
             {
                 await Task.Delay(TimeSpan.FromSeconds(30), ct);
             }
-            catch (OperationCanceledException)
+            catch (System.OperationCanceledException)
             {
                 return;
             }

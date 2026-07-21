@@ -98,6 +98,11 @@ jobs:
         if (-not $iscc) { throw "ISCC.exe not found after Inno Setup install" }
         New-Item -ItemType Directory -Force -Path dist/windows | Out-Null
         Copy-Item packaging/windows/README.txt publish/agent-win-x64/ -Force
+        # Ensure Assets directory exists in publish output for installer icon
+        if (Test-Path "Assets") {
+          New-Item -ItemType Directory -Force -Path "publish/agent-win-x64/Assets" | Out-Null
+          Copy-Item "Assets/*" "publish/agent-win-x64/Assets/" -Recurse -Force
+        }
         $publish = (Resolve-Path "publish/agent-win-x64").Path
         $outDir = Join-Path (Get-Location) "dist\windows"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
