@@ -24,14 +24,9 @@ public class WindowsMonitor : IPlatformMonitor
         "lazagne", "procdump", "ppldump", "nanodump",
     };
 
-    // Suspicious parent-child relationships (child should not be spawned by parent)
-    private static readonly Dictionary<string, HashSet<string>> SuspiciousParentChild = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["winword"] = new(StringComparer.OrdinalIgnoreCase) { "cmd", "powershell", "pwsh", "wscript", "cscript", "mshta" },
-        ["excel"] = new(StringComparer.OrdinalIgnoreCase) { "cmd", "powershell", "pwsh", "wscript", "cscript", "mshta" },
-        ["outlook"] = new(StringComparer.OrdinalIgnoreCase) { "cmd", "powershell", "pwsh", "wscript", "cscript" },
-        ["explorer"] = new(StringComparer.OrdinalIgnoreCase) { "mshta", "regsvr32", "rundll32" },
-    };
+    // Suspicious parent-child relationships moved to BehavioralMonitor (v0.0.7)
+    // WindowsMonitor now focuses on process-level heuristics; behavioral analysis
+    // is handled by the dedicated BehavioralMonitor with command-line scanning.
 
     [SupportedOSPlatform("windows")]
     public Task<IEnumerable<Signal>> GetSignalsAsync(CancellationToken ct = default)

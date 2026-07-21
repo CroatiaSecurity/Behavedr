@@ -17,22 +17,23 @@ using Microsoft.Extensions.Logging.Abstractions;
 public static class UpdateSignatureVerifier
 {
     // RSA-4096 public key for update verification (PEM format, baked in at compile time).
-    // Generate a keypair with: openssl genrsa -out update-signing-key.pem 4096
-    // Extract public key: openssl rsa -in update-signing-key.pem -pubout -out update-signing-key.pub.pem
+    // Generate a keypair with: dotnet run --project tools (GenerateKey)
     // Sign: openssl dgst -sha256 -sigopt rsa_padding_mode:pss -sign update-signing-key.pem -out file.sig file.zip
-    //
-    // REPLACE THIS with your actual public key before production release.
+    // Keep the private key (update-signing-key.pem) in a secure location — NEVER commit it.
     private const string PublicKeyPem = """
         -----BEGIN PUBLIC KEY-----
-        MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA0PLACEHOLDER000000
-        0000000000000000000000000000000000000000000000000000000000000000
-        0000000000000000000000000000000000000000000000000000000000000000
-        0000000000000000000000000000000000000000000000000000000000000000
-        0000000000000000000000000000000000000000000000000000000000000000
-        0000000000000000000000000000000000000000000000000000000000000000
-        0000000000000000000000000000000000000000000000000000000000000000
-        0000000000000000000000000000000000000000000000000000000000000000
-        00000000000000000000000000000000000000000000AgMBAAE=
+        MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA3eMZ0UT+wV8uly2K0lNZ
+        14k2yDWXL0PfAoA6CnemQPPr4YypR7ExREx9DsX6jmCrBn+zxvh+Mhgs2o7p3nHx
+        /wmyGio3zk4cujTBMPjMqrYEvhbq5oSibor+R2PhF4JUGpZfBqPHfKAeTp1QLiOY
+        W+A7f5mPQjXnkTXWFrX8S9m7kGiM9et3PKkU7h18Pvbnt+t4Gl6ef8hQ358jxOmT
+        J1qWJezuRy3uc8CUefoIphrxRNXy1aLh+FahJTYCgPixDGM5ltPySvY9/CgY5jg3
+        tlsOyxxDugygXYwc/fm8SrU2kSOfU0h+MlKcOsYs0rLOZ2oG72Mq9vBbjGtH9nMq
+        64gjm2j9KVIGSEimKi+AkeCSrNGlJWldG/le1we4PSDm0fzMGXqWszW3nIiNsrfb
+        C0lj/ajg/Y7P81omdTwBNe1ZOupGjoH0HmAWqXPr7QRwDhgb/NxlNF1J8eKltLIn
+        LW0KAOcp2Z/EaJzMZ6N3IL7fv8LNEZ3fUpNdgUH9foo3iCHWzq3UgybjMtS0kWj6
+        ntVYOoNPfozGWn52vS+PN/wA6U1l51mfBh62Eix/NDd1UimcPVxJHzOVzHoQNXi3
+        0lTShdomBZLExd7acfHMwzHonYZDwXQ2VbgAQNmA3rSP3vyi+nqAMMXB6EqtHeWR
+        hv3bUXuQzZ8w40Lvk3E7x8ECAwEAAQ==
         -----END PUBLIC KEY-----
         """;
 

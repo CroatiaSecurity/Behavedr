@@ -12,12 +12,14 @@ using Microsoft.Extensions.Logging.Abstractions;
 public class DetectionEngine
 {
     private readonly ScoringEngine _scoring;
+    private readonly BehavioralCorrelationEngine _correlation;
     private readonly List<IPlatformMonitor> _monitors = new();
     private readonly ILogger<DetectionEngine> _logger;
 
-    public DetectionEngine(ScoringEngine? scoring = null, ILogger<DetectionEngine>? logger = null)
+    public DetectionEngine(ScoringEngine? scoring = null, BehavioralCorrelationEngine? correlation = null, ILogger<DetectionEngine>? logger = null)
     {
         _scoring = scoring ?? new ScoringEngine();
+        _correlation = correlation ?? new BehavioralCorrelationEngine();
         _logger = logger ?? NullLogger<DetectionEngine>.Instance;
     }
 
@@ -41,6 +43,15 @@ public class DetectionEngine
             evt.ProcessName, evt.BehaviorType, evt.Source);
 
         var signals = await CollectSignalsAsync(ct);
+
+        // Run behavioral correlation to produce composite signals
+        var composites = _correlation.Correlate(signals);
+        if (composites.Count > 0)
+        {
+            signals.AddRange(composites);
+            _logger.LogInformation("Correlation engine produced {Count} composite signals", composites.Count);
+        }
+
         var score = _scoring.CalculateScore(evt, signals);
         bool presidentKill = _scoring.ShouldPresidentKill(score, evt);
 
@@ -61,8 +72,9 @@ public class DetectionEngine
     }
 
     /// <summary>
-    /// Synchronous processing (for backward compat / simple callers).
+    /// Synchronous processing (deprecated — use ProcessEventAsync instead).
     /// </summary>
+    [Obsolete("Use ProcessEventAsync instead. Sync-over-async can cause deadlocks.")]
     public DetectionResult ProcessEvent(DetectionEvent evt)
     {
         return ProcessEventAsync(evt, CancellationToken.None).GetAwaiter().GetResult();

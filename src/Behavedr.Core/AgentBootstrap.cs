@@ -12,7 +12,8 @@ public static class AgentBootstrap
     public static DetectionEngine CreateEngine(ScoringConfig? config = null, ILogger<DetectionEngine>? logger = null)
     {
         var scoring = new ScoringEngine(config);
-        var engine = new DetectionEngine(scoring, logger);
+        var correlation = new BehavioralCorrelationEngine();
+        var engine = new DetectionEngine(scoring, correlation, logger);
 
         foreach (var monitor in PlatformMonitors.Supported())
             engine.RegisterMonitor(monitor);

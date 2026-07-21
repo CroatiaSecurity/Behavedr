@@ -1,5 +1,78 @@
 # Changelog
 
+## [0.0.7] — 2026-07-21
+
+### Red/Blue Team Audit — Full Remediation
+
+Complete security overhaul based on comprehensive red/blue team audit and cross-reference with Sentinel EDR patterns.
+
+#### P0 — Critical Security Fixes
+
+- **Real RSA-4096 signing key**: Replaced placeholder public key in `UpdateSignatureVerifier.cs` with a real 4096-bit RSA key. Private key generated via `tools/GenerateKey`. Update signature verification is now functional.
+- **Behavioral detection engine** (`BehavioralMonitor.cs`): Replaces process-name-only detection with:
+  - Parent-child anomaly detection (Office→shell, WMI→PowerShell, etc.)
+  - Command-line analysis (encoded PowerShell, AMSI bypass, download cradles)
+  - LOLBin abuse detection (certutil, bitsadmin, mshta, regsvr32, wmic, forfiles)
+  - Hidden PowerShell + NoProfile detection
+  - WMI-based process scanning for full command-line visibility
+- **ETW integration** (`EtwSession.cs`): WMI-based real-time process event subscription (Win32_ProcessStartTrace) with graceful degradation when unavailable. Foundation for future full kernel ETW P/Invoke.
+- **Anti-tamper guard** (`AntiTamperGuard.cs`):
+  - Process suspension detection via QueryPerformanceCounter (QPC) — immune to clock manipulation
+  - Binary integrity verification (SHA-256 baseline + periodic check)
+  - Service registry self-healing — detects deletion and re-registers via Registry API
+  - 4-second suspension threshold (2x expected tick interval)
+
+#### P1 — High Priority Additions
+
+- **Network monitoring** (`NetworkConnectionMonitor.cs`): `GetExtendedTcpTable` P/Invoke for full TCP connection inventory with PID attribution. Detects suspicious port connections, high connection counts from non-browser processes, and connection bursts.
+- **Beaconing detection** (`BeaconingDetector.cs`): Statistical C2 beacon detection via connection interval coefficient of variation (CV). Fires when CV < 0.40 with 5+ observations (high regularity = automated check-ins).
+- **Credential guard** (`CredentialGuardMonitor.cs`): FileSystemWatcher on Chrome/Edge/Brave/Opera/Firefox credential database files. Detects non-browser processes loading SQLite (infostealer indicator). Covers Login Data, Cookies, Web Data, Local State, key4.db, logins.json.
+- **Credential canary** (`CredentialCanaryMonitor.cs`): Honeypot credential deployed via Windows Credential Manager. Near-zero false positive (0.98 confidence) — only credential dumpers/infostealers would access it. Auto-redeploys on trip.
+- **Behavioral correlation engine** (`BehavioralCorrelationEngine.cs`): 120-second sliding window correlator producing composite signals:
+  - Injection + Network → "In-Memory Implant Active" (0.96)
+  - Credential Access + Network → "Credential Theft + Exfil" (0.95)
+  - Parent-Child + Encoded PS → "Fileless Attack Chain" (0.94)
+  - Download Cradle + Execution → "Staged Payload Active" (0.92)
+  - Anti-Tamper + Any → "Active EDR Evasion" (0.97)
+  - Multiple LOLBins → "LOLBin Chain" (0.88)
+- **Memory behavior analyzer** (`MemoryAnalyzer.cs`): `VirtualQueryEx` P/Invoke scanning for RWX (Read-Write-Execute) private memory regions in non-JIT processes. Graduated scoring by region count.
+- **File activity monitor** (`FileActivityMonitor.cs`): FileSystemWatcher on user Downloads/Documents/Desktop/Temp. Detects ransomware rename bursts (>20 renames in 30s), executable drops in temp, DLL sideloading in user paths.
+- **Registry persistence monitor** (`RegistryPersistenceMonitor.cs`): Baselines Run keys and services at startup, alerts on new entries. Flags suspicious service paths (temp dirs, AppData, PowerShell commands).
+- **Connectivity canary** (`ConnectivityCanaryMonitor.cs`): Periodic health check against Cloudflare/Google/GStatic. 3+ consecutive failures → "Network Silencing Detected" (EDRSilencer/WFP indicator).
+
+#### P2 — Code Quality & Infrastructure
+
+- **SecurityValidation utility** (`SecurityValidation.cs`): Centralized input validation — safe filenames, path containment, IP validation, private IP detection, PID/port validation, secure string comparison.
+- **Fixed dead code**: Removed unused `SuspiciousParentChild` dictionary from `WindowsMonitor.cs` (functionality moved to `BehavioralMonitor.cs`).
+- **Fixed sync-over-async**: Marked `DetectionEngine.ProcessEvent()` as `[Obsolete]` with migration guidance.
+- **Added `System.Management` NuGet**: Required for WMI-based process monitoring and ETW subscription.
+- **Monitor registration**: `PlatformMonitors.BuildMonitorList()` conditionally registers Windows-only monitors using `OperatingSystem.IsWindows()` guard to satisfy CA1416.
+
+#### Monitor Count: 3 → 13 (Windows), 1 → 3 (Cross-platform)
+
+| New Monitor | Platform | Detection |
+|---|---|---|
+| BehavioralMonitor | Windows | Parent-child, LOLBins, encoded PS, AMSI bypass |
+| AntiTamperGuard | Windows | Suspension, binary integrity, service heal |
+| NetworkConnectionMonitor | Windows | TCP connections, suspicious ports, bursts |
+| MemoryAnalyzer | Windows | RWX regions, process hollowing indicators |
+| BeaconingDetector | Windows | Statistical C2 beacon (CV analysis) |
+| CredentialGuardMonitor | Windows | Browser credential file access |
+| CredentialCanaryMonitor | Windows | Honeypot credential tripwire |
+| RegistryPersistenceMonitor | Windows | Run keys, services baseline/delta |
+| FileActivityMonitor | Cross-platform | Ransomware, exe drops, DLL sideload |
+| ConnectivityCanaryMonitor | Cross-platform | EDRSilencer/network silencing |
+
+### Dependencies Added
+- `System.Management` 9.0.4 — WMI process monitoring
+- `Microsoft.Extensions.Configuration.Abstractions` 10.0.0 — Configuration binding
+
+## [0.0.6] — 2026-07-21
+
+### Security Audit
+- Full red/blue team audit document (`docs/red-blue-team-audit.md`)
+- Cross-reference with Sentinel EDR patterns and recommendations
+
 ## [0.0.5] — 2026-07-21
 
 ### Security Hardening (Full Blue/Red Team Audit)

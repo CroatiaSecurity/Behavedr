@@ -59,6 +59,7 @@ try
 
     builder.Services.AddSingleton(scoringConfig);
     builder.Services.AddSingleton<ScoringEngine>();
+    builder.Services.AddSingleton<BehavioralCorrelationEngine>();
     builder.Services.AddSingleton<DetectionEngine>();
 
     // Agent self-protection service

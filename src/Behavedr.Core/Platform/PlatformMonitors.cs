@@ -8,14 +8,39 @@ using Behavedr.Core.Monitors;
 public static class PlatformMonitors
 {
     /// <summary>Every known platform monitor (supported or not).</summary>
-    public static IReadOnlyList<IPlatformMonitor> All { get; } =
-    [
-        new WindowsMonitor(),
-        new LinuxMonitor(),
-        new MacOSMonitor(),
-        new AndroidMonitor(),
-        new IosMonitor(),
-    ];
+    public static IReadOnlyList<IPlatformMonitor> All { get; } = BuildMonitorList();
+
+    private static List<IPlatformMonitor> BuildMonitorList()
+    {
+        var monitors = new List<IPlatformMonitor>
+        {
+            // Platform-specific process monitors
+            new WindowsMonitor(),
+            new LinuxMonitor(),
+            new MacOSMonitor(),
+            new AndroidMonitor(),
+            new IosMonitor(),
+
+            // v0.0.7: Cross-platform monitors
+            new FileActivityMonitor(),
+            new ConnectivityCanaryMonitor(),
+        };
+
+        // v0.0.7: Windows-only behavioral detection & anti-tamper monitors
+        if (OperatingSystem.IsWindows())
+        {
+            monitors.Add(new BehavioralMonitor());
+            monitors.Add(new AntiTamperGuard());
+            monitors.Add(new NetworkConnectionMonitor());
+            monitors.Add(new MemoryAnalyzer());
+            monitors.Add(new BeaconingDetector());
+            monitors.Add(new CredentialGuardMonitor());
+            monitors.Add(new CredentialCanaryMonitor());
+            monitors.Add(new RegistryPersistenceMonitor());
+        }
+
+        return monitors;
+    }
 
     /// <summary>Monitors whose <see cref="IPlatformMonitor.IsSupported"/> is true on this OS.</summary>
     public static IEnumerable<IPlatformMonitor> Supported() =>
