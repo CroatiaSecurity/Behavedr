@@ -42,6 +42,11 @@ Because we operate in userland only:
 - Updates are signed offline with the private key (kept secure, never committed).
 - If `IsProductionKeyConfigured()` returns false, signature verification is SKIPPED (dev mode only).
 
+## Git Workflow
+
+- **Always push directly to `main`.** Do not create feature branches, do not push to any branch other than `main`.
+- No pull requests, no branch-based workflow. Commit and push to main.
+
 ## When Implementing New Features
 
 1. Never introduce dependencies on kernel drivers, System Extensions, or signed components.
