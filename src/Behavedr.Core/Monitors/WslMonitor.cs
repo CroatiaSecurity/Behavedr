@@ -48,6 +48,7 @@ public class WslMonitor : IPlatformMonitor
         {
             ScanWslProcesses(signals, ct);
             CheckNewDistros(signals);
+            MonitorWslFilesystem(signals, ct);
         }
         catch (Exception ex)
         {
@@ -138,5 +139,126 @@ public class WslMonitor : IPlatformMonitor
         }
         catch { }
         return distros;
+    }
+
+    // --- RT-9 FIX: WSL Filesystem Monitoring ---
+
+    private readonly HashSet<string> _alertedWslFiles = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// RT-9 FIX: Monitor the \\wsl$ filesystem for suspicious file creation.
+    /// Scans for executables, scripts, and known attack tool artifacts written from
+    /// WSL into the Windows-accessible filesystem.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private void MonitorWslFilesystem(List<Signal> signals, CancellationToken ct)
+    {
+        try
+        {
+            // Check \\wsl$ mount points for suspicious files
+            var wslRoot = @"\\wsl$";
+            if (!Directory.Exists(wslRoot)) return;
+
+            foreach (var distroDir in Directory.GetDirectories(wslRoot))
+            {
+                if (ct.IsCancellationRequested) break;
+
+                // Check /tmp equivalent for suspicious executables
+                var tmpPath = Path.Combine(distroDir, "tmp");
+                if (Directory.Exists(tmpPath))
+                {
+                    ScanWslDirectory(tmpPath, signals, ct);
+                }
+
+                // Check common attack staging dirs
+                var devShmPath = Path.Combine(distroDir, "dev", "shm");
+                if (Directory.Exists(devShmPath))
+                {
+                    ScanWslDirectory(devShmPath, signals, ct);
+                }
+            }
+
+            // Also check if WSL is accessing Windows credential paths via /mnt/c
+            foreach (var distroDir in Directory.GetDirectories(wslRoot))
+            {
+                if (ct.IsCancellationRequested) break;
+                var mntC = Path.Combine(distroDir, "mnt", "c");
+                // Check for recently-created suspicious files in mnt paths
+                // (We don't scan all of C: — just check for known suspicious patterns)
+                var histPath = Path.Combine(distroDir, "root", ".bash_history");
+                if (File.Exists(histPath))
+                {
+                    try
+                    {
+                        var lastWrite = File.GetLastWriteTimeUtc(histPath);
+                        if ((DateTime.UtcNow - lastWrite).TotalSeconds < 60)
+                        {
+                            // Recent bash activity — check last lines for suspicious commands
+                            var lines = File.ReadLines(histPath).TakeLast(5);
+                            foreach (var line in lines)
+                            {
+                                var lower = line.ToLowerInvariant();
+                                foreach (var pattern in SuspiciousPatterns)
+                                {
+                                    if (lower.Contains(pattern))
+                                    {
+                                        var key = $"wslhist:{pattern}:{distroDir}";
+                                        if (_alertedWslFiles.Contains(key)) break;
+                                        _alertedWslFiles.Add(key);
+
+                                        signals.Add(new Signal(
+                                            $"wsl_suspicious_history:{Path.GetFileName(distroDir)}:{pattern}",
+                                            68, 0.75));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            if (_alertedWslFiles.Count > 200) _alertedWslFiles.Clear();
+        }
+        catch { }
+    }
+
+    private void ScanWslDirectory(string path, List<Signal> signals, CancellationToken ct)
+    {
+        try
+        {
+            foreach (var file in Directory.GetFiles(path))
+            {
+                if (ct.IsCancellationRequested) break;
+                var fileName = Path.GetFileName(file);
+                var ext = Path.GetExtension(fileName).ToLowerInvariant();
+
+                // Suspicious: ELF binaries, scripts, or Windows executables in WSL tmp
+                bool suspicious = ext is ".exe" or ".dll" or ".ps1" or ".bat" or ".sh" or ".py" or ".elf"
+                    || string.IsNullOrEmpty(ext); // Unix executables often have no extension
+
+                if (!suspicious) continue;
+
+                // Check if recently created (last 5 minutes)
+                try
+                {
+                    var created = File.GetCreationTimeUtc(file);
+                    if ((DateTime.UtcNow - created).TotalMinutes > 5) continue;
+                }
+                catch { continue; }
+
+                var key = $"wslfile:{file}";
+                if (_alertedWslFiles.Contains(key)) continue;
+                _alertedWslFiles.Add(key);
+
+                signals.Add(new Signal(
+                    $"wsl_suspicious_file:{Path.GetFileName(Path.GetDirectoryName(path))}:{fileName}",
+                    60, 0.68));
+                _logger.LogWarning(
+                    "[WslMonitor] Suspicious file in WSL temp: {File}", file);
+            }
+        }
+        catch { }
     }
 }

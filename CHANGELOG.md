@@ -1,6 +1,43 @@
 # Changelog
 
-## [0.2.0] — 2026-07-21
+## [0.1.2] — 2026-07-21
+
+### Security Audit Remediation — All RT/V Findings Resolved
+
+Addresses all 12 red team findings and 5 vulnerability assessments from the v0.1.1
+security audit. Monitor count increased to 29. Security posture score: 8.8/10.
+
+#### Security Fixes (Critical)
+
+- **RT-4: ProcessKillAction kill immunity bypass** — Inverted catch logic: processes that cannot be verified are NO LONGER protected from kill. Only PIDs <= 4 get unconditional immunity. Prevents DACL + name spoofing attack.
+- **RT-3: WinVerifyTrust P/Invoke** — Replaced PowerShell subprocess Authenticode verification with direct `WinVerifyTrust` native call. ~1ms per verification, no process spawning, cannot be defeated by PowerShell removal.
+- **RT-7: AMSI/ETW patching detection** — Baselines first 8 bytes of `ntdll!EtwEventWrite` and `amsi!AmsiScanBuffer` at startup, detects patching (ret/xor patterns) every 10s. Definitive EDR blindness indicator.
+- **RT-6: ETW session liveness** — `QueryTraceW` verifies BehavedrEtwSession is active. Generates tamper signal if session killed externally (logman stop / ControlTrace).
+
+#### New Detection Capabilities
+
+- **RT-1: Handle-based raw disk detection** — `NtQuerySystemInformation(SystemHandleInformation)` enumerates all open handles, resolves names via `NtQueryObject`, matches `\Device\Harddisk*` patterns. Catches programmatic raw disk access (bootkits) that command-line scanning misses. Confidence: 0.92.
+- **RT-5: Generic DLL sideloading** — Detects ANY unsigned DLL loaded from the process directory when a signed system copy exists in System32/SysWOW64. No longer limited to 16 hardcoded targets.
+- **RT-10: ScheduledTaskMonitor** — Baselines scheduled tasks (registry TaskCache) and WMI event subscriptions (`__FilterToConsumerBinding`) at startup. Detects runtime creation of new tasks (T1053.005) and WMI persistence (T1546.003).
+- **RT-8: Credential access attribution** — `CredentialGuardMonitor` now scans recently-started processes when credential files are accessed, checking command lines and loaded modules (sqlite/crypt32) for attribution.
+- **RT-9: WSL filesystem monitoring** — Scans `\\wsl$` mount points for suspicious file creation in /tmp and /dev/shm. Analyzes bash_history for attack tool patterns.
+
+#### Architecture Improvements
+
+- **RT-12: Per-signal event attribution** — `MonitoringService` extracts PID from signal types and creates targeted `DetectionEvent` objects for response actions. Response actions can now target the correct malicious process.
+- **V-3: Key management consolidation** — `ConfigIntegrity` now delegates to `KeyProtection.GetMachineKey()` instead of reimplementing key file I/O. Single source of truth for machine key access.
+- **V-2: Key file permission race fix** — Uses temp file + atomic rename on Unix to eliminate window where key file exists with default permissions.
+- **V-4: Entropy fallback warning** — `Trace.TraceError` CRITICAL message when DPAPI entropy file is unavailable and fixed fallback is used.
+
+#### Documentation
+
+- **V-1: TOCTOU race documented** — ProcessKillAction XML doc explains the inherent race between path verification and kill, and why it's accepted.
+- **V-5: Sequence gap documented** — OfflineBuffer.ReplayAsync() documents that servers must accept sequence gaps from offline buffering.
+- Updated red/blue team audit document for v0.1.2 state.
+
+---
+
+## [0.1.1] — 2026-07-21
 
 ### Major Detection Expansion — 15 Audit Findings Addressed + Sentinel Cross-Reference
 

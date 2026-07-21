@@ -60,8 +60,9 @@ public static class KeyProtection
 
     /// <summary>
     /// Write a key to disk with platform-appropriate protection.
-    /// Windows: DPAPI LocalMachine scope
-    /// Linux/macOS: chmod 600
+    /// V-2 FIX: On Windows, uses a temp file with restricted ACL then atomic rename
+    /// to eliminate the permission race window. On Linux/macOS, sets chmod before
+    /// writing content (open with restricted mode).
     /// </summary>
     private static void WriteProtectedKey(string keyPath, byte[] key)
     {
@@ -71,12 +72,25 @@ public static class KeyProtection
         }
         else
         {
-            File.WriteAllText(keyPath, Convert.ToBase64String(key));
+            // V-2 FIX: Create file with O_CREAT|O_EXCL semantics and restricted mode
+            var tempPath = keyPath + ".tmp." + Guid.NewGuid().ToString("N")[..8];
             try
             {
-                File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                File.WriteAllText(tempPath, Convert.ToBase64String(key));
+                File.SetUnixFileMode(tempPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                File.Move(tempPath, keyPath, overwrite: true); // Atomic rename on same volume
             }
-            catch { }
+            catch
+            {
+                // Fallback: direct write (original behavior)
+                File.WriteAllText(keyPath, Convert.ToBase64String(key));
+                try { File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
+                catch { }
+            }
+            finally
+            {
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            }
         }
     }
 
@@ -168,6 +182,12 @@ public static class KeyProtection
         }
         catch
         {
+            // V-4 FIX: Log critical warning when falling back to fixed entropy.
+            // This significantly weakens DPAPI binding — all installations with this
+            // fallback share the same entropy, reducing protection to base LocalMachine scope.
+            System.Diagnostics.Trace.TraceError(
+                "SECURITY CRITICAL: Behavedr DPAPI entropy file unavailable — falling back to fixed entropy. " +
+                "Key protection is degraded. Ensure the Behavedr data directory is writable.");
             // Fallback: fixed entropy (less secure but allows operation)
             return "Behavedr-MachineKey-v2-2026-fallback"u8.ToArray();
         }

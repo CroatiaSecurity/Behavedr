@@ -58,6 +58,12 @@ public class OfflineBuffer
     /// <summary>
     /// Replay all buffered reports through the client.
     /// Reports are decrypted, sent in chronological order, and removed on successful delivery.
+    /// 
+    /// V-5 DOCUMENTED: Reports retain their original sequence numbers from when they were created.
+    /// On replay, the server will see gaps in the sequence (other reports may have been sent
+    /// between creation and replay). The server's replay detection must account for offline
+    /// buffer gaps — it should accept out-of-order sequence numbers within a boot nonce session
+    /// and only reject duplicate nonces, not sequence gaps.
     /// </summary>
     public async Task<int> ReplayAsync(IBehavedrClient client, CancellationToken ct = default)
     {

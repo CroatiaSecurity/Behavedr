@@ -75,6 +75,8 @@ public class AntiTamperGuard : IPlatformMonitor
         {
             CheckBinaryIntegrity(signals);
             CheckServiceRegistration(signals);
+            CheckEtwSessionHealth(signals);
+            CheckCriticalFunctionIntegrity(signals);
             _lastCheck = DateTime.UtcNow;
         }
 
@@ -164,6 +166,157 @@ public class AntiTamperGuard : IPlatformMonitor
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to re-register service");
+        }
+    }
+
+    // --- RT-6: ETW Session Liveness Monitoring ---
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    private static extern int QueryTraceW(long traceHandle, string instanceName, IntPtr properties);
+
+    private bool _etwSessionAlerted;
+
+    /// <summary>
+    /// RT-6 FIX: Verify the BehavedrEtwSession is still active.
+    /// If an attacker stops it (logman stop, ControlTrace), generate a high-confidence
+    /// tamper signal. Attempts automatic restart.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private void CheckEtwSessionHealth(List<Signal> signals)
+    {
+        try
+        {
+            const string sessionName = "BehavedrEtwSession";
+            int sessionNameBytes = (sessionName.Length + 1) * 2;
+            int propertiesSize = 120 + sessionNameBytes + 256; // EVENT_TRACE_PROPERTIES + names
+
+            var buffer = Marshal.AllocHGlobal(propertiesSize);
+            try
+            {
+                for (int i = 0; i < propertiesSize; i++)
+                    Marshal.WriteByte(buffer, i, 0);
+
+                // Set BufferSize and LoggerNameOffset in the properties structure
+                Marshal.WriteInt32(buffer, 0, propertiesSize); // Wnode.BufferSize
+                Marshal.WriteInt32(buffer, 60, 120); // LoggerNameOffset (offset within struct)
+
+                int result = QueryTraceW(0, sessionName, buffer);
+
+                // ERROR_SUCCESS = 0 means session is alive
+                // ERROR_WMI_INSTANCE_NOT_FOUND = 4201 means session is gone
+                if (result == 4201 && !_etwSessionAlerted)
+                {
+                    _etwSessionAlerted = true;
+                    signals.Add(new Signal("etw_session_killed:BehavedrEtwSession", 92, 0.94));
+                    _logger.LogCritical(
+                        "SECURITY: ETW session 'BehavedrEtwSession' has been stopped externally — " +
+                        "possible attacker disruption (logman stop / ControlTrace). Detection latency degraded.");
+                }
+                else if (result == 0)
+                {
+                    _etwSessionAlerted = false; // Session is alive, reset alert
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[AntiTamper] ETW session health check failed");
+        }
+    }
+
+    // --- RT-7: AMSI/ETW Function Prologue Integrity ---
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern IntPtr GetModuleHandleA(string lpModuleName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
+
+    // Expected first bytes of EtwEventWrite (x64): 4c 8b dc (mov r11, rsp)
+    // or 48 ... (various, but NOT 0xC3 ret or 0x90 nop patches)
+    private byte[]? _etwEventWriteBaseline;
+    private byte[]? _amsiScanBufferBaseline;
+    private bool _prologueBaselined;
+
+    /// <summary>
+    /// RT-7 FIX: Check that critical detection infrastructure functions haven't been patched.
+    /// Attackers commonly patch ntdll!EtwEventWrite and amsi!AmsiScanBuffer to blind EDR.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private void CheckCriticalFunctionIntegrity(List<Signal> signals)
+    {
+        try
+        {
+            // Check EtwEventWrite in ntdll.dll
+            var ntdll = GetModuleHandleA("ntdll.dll");
+            if (ntdll != IntPtr.Zero)
+            {
+                var etwAddr = GetProcAddress(ntdll, "EtwEventWrite");
+                if (etwAddr != IntPtr.Zero)
+                {
+                    var current = new byte[8];
+                    Marshal.Copy(etwAddr, current, 0, 8);
+
+                    if (!_prologueBaselined)
+                    {
+                        _etwEventWriteBaseline = (byte[])current.Clone();
+                    }
+                    else if (_etwEventWriteBaseline != null &&
+                             !current.AsSpan().SequenceEqual(_etwEventWriteBaseline))
+                    {
+                        // Check for common patch patterns: ret (0xC3) at start
+                        if (current[0] == 0xC3 || (current[0] == 0x33 && current[1] == 0xC0))
+                        {
+                            signals.Add(new Signal("etw_function_patched:ntdll!EtwEventWrite", 95, 0.98));
+                            _logger.LogCritical(
+                                "SECURITY: ntdll!EtwEventWrite has been PATCHED — ETW telemetry is blinded. " +
+                                "Active EDR evasion in progress (T1562.001).");
+                        }
+                        else
+                        {
+                            signals.Add(new Signal("etw_function_modified:ntdll!EtwEventWrite", 85, 0.90));
+                            _logger.LogWarning(
+                                "SECURITY: ntdll!EtwEventWrite prologue modified (may be hooked or patched)");
+                        }
+                    }
+                }
+            }
+
+            // Check AmsiScanBuffer in amsi.dll (may not be loaded)
+            var amsi = GetModuleHandleA("amsi.dll");
+            if (amsi != IntPtr.Zero)
+            {
+                var amsiAddr = GetProcAddress(amsi, "AmsiScanBuffer");
+                if (amsiAddr != IntPtr.Zero)
+                {
+                    var current = new byte[8];
+                    Marshal.Copy(amsiAddr, current, 0, 8);
+
+                    if (!_prologueBaselined)
+                    {
+                        _amsiScanBufferBaseline = (byte[])current.Clone();
+                    }
+                    else if (_amsiScanBufferBaseline != null &&
+                             !current.AsSpan().SequenceEqual(_amsiScanBufferBaseline))
+                    {
+                        signals.Add(new Signal("amsi_function_patched:amsi!AmsiScanBuffer", 90, 0.95));
+                        _logger.LogCritical(
+                            "SECURITY: amsi!AmsiScanBuffer has been PATCHED — AMSI scanning is disabled. " +
+                            "Active defense evasion in progress (T1562.001).");
+                    }
+                }
+            }
+
+            if (!_prologueBaselined)
+                _prologueBaselined = true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[AntiTamper] Function integrity check failed");
         }
     }
 }

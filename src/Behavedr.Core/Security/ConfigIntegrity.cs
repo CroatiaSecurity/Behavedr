@@ -183,12 +183,11 @@ public static class ConfigIntegrity
     /// <summary>
     /// Derive an HMAC key from the machine key used by ConfigProtection.
     /// Uses HKDF to derive a separate key specifically for config integrity.
+    /// V-3 FIX: Delegates to KeyProtection.GetMachineKey() to avoid duplicate key management.
     /// </summary>
     private static byte[] GetHmacKey()
     {
-        // We derive from the same machine key but with a unique context label
-        // to get a cryptographically independent key for HMAC.
-        var machineKey = GetMachineKeyBytes();
+        var machineKey = KeyProtection.GetMachineKey();
         return HKDF.DeriveKey(
             HashAlgorithmName.SHA256,
             machineKey,
@@ -197,55 +196,9 @@ public static class ConfigIntegrity
     }
 
     /// <summary>
-    /// Get the raw machine key bytes (same key store as ConfigProtection).
+    /// V-3 FIX: GetMachineKeyBytes removed — now delegates to KeyProtection.GetMachineKey()
+    /// via GetHmacKey() to avoid duplicate key management implementations.
     /// </summary>
-    private static byte[] GetMachineKeyBytes()
-    {
-        var keyDir = GetKeyDirectory();
-        Directory.CreateDirectory(keyDir);
-        var keyPath = Path.Combine(keyDir, ".behavedr-key");
-
-        if (File.Exists(keyPath))
-        {
-            var keyBase64 = File.ReadAllText(keyPath).Trim();
-            return Convert.FromBase64String(keyBase64);
-        }
-
-        // Generate new key if none exists
-        var newKey = RandomNumberGenerator.GetBytes(32);
-        File.WriteAllText(keyPath, Convert.ToBase64String(newKey));
-
-        try
-        {
-            if (!OperatingSystem.IsWindows())
-            {
-                File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            }
-        }
-        catch { }
-
-        return newKey;
-    }
-
-    private static string GetKeyDirectory()
-    {
-        if (OperatingSystem.IsWindows())
-            return Path.Combine(Environment.GetFolderPath(
-                Environment.SpecialFolder.CommonApplicationData), "Behavedr");
-
-        const string systemDir = "/etc/behavedr";
-        try
-        {
-            if (Directory.Exists(systemDir) ||
-                Directory.CreateDirectory(systemDir).Exists)
-                return systemDir;
-        }
-        catch { }
-
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".behavedr");
-    }
 }
 
 public enum ConfigIntegrityResult

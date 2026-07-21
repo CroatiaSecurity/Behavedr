@@ -42,21 +42,24 @@ public static class PlatformMonitors
             monitors.Add(new DnsQueryMonitor());
             monitors.Add(new DataExfiltrationMonitor());
 
-            // v0.2.0: P0 — Critical audit findings from Sentinel cross-reference
+            // v0.1.1: P0 — Critical audit findings from Sentinel cross-reference
             monitors.Add(new LsassDumpMonitor());
             monitors.Add(new ParentPidSpoofDetector());
             monitors.Add(new DllSideloadDetector());
 
-            // v0.2.0: P1 — High-priority detection gaps
+            // v0.1.1: P1 — High-priority detection gaps
             monitors.Add(new GhostProcessMonitor());
             monitors.Add(new TokenIntegrityMonitor());
             monitors.Add(new EphemeralProcessMonitor());
             monitors.Add(new NetworkShareMonitor());
             monitors.Add(new RawDiskAccessMonitor());
 
-            // v0.2.0: P2 — Medium-priority detection enhancements
+            // v0.1.1: P2 — Medium-priority detection enhancements
             monitors.Add(new ThreadStartAddressScanner());
             monitors.Add(new WslMonitor());
+
+            // v0.1.2: Scheduled task and WMI persistence monitoring (RT-10)
+            monitors.Add(new ScheduledTaskMonitor());
         }
 
         return monitors;

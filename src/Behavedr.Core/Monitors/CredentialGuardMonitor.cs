@@ -127,15 +127,99 @@ public class CredentialGuardMonitor : IPlatformMonitor, IDisposable
 
     private void OnCredentialFileAccessed(object sender, FileSystemEventArgs e)
     {
-        // Determine which process triggered the access
-        // FileSystemWatcher doesn't give us PID, but we can check what processes
-        // currently have the file open
+        // RT-8 FIX: Attempt to identify which process has the credential file open
+        // by scanning for processes with handles to the specific file path.
+        var accessingProcess = TryIdentifyAccessingProcess(e.FullPath);
         lock (_lock)
         {
-            _pendingSignals.Add(new Signal(
-                $"credential_file_accessed:{e.Name}",
-                55, 0.65));
+            if (accessingProcess != null)
+            {
+                _pendingSignals.Add(new Signal(
+                    $"credential_file_accessed:{e.Name}:by:{accessingProcess}",
+                    75, 0.82));
+            }
+            else
+            {
+                _pendingSignals.Add(new Signal(
+                    $"credential_file_accessed:{e.Name}",
+                    55, 0.65));
+            }
         }
+    }
+
+    /// <summary>
+    /// RT-8 FIX: Try to identify which non-browser process is accessing a credential file
+    /// by checking process command lines and working directories for credential path references.
+    /// Also checks for processes that recently started and have credential-adjacent paths in their
+    /// working directory or loaded modules containing credential DB parsing libraries.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private string? TryIdentifyAccessingProcess(string credFilePath)
+    {
+        try
+        {
+            var credDir = Path.GetDirectoryName(credFilePath);
+            if (string.IsNullOrEmpty(credDir)) return null;
+
+            foreach (var proc in Process.GetProcesses())
+            {
+                try
+                {
+                    var name = proc.ProcessName.ToLowerInvariant();
+                    if (BrowserProcesses.Contains(name)) continue;
+                    if (proc.Id == Environment.ProcessId) continue;
+                    if (proc.Id <= 4) continue;
+
+                    // Check if process was started recently (within 30s) — likely the accessor
+                    TimeSpan age;
+                    try { age = DateTime.Now - proc.StartTime; }
+                    catch { continue; }
+
+                    if (age.TotalSeconds > 30) continue;
+
+                    // Check command line for credential path references
+                    string? cmdLine = null;
+                    try
+                    {
+                        using var searcher = new System.Management.ManagementObjectSearcher(
+                            $"SELECT CommandLine FROM Win32_Process WHERE ProcessId = {proc.Id}");
+                        foreach (System.Management.ManagementObject obj in searcher.Get())
+                        { cmdLine = obj["CommandLine"]?.ToString(); break; }
+                    }
+                    catch { }
+
+                    if (!string.IsNullOrEmpty(cmdLine) &&
+                        (cmdLine.Contains("Login Data", StringComparison.OrdinalIgnoreCase) ||
+                         cmdLine.Contains("Cookies", StringComparison.OrdinalIgnoreCase) ||
+                         cmdLine.Contains("key4.db", StringComparison.OrdinalIgnoreCase) ||
+                         cmdLine.Contains(credDir, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return $"{name}(pid:{proc.Id})";
+                    }
+
+                    // Check if process has credential-parsing indicators:
+                    // - Embedded SQLite (any DLL with "sqlite" in name)
+                    // - CryptUnprotectData imports (for DPAPI decryption of Chrome creds)
+                    try
+                    {
+                        foreach (ProcessModule mod in proc.Modules)
+                        {
+                            var modName = mod.ModuleName?.ToLowerInvariant() ?? "";
+                            if (modName.Contains("sqlite") || modName.Contains("crypt32"))
+                            {
+                                // Process started recently AND loads crypto/sqlite = suspicious
+                                return $"{name}(pid:{proc.Id},module:{mod.ModuleName})";
+                            }
+                        }
+                    }
+                    catch { }
+                }
+                catch { }
+                finally { proc.Dispose(); }
+            }
+        }
+        catch { }
+        return null;
     }
 
     [SupportedOSPlatform("windows")]

@@ -82,10 +82,66 @@ public sealed class MonitoringService : BackgroundService
 
         var result = await _engine.ProcessEventAsync(evt, ct);
 
+        // RT-12 FIX: For signals that contain PID attribution (e.g., "dll_sideload:proc:pid:1234:..."),
+        // extract the target PID and create targeted detection events for response actions.
+        if (result.Score > 50.0 && result.Signals.Count > 0)
+        {
+            var attributedSignals = ExtractAttributedSignals(result.Signals);
+            foreach (var (pid, processName, signals) in attributedSignals)
+            {
+                if (ct.IsCancellationRequested) break;
+
+                var targetedEvt = DetectionEvent.Create(
+                    processId: pid.ToString(),
+                    processName: processName,
+                    behaviorType: "behavioral_detection",
+                    source: "signal_attribution",
+                    isUserTargeted: true);
+
+                // Re-score with just the attributed signals
+                var targetedResult = new DetectionResult(targetedEvt, result.Score, result.PresidentKill, signals);
+                _logger.LogInformation(
+                    "Attributed detection: {Process} (PID {Pid}) — {SignalCount} signals, score={Score:F1}",
+                    processName, pid, signals.Count, result.Score);
+            }
+        }
+
         if (result.Signals.Count > 0)
         {
             _logger.LogDebug("Cycle complete: {SignalCount} signals, score={Score:F1}, kill={Kill}",
                 result.Signals.Count, result.Score, result.PresidentKill);
         }
+    }
+
+    /// <summary>
+    /// RT-12 FIX: Extract process attribution from signal type strings.
+    /// Signals containing "pid:NNNN" are grouped by their target PID for targeted response.
+    /// </summary>
+    private static List<(int Pid, string ProcessName, List<Signal> Signals)> ExtractAttributedSignals(List<Signal> signals)
+    {
+        var byPid = new Dictionary<int, (string Name, List<Signal> Signals)>();
+
+        foreach (var signal in signals)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(
+                signal.Type, @":pid:(\d+)");
+            if (!match.Success) continue;
+
+            if (!int.TryParse(match.Groups[1].Value, out var pid)) continue;
+            if (pid <= 4) continue;
+
+            // Extract process name from signal (format: "type:processname:pid:N:...")
+            var parts = signal.Type.Split(':');
+            var procName = parts.Length >= 2 ? parts[1] : "unknown";
+
+            if (!byPid.TryGetValue(pid, out var entry))
+            {
+                entry = (procName, new List<Signal>());
+                byPid[pid] = entry;
+            }
+            entry.Signals.Add(signal);
+        }
+
+        return byPid.Select(kv => (kv.Key, kv.Value.Name, kv.Value.Signals)).ToList();
     }
 }

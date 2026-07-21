@@ -28,6 +28,10 @@ public class DllSideloadDetector : IPlatformMonitor
         "samcli.dll", "sspicli.dll", "crypt32.dll", "winhttp.dll",
     };
 
+    // System32 path for generic sideload heuristic
+    private static readonly string System32Path = Path.Combine(WinDir, "System32") + "\\";
+    private static readonly string SysWOW64Path = Path.Combine(WinDir, "SysWOW64") + "\\";
+
     public string PlatformName => "DllSideloadDetector";
     public bool IsSupported => OperatingSystem.IsWindows();
 
@@ -67,22 +71,48 @@ public class DllSideloadDetector : IPlatformMonitor
                             var modName = mod.ModuleName ?? "";
                             var modDir = Path.GetDirectoryName(mod.FileName) ?? "";
 
-                            if (!SideloadTargets.Contains(modName)) continue;
-
-                            // Sideloaded if DLL is in the process directory (not system)
-                            if (modDir.Equals(procDir, StringComparison.OrdinalIgnoreCase) &&
-                                !modDir.StartsWith(WinDirSlash, StringComparison.OrdinalIgnoreCase))
+                            // Check 1: Known sideloading targets
+                            if (SideloadTargets.Contains(modName))
                             {
-                                var key = $"{proc.Id}:{modName}";
-                                if (_alertedKeys.Contains(key)) continue;
-                                _alertedKeys.Add(key);
+                                // Sideloaded if DLL is in the process directory (not system)
+                                if (modDir.Equals(procDir, StringComparison.OrdinalIgnoreCase) &&
+                                    !modDir.StartsWith(WinDirSlash, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var key = $"{proc.Id}:{modName}";
+                                    if (_alertedKeys.Contains(key)) continue;
+                                    _alertedKeys.Add(key);
 
-                                signals.Add(new Signal(
-                                    $"dll_sideload:{proc.ProcessName}:pid:{proc.Id}:{modName}:{mod.FileName}",
-                                    85, 0.85));
-                                _logger.LogCritical(
-                                    "SECURITY: DLL sideloading detected — '{DllName}' loaded from '{Path}' in process '{Process}' (PID {Pid})",
-                                    modName, mod.FileName, proc.ProcessName, proc.Id);
+                                    signals.Add(new Signal(
+                                        $"dll_sideload:{proc.ProcessName}:pid:{proc.Id}:{modName}:{mod.FileName}",
+                                        85, 0.85));
+                                    _logger.LogCritical(
+                                        "SECURITY: DLL sideloading detected — '{DllName}' loaded from '{Path}' in process '{Process}' (PID {Pid})",
+                                        modName, mod.FileName, proc.ProcessName, proc.Id);
+                                }
+                            }
+                            // Check 2: Generic heuristic — unsigned DLL loaded from process dir
+                            // when a signed system copy exists in System32/SysWOW64
+                            else if (!modDir.StartsWith(WinDirSlash, StringComparison.OrdinalIgnoreCase) &&
+                                     modDir.Equals(procDir, StringComparison.OrdinalIgnoreCase) &&
+                                     modName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                            {
+                                // Check if a system copy exists
+                                var systemCopy = Path.Combine(System32Path, modName);
+                                var sysWow64Copy = Path.Combine(SysWOW64Path, modName);
+                                if (File.Exists(systemCopy) || File.Exists(sysWow64Copy))
+                                {
+                                    var key = $"generic:{proc.Id}:{modName}";
+                                    if (_alertedKeys.Contains(key)) continue;
+                                    _alertedKeys.Add(key);
+
+                                    signals.Add(new Signal(
+                                        $"dll_sideload_generic:{proc.ProcessName}:pid:{proc.Id}:{modName}:{mod.FileName}",
+                                        70, 0.72));
+                                    _logger.LogWarning(
+                                        "SECURITY: Possible DLL sideloading (generic) — '{DllName}' loaded from '{Path}' " +
+                                        "but system copy exists in System32. Process: '{Process}' (PID {Pid})",
+                                        modName, mod.FileName, proc.ProcessName, proc.Id);
+                                }
                             }
                         }
                         catch { }

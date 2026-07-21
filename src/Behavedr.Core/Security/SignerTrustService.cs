@@ -2,6 +2,7 @@ namespace Behavedr.Core.Security;
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -82,28 +83,86 @@ public class SignerTrustService
         return path.StartsWith(winDirSlash, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Verify Authenticode signature using WinVerifyTrust P/Invoke.
+    /// This is a direct native call (~1ms) with no process spawning — cannot be defeated
+    /// by PowerShell removal, Constrained Language Mode, or execution policy.
+    /// </summary>
     [SupportedOSPlatform("windows")]
     private static bool VerifyAuthenticode(string filePath)
     {
         try
         {
-            // Use WinVerifyTrust via PowerShell Get-AuthenticodeSignature as a simple approach
-            // that avoids the obsolete X509Certificate.CreateFromSignedFile API on .NET 10.
-            // For production, consider direct WinVerifyTrust P/Invoke.
-            using var proc = new System.Diagnostics.Process();
-            proc.StartInfo = new System.Diagnostics.ProcessStartInfo
+            // WINTRUST_ACTION_GENERIC_VERIFY_V2
+            var actionId = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+
+            var fileInfo = new WINTRUST_FILE_INFO
             {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -NonInteractive -Command \"(Get-AuthenticodeSignature '{filePath.Replace("'", "''")}').Status -eq 'Valid'\"",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
+                cbStruct = (uint)Marshal.SizeOf<WINTRUST_FILE_INFO>(),
+                pcwszFilePath = filePath,
+                hFile = IntPtr.Zero,
+                pgKnownSubject = IntPtr.Zero,
             };
-            proc.Start();
-            var output = proc.StandardOutput.ReadToEnd().Trim();
-            proc.WaitForExit(5000);
-            return output.Equals("True", StringComparison.OrdinalIgnoreCase);
+
+            var fileInfoPtr = Marshal.AllocHGlobal(Marshal.SizeOf<WINTRUST_FILE_INFO>());
+            try
+            {
+                Marshal.StructureToPtr(fileInfo, fileInfoPtr, false);
+
+                var trustData = new WINTRUST_DATA
+                {
+                    cbStruct = (uint)Marshal.SizeOf<WINTRUST_DATA>(),
+                    dwUIChoice = 2, // WTD_UI_NONE
+                    fdwRevocationChecks = 0, // WTD_REVOKE_NONE (offline-safe)
+                    dwUnionChoice = 1, // WTD_CHOICE_FILE
+                    pFile = fileInfoPtr,
+                    dwStateAction = 0, // WTD_STATEACTION_IGNORE
+                    dwProvFlags = 0x00000010, // WTD_CACHE_ONLY_URL_RETRIEVAL (no network)
+                };
+
+                // WinVerifyTrust returns 0 (ERROR_SUCCESS) if signature is valid
+                long result = WinVerifyTrust(IntPtr.Zero, ref actionId, ref trustData);
+                return result == 0;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(fileInfoPtr);
+            }
         }
         catch { return false; }
+    }
+
+    // WinVerifyTrust P/Invoke declarations
+    [DllImport("wintrust.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern long WinVerifyTrust(
+        IntPtr hwnd,
+        ref Guid pgActionID,
+        ref WINTRUST_DATA pWVTData);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WINTRUST_FILE_INFO
+    {
+        public uint cbStruct;
+        public string pcwszFilePath;
+        public IntPtr hFile;
+        public IntPtr pgKnownSubject;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINTRUST_DATA
+    {
+        public uint cbStruct;
+        public IntPtr pPolicyCallbackData;
+        public IntPtr pSIPClientData;
+        public uint dwUIChoice;
+        public uint fdwRevocationChecks;
+        public uint dwUnionChoice;
+        public IntPtr pFile; // WINTRUST_FILE_INFO*
+        public uint dwStateAction;
+        public IntPtr hWVTStateData;
+        public IntPtr pwszURLReference;
+        public uint dwProvFlags;
+        public uint dwUIContext;
+        public IntPtr pSignatureSettings;
     }
 }
