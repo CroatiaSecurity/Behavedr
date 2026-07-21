@@ -6,6 +6,7 @@
     <AssemblyName>Behavedr</AssemblyName>
     <RootNamespace>Behavedr.Agent</RootNamespace>
     <Description>Behavedr multi-platform behavioral EDR agent</Description>
+    <ApplicationIcon>..\..\Assets\Behavedr.ico</ApplicationIcon>
   </PropertyGroup>
 
   <!-- Publish-time settings for clean single-file output.

@@ -105,7 +105,7 @@ public class BehavedrForegroundService : Service
         var builder = new Notification.Builder(this, ChannelId)
             .SetContentTitle("Behavedr")
             .SetContentText("Monitoring active")
-            .SetSmallIcon(Android.Resource.Drawable.IcLockIdleLock)
+            .SetSmallIcon(Resource.Mipmap.appicon)
             .SetOngoing(true)
             .SetCategory(Notification.CategoryService);
 
