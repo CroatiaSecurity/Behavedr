@@ -1,5 +1,6 @@
 namespace Behavedr.Core.Update;
 
+using System.IO.Compression;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -96,21 +97,21 @@ public class AutoUpdater
             var tempPath = Path.Combine(Path.GetTempPath(), $"behavedr-update-{update.Version}.zip");
             var sigPath = tempPath + ".sig";
 
-            // Download the zip
+            // Download the zip with exclusive file lock to prevent TOCTOU
+            await using (var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
             await using (var responseStream = await _http.GetStreamAsync(update.DownloadUrl, ct))
-            await using (var fileStream = File.Create(tempPath))
             {
                 await responseStream.CopyToAsync(fileStream, ct);
             }
 
             _logger.LogInformation("Downloaded update to {Path}", tempPath);
 
-            // Download the signature file (.sig)
+            // Download the signature file (.sig) with exclusive lock
             var sigUrl = update.DownloadUrl + ".sig";
             try
             {
+                await using (var sigFileStream = new FileStream(sigPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 await using (var sigStream = await _http.GetStreamAsync(sigUrl, ct))
-                await using (var sigFileStream = File.Create(sigPath))
                 {
                     await sigStream.CopyToAsync(sigFileStream, ct);
                 }
@@ -160,9 +161,35 @@ public class AutoUpdater
                 return false;
             }
 
-            // Extract from zip (portable packages are zip files)
-            System.IO.Compression.ZipFile.ExtractToDirectory(
-                tempPath, Path.GetDirectoryName(currentExe)!, overwriteFiles: true);
+            // Extract from zip with Zip Slip protection
+            var targetDir = Path.GetFullPath(Path.GetDirectoryName(currentExe)!);
+            using (var archive = System.IO.Compression.ZipFile.OpenRead(tempPath))
+            {
+                foreach (var entry in archive.Entries)
+                {
+                    // Skip directory entries
+                    if (string.IsNullOrEmpty(entry.Name))
+                        continue;
+
+                    var destPath = Path.GetFullPath(Path.Combine(targetDir, entry.FullName));
+
+                    // SECURITY: Reject entries that escape the target directory (Zip Slip)
+                    if (!destPath.StartsWith(targetDir + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
+                        !destPath.Equals(targetDir, StringComparison.Ordinal))
+                    {
+                        _logger.LogCritical("SECURITY: Zip Slip detected — entry '{Entry}' resolves outside target directory. Aborting update.",
+                            entry.FullName);
+                        CleanupTempFiles(tempPath, sigPath);
+                        return false;
+                    }
+
+                    // Ensure parent directory exists
+                    var destDir = Path.GetDirectoryName(destPath)!;
+                    Directory.CreateDirectory(destDir);
+
+                    entry.ExtractToFile(destPath, overwrite: true);
+                }
+            }
 
             _logger.LogInformation(
                 "Update staged. Restart the agent to complete the update.");

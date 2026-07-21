@@ -29,8 +29,17 @@ public sealed class SelfProtectionService : BackgroundService
     {
         _logger = logger;
         _lifetime = lifetime;
+#if DEBUG
         _enableSelfProtection = configuration.GetValue("Agent:EnableSelfProtection", true);
         _enableIntegrityCheck = configuration.GetValue("Agent:EnableIntegrityCheck", true);
+#else
+        // SECURITY: In Release builds, self-protection is always enabled and cannot be
+        // disabled via configuration. An attacker who tampers config must not be able
+        // to disable protection mechanisms.
+        _ = configuration; // Suppress unused parameter warning
+        _enableSelfProtection = true;
+        _enableIntegrityCheck = true;
+#endif
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

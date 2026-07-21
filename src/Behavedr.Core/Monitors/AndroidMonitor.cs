@@ -76,22 +76,7 @@ public class AndroidMonitor : IPlatformMonitor
         }
     }
 
-    /// <summary>
-    /// Inject signals (legacy overload without token — throws if token is configured).
-    /// Kept for backward compat; will be removed in v0.1.0.
-    /// </summary>
-    [Obsolete("Use InjectPlatformSignals(signals, token) overload for authenticated injection.")]
-    public void InjectPlatformSignals(IEnumerable<Signal> signals)
-    {
-        lock (_lock)
-        {
-            if (_injectionToken is not null)
-                throw new UnauthorizedAccessException("Injection token is configured — use the authenticated overload.");
 
-            _injectedSignals.Clear();
-            _injectedSignals.AddRange(signals);
-        }
-    }
 
     [SupportedOSPlatform("android")]
     public Task<IEnumerable<Signal>> GetSignalsAsync(CancellationToken ct = default)

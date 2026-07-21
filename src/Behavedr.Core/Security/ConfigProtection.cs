@@ -66,25 +66,57 @@ public static class ConfigProtection
         return Encoding.UTF8.GetString(decrypted);
     }
 
+    private const int GcmNonceSize = 12;
+    private const int GcmTagSize = 16;
+
     private static string EncryptCrossPlatform(byte[] data)
     {
         var key = GetOrCreateMachineKey();
-        using var aes = Aes.Create();
-        aes.Key = key;
-        aes.GenerateIV();
+        var nonce = RandomNumberGenerator.GetBytes(GcmNonceSize);
+        var ciphertext = new byte[data.Length];
+        var tag = new byte[GcmTagSize];
 
-        var encrypted = aes.EncryptCbc(data, aes.IV);
+        using var aes = new AesGcm(key, GcmTagSize);
+        aes.Encrypt(nonce, data, ciphertext, tag);
 
-        // Format: IV (base64) + "." + ciphertext (base64)
-        return Convert.ToBase64String(aes.IV) + "." + Convert.ToBase64String(encrypted);
+        // Format: nonce (base64) + "." + tag (base64) + "." + ciphertext (base64)
+        return Convert.ToBase64String(nonce) + "." +
+               Convert.ToBase64String(tag) + "." +
+               Convert.ToBase64String(ciphertext);
     }
 
     private static string DecryptCrossPlatform(string ciphertext)
     {
         var parts = ciphertext.Split('.');
-        if (parts.Length != 2)
+
+        // Support legacy AES-CBC format (2 parts) for migration
+        if (parts.Length == 2)
+        {
+            return DecryptCrossPlatformLegacy(parts);
+        }
+
+        if (parts.Length != 3)
             throw new CryptographicException("Invalid encrypted format");
 
+        var nonce = Convert.FromBase64String(parts[0]);
+        var tag = Convert.FromBase64String(parts[1]);
+        var encrypted = Convert.FromBase64String(parts[2]);
+
+        var key = GetOrCreateMachineKey();
+        var plaintext = new byte[encrypted.Length];
+
+        using var aes = new AesGcm(key, GcmTagSize);
+        aes.Decrypt(nonce, encrypted, tag, plaintext);
+
+        return Encoding.UTF8.GetString(plaintext);
+    }
+
+    /// <summary>
+    /// Legacy AES-CBC decryption for backward compatibility during migration.
+    /// New values are always encrypted with AES-GCM.
+    /// </summary>
+    private static string DecryptCrossPlatformLegacy(string[] parts)
+    {
         var iv = Convert.FromBase64String(parts[0]);
         var encrypted = Convert.FromBase64String(parts[1]);
 
@@ -122,10 +154,15 @@ public static class ConfigProtection
         var versionPath = Path.Combine(keyDir, ".behavedr-key-version");
         File.WriteAllText(versionPath, "1");
 
-        // Try to restrict file permissions (best-effort on cross-platform)
+        // Try to restrict file permissions
         try
         {
-            if (!OperatingSystem.IsWindows())
+            if (OperatingSystem.IsWindows())
+            {
+                RestrictFileToAdminsAndSystem(keyPath);
+                RestrictFileToAdminsAndSystem(versionPath);
+            }
+            else
             {
                 File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
                 File.SetUnixFileMode(versionPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
@@ -166,7 +203,11 @@ public static class ConfigProtection
 
         try
         {
-            if (!OperatingSystem.IsWindows())
+            if (OperatingSystem.IsWindows())
+            {
+                RestrictFileToAdminsAndSystem(keyPath);
+            }
+            else
             {
                 File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
@@ -211,5 +252,42 @@ public static class ConfigProtection
         return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".behavedr");
+    }
+
+    /// <summary>
+    /// On Windows, restrict a file's ACL to SYSTEM and Administrators only.
+    /// Removes inherited ACEs and grants full control exclusively to privileged accounts.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static void RestrictFileToAdminsAndSystem(string filePath)
+    {
+        var fileInfo = new FileInfo(filePath);
+        var security = fileInfo.GetAccessControl();
+
+        // Remove inheritance and clear existing rules
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        var existingRules = security.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier));
+        foreach (System.Security.AccessControl.FileSystemAccessRule rule in existingRules)
+        {
+            security.RemoveAccessRule(rule);
+        }
+
+        // Grant full control to SYSTEM (S-1-5-18)
+        var systemSid = new System.Security.Principal.SecurityIdentifier(
+            System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
+        security.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+            systemSid,
+            System.Security.AccessControl.FileSystemRights.FullControl,
+            System.Security.AccessControl.AccessControlType.Allow));
+
+        // Grant full control to Administrators (S-1-5-32-544)
+        var adminsSid = new System.Security.Principal.SecurityIdentifier(
+            System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
+        security.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+            adminsSid,
+            System.Security.AccessControl.FileSystemRights.FullControl,
+            System.Security.AccessControl.AccessControlType.Allow));
+
+        fileInfo.SetAccessControl(security);
     }
 }

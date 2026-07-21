@@ -102,4 +102,11 @@ public static class UpdateSignatureVerifier
     /// </summary>
     public static bool IsProductionKeyConfigured() =>
         !PublicKeyPem.Contains("PLACEHOLDER", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Get the baked-in public key PEM for use by other verification components (e.g., policy signing).
+    /// Returns null if the production key is not configured.
+    /// </summary>
+    public static string? GetPublicKeyPem() =>
+        IsProductionKeyConfigured() ? PublicKeyPem : null;
 }

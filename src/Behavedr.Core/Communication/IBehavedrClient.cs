@@ -34,8 +34,13 @@ public record DetectionReport(
     bool PresidentKill,
     List<SignalReport> Signals,
     List<ResponseOutcome> ResponsesTaken,
-    DateTime ReportedAt)
+    DateTime ReportedAt,
+    string Nonce,
+    long SequenceNumber)
 {
+    /// <summary>Monotonically increasing sequence counter for replay prevention.</summary>
+    private static long _sequenceCounter = DateTime.UtcNow.Ticks;
+
     public static DetectionReport FromResult(string agentId, DetectionResult result, List<ResponseOutcome> responses) =>
         new(
             agentId,
@@ -44,7 +49,9 @@ public record DetectionReport(
             result.PresidentKill,
             result.Signals.Select(s => new SignalReport(s.Type, s.Weight, s.Confidence)).ToList(),
             responses,
-            DateTime.UtcNow);
+            DateTime.UtcNow,
+            Guid.NewGuid().ToString("N"),
+            Interlocked.Increment(ref _sequenceCounter));
 }
 
 public record SignalReport(string Type, double Weight, double Confidence);
@@ -112,10 +119,8 @@ public record PolicyUpdate(
         }
     }
 
-    // Server public key for policy signing (same key or separate — using same for simplicity).
+    // Server public key for policy signing — uses the same baked-in key as update verification.
     // In production, this could be a separate key from the update signing key.
     private static string GetServerPublicKey() =>
-        Security.UpdateSignatureVerifier.IsProductionKeyConfigured()
-            ? "-----BEGIN PUBLIC KEY-----\nPLACEHOLDER\n-----END PUBLIC KEY-----"
-            : "";
+        Security.UpdateSignatureVerifier.GetPublicKeyPem() ?? "";
 }

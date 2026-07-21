@@ -26,7 +26,7 @@ public sealed class BehavedrMetrics
 
     public BehavedrMetrics()
     {
-        _meter = new Meter(MeterName, "0.0.5");
+        _meter = new Meter(MeterName, "0.0.6");
 
         _detectionCycles = _meter.CreateCounter<long>(
             "behavedr.detection.cycles",

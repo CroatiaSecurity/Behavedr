@@ -5,6 +5,7 @@ using Behavedr.Core.Models;
 /// <summary>
 /// Council of Elders weighted scoring engine.
 /// Calculates composite behavioral risk scores with configurable thresholds.
+/// Preserves raw score fidelity and maps to severity tiers for response decisions.
 /// </summary>
 public class ScoringEngine
 {
@@ -38,14 +39,52 @@ public class ScoringEngine
         if (evt.IsUserTargeted)
             baseScore *= _config.UserTargetedMultiplier;
 
-        return Math.Clamp(baseScore, 0.0, 100.0);
+        // Do NOT hard-clamp to 100. Preserve raw score for fidelity — higher scores
+        // indicate more concurrent threat signals and allow differentiation between
+        // "barely over threshold" and "overwhelming evidence".
+        // Floor at 0 only (negative scores are meaningless).
+        return Math.Max(0.0, baseScore);
     }
+
+    /// <summary>
+    /// Get the normalized display score (clamped to 0-100 for UI/reporting).
+    /// Use this for human-facing displays, not for internal decision-making.
+    /// </summary>
+    public static double NormalizeForDisplay(double rawScore) =>
+        Math.Clamp(rawScore, 0.0, 100.0);
+
+    /// <summary>
+    /// Determine the severity tier for a given raw score.
+    /// Tiers preserve the information that hard-clamping destroys.
+    /// </summary>
+    public SeverityTier GetSeverityTier(double score) => score switch
+    {
+        > 200.0 => SeverityTier.Extreme,
+        > 95.0 => SeverityTier.Critical,
+        > 75.0 => SeverityTier.High,
+        > 50.0 => SeverityTier.Medium,
+        > 25.0 => SeverityTier.Low,
+        _ => SeverityTier.Info,
+    };
 
     public bool ShouldPresidentKill(double score, DetectionEvent evt)
     {
         ArgumentNullException.ThrowIfNull(evt);
         return score > _config.PresidentKillThreshold && evt.IsUserTargeted;
     }
+}
+
+/// <summary>
+/// Severity classification preserving raw score fidelity.
+/// </summary>
+public enum SeverityTier
+{
+    Info,
+    Low,
+    Medium,
+    High,
+    Critical,
+    Extreme,
 }
 
 /// <summary>

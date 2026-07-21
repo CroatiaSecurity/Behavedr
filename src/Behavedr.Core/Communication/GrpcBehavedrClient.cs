@@ -109,7 +109,7 @@ public class GrpcBehavedrClient : IBehavedrClient
     {
         try
         {
-            var response = await _httpClient.GetAsync($"{_serverUrl}/api/v1/policy?agentId={_agentId}", ct);
+            var response = await _httpClient.GetAsync($"{_serverUrl}/api/v1/policy?agentId={Uri.EscapeDataString(_agentId)}", ct);
             if (!response.IsSuccessStatusCode)
                 return null;
 

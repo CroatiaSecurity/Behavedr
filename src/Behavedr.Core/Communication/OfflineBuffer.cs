@@ -48,8 +48,8 @@ public class OfflineBuffer
         var json = JsonSerializer.Serialize(report, BufferJsonOptions);
 
         // Encrypt the report before writing to disk
-        var sealed = SecureEnvelope.SealString(json, "offline-buffer");
-        await File.WriteAllTextAsync(filePath, sealed, ct);
+        var envelope = SecureEnvelope.SealString(json, "offline-buffer");
+        await File.WriteAllTextAsync(filePath, envelope, ct);
 
         _logger.LogDebug("Buffered report for {Process} (score={Score:F1})",
             report.Event.ProcessName, report.Score);
@@ -78,10 +78,10 @@ public class OfflineBuffer
 
             try
             {
-                var sealed = await File.ReadAllTextAsync(file, ct);
+                var envelope = await File.ReadAllTextAsync(file, ct);
 
                 // Decrypt and verify authenticity
-                var json = SecureEnvelope.UnsealString(sealed, "offline-buffer");
+                var json = SecureEnvelope.UnsealString(envelope, "offline-buffer");
                 if (json is null)
                 {
                     _logger.LogCritical("SECURITY: Buffered report {File} failed decryption — tampered or corrupted, moving to dead-letter",

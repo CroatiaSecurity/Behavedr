@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <!-- Publish-time settings for clean single-file output.
-       SelfContained is NOT set here; pass it via CLI (dotnet publish --self-contained)
+       SelfContained is NOT set here; pass it via CLI (dotnet publish /p:SelfContained=true)
        to avoid NETSDK1047 during plain 'dotnet build -c Release'. -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <PublishSingleFile>true</PublishSingleFile>
