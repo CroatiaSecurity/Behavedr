@@ -119,15 +119,58 @@ public static class KeyProtection
             protectedBytes, GetEntropy(), DataProtectionScope.LocalMachine);
     }
 
+    private const string EntropyFileName = ".behavedr-entropy";
+
     /// <summary>
-    /// Additional entropy for DPAPI binding. Uses a fixed application-specific value
-    /// so that only Behavedr can unwrap its own keys (defense against other apps
-    /// running as SYSTEM from accessing the key).
+    /// Additional entropy for DPAPI binding. Uses a per-installation random value
+    /// generated at first run and stored in a separate file with restricted ACLs.
+    /// This prevents other SYSTEM-level processes from unwrapping the key even if
+    /// they know the source code, since the entropy is unique per machine install.
+    ///
+    /// Falls back to a fixed application-specific value if the entropy file cannot
+    /// be created/read (e.g., permission issues in containers).
     /// </summary>
     private static byte[] GetEntropy()
     {
-        // Fixed entropy — binds the key to Behavedr specifically
-        return "Behavedr-MachineKey-v2-2026"u8.ToArray();
+        try
+        {
+            var keyDir = GetKeyDirectory();
+            var entropyPath = Path.Combine(keyDir, EntropyFileName);
+
+            if (File.Exists(entropyPath))
+            {
+                var entropyBase64 = File.ReadAllText(entropyPath).Trim();
+                var entropy = Convert.FromBase64String(entropyBase64);
+                if (entropy.Length >= 16)
+                    return entropy;
+            }
+
+            // Generate random entropy at install time (32 bytes)
+            var newEntropy = RandomNumberGenerator.GetBytes(32);
+            Directory.CreateDirectory(keyDir);
+            File.WriteAllText(entropyPath, Convert.ToBase64String(newEntropy));
+
+            // Restrict permissions on entropy file
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    RestrictFilePermissions(entropyPath);
+                }
+                else
+                {
+                    File.SetUnixFileMode(entropyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                }
+            }
+            catch { }
+
+            return newEntropy;
+        }
+        catch
+        {
+            // Fallback: fixed entropy (less secure but allows operation)
+            return "Behavedr-MachineKey-v2-2026-fallback"u8.ToArray();
+        }
     }
 
     [SupportedOSPlatform("windows")]

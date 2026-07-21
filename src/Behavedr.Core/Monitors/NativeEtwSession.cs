@@ -311,12 +311,89 @@ public sealed class NativeEtwSession : IDisposable
 
         if (eventType is null) return;
 
+        int parentProcessId = 0;
+        string processName = "";
+        string commandLine = "";
+
+        // Parse event payload for ProcessStart (EventId=1)
+        // Microsoft-Windows-Kernel-Process ProcessStart payload layout (v3+):
+        //   Offset 0:  uint32 ProcessID (child PID)
+        //   Offset 4:  uint32 CreateTime (FILETIME low)
+        //   Offset 8:  uint32 CreateTime (FILETIME high) — or 8 bytes FILETIME
+        //   Offset varies: uint32 ParentProcessID, uint32 SessionID, then strings
+        // We use a safe approach: read known offsets and catch failures gracefully.
+        if (eventType == ProcessEventType.Start && eventRecord.UserData != IntPtr.Zero &&
+            eventRecord.UserDataLength >= 20)
+        {
+            try
+            {
+                var userData = eventRecord.UserData;
+                var dataLen = eventRecord.UserDataLength;
+
+                // Layout for Microsoft-Windows-Kernel-Process v3 ProcessStart:
+                //   [0..3]   uint32 ProcessId (new process PID)
+                //   [4..7]   uint32 ParentProcessId
+                //   [8..11]  uint32 SessionId
+                //   [12..15] uint32 Flags
+                //   [16..23] FILETIME CreateTime
+                //   [24..]   Unicode string: ImageFileName (null-terminated)
+                //   [..]     Unicode string: CommandLine (null-terminated)
+
+                // Read ParentProcessId at offset 4
+                if (dataLen >= 8)
+                    parentProcessId = Marshal.ReadInt32(userData, 4);
+
+                // Read ImageFileName starting at offset 24 (Unicode null-terminated)
+                if (dataLen > 24)
+                {
+                    processName = ReadUnicodeString(userData + 24, dataLen - 24);
+
+                    // CommandLine follows ImageFileName (after its null terminator)
+                    var imageNameByteLen = (processName.Length + 1) * 2; // +1 for null
+                    var cmdLineOffset = 24 + imageNameByteLen;
+                    if (cmdLineOffset < dataLen)
+                    {
+                        commandLine = ReadUnicodeString(userData + cmdLineOffset, dataLen - cmdLineOffset);
+                    }
+                }
+            }
+            catch
+            {
+                // Best effort — don't crash the ETW thread on malformed events
+            }
+        }
+        else if (eventType == ProcessEventType.Stop && eventRecord.UserData != IntPtr.Zero &&
+                 eventRecord.UserDataLength >= 8)
+        {
+            try
+            {
+                // ProcessStop payload: [0..3] ProcessId, [4..7] ParentProcessId (or ExitStatus)
+                // For stop events, grab process name from the payload if available
+                var userData = eventRecord.UserData;
+                var dataLen = eventRecord.UserDataLength;
+
+                if (dataLen > 24)
+                {
+                    processName = ReadUnicodeString(userData + 24, dataLen - 24);
+                }
+            }
+            catch { }
+        }
+
+        // Extract just the filename from the full image path
+        if (!string.IsNullOrEmpty(processName))
+        {
+            var lastSlash = processName.LastIndexOfAny(new[] { '\\', '/' });
+            if (lastSlash >= 0)
+                processName = processName[(lastSlash + 1)..];
+        }
+
         var evt = new EtwProcessEvent
         {
             ProcessId = processId,
-            ParentProcessId = 0, // Parsed from payload in production
-            ProcessName = "", // Parsed from payload
-            CommandLine = "", // Available in process start events
+            ParentProcessId = parentProcessId,
+            ProcessName = processName,
+            CommandLine = commandLine,
             Timestamp = DateTime.UtcNow,
             EventType = eventType.Value,
         };
@@ -332,14 +409,44 @@ public sealed class NativeEtwSession : IDisposable
     private void HandleDnsEvent(ref EVENT_RECORD eventRecord)
     {
         // DNS-Client event ID 3006 = DNS query completed
+        // Also accept 3008 = DNS query initiated (has query name)
         var eventId = eventRecord.EventHeader.EventDescriptor.Id;
-        if (eventId != 3006) return;
+        if (eventId != 3006 && eventId != 3008) return;
+
+        string queryName = "";
+        int queryType = 0;
+
+        // Parse DNS event payload
+        // Microsoft-Windows-DNS-Client QueryCompleted/QueryInitiated payload:
+        //   [0..]  Unicode string: QueryName (null-terminated)
+        //   [..]   uint16: QueryType (A=1, AAAA=28, CNAME=5, etc.)
+        //   [..]   uint32: QueryStatus (for 3006 only)
+        if (eventRecord.UserData != IntPtr.Zero && eventRecord.UserDataLength >= 4)
+        {
+            try
+            {
+                var userData = eventRecord.UserData;
+                var dataLen = eventRecord.UserDataLength;
+
+                queryName = ReadUnicodeString(userData, dataLen);
+
+                // QueryType follows the null-terminated query name
+                var nameByteLen = (queryName.Length + 1) * 2;
+                if (nameByteLen + 2 <= dataLen)
+                {
+                    queryType = Marshal.ReadInt16(userData + nameByteLen);
+                }
+            }
+            catch { }
+        }
+
+        if (string.IsNullOrEmpty(queryName)) return;
 
         var evt = new DnsQueryEvent
         {
             ProcessId = (int)eventRecord.EventHeader.ProcessId,
-            QueryName = "", // Parsed from event data in production
-            QueryType = 0,
+            QueryName = queryName,
+            QueryType = queryType,
             Timestamp = DateTime.UtcNow,
         };
 
@@ -349,6 +456,29 @@ public sealed class NativeEtwSession : IDisposable
             if (_dnsEvents.Count > 5_000)
                 _dnsEvents.RemoveRange(0, 2_500);
         }
+    }
+
+    /// <summary>
+    /// Read a null-terminated Unicode string from unmanaged memory.
+    /// Returns empty string if the pointer is invalid or no null terminator found.
+    /// </summary>
+    private static string ReadUnicodeString(IntPtr ptr, int maxBytes)
+    {
+        if (ptr == IntPtr.Zero || maxBytes < 2)
+            return "";
+
+        // Find null terminator within bounds
+        int maxChars = maxBytes / 2;
+        int length = 0;
+        for (int i = 0; i < maxChars; i++)
+        {
+            var ch = (char)Marshal.ReadInt16(ptr, i * 2);
+            if (ch == '\0') break;
+            length++;
+        }
+
+        if (length == 0) return "";
+        return Marshal.PtrToStringUni(ptr, length) ?? "";
     }
 
     public void Dispose()

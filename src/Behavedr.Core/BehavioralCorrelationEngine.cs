@@ -1,5 +1,6 @@
 namespace Behavedr.Core;
 
+using System.Text.RegularExpressions;
 using Behavedr.Core.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -8,22 +9,30 @@ using Microsoft.Extensions.Logging.Abstractions;
 /// Time-windowed behavioral correlation engine.
 /// Correlates signals across multiple detection cycles within a 120-second sliding window.
 /// Produces composite high-confidence detections when signals from different sources
-/// appear on the same PID within the correlation window.
+/// appear on the SAME PID (or process tree) within the correlation window.
 ///
-/// Composite rules (require 2+ distinct signal types):
+/// Composite rules (require 2+ distinct signal types on same PID):
 /// - Injection + Network → "In-Memory Implant Active" (0.96)
 /// - Credential Access + Network → "Credential Theft + Exfil" (0.95)
 /// - Download Cradle + Execution → "Staged Payload Active" (0.92)
 /// - Parent-Child Anomaly + Encoded PS → "Fileless Attack Chain" (0.94)
 /// - Anti-Tamper + Suspension → "Active EDR Evasion" (0.97)
 /// - Multiple LOLBins on same PID → "LOLBin Chain" (0.88)
+///
+/// Global (non-PID-scoped) composites:
+/// - Anti-Tamper signals are system-wide (not PID-specific) and correlate with any other category.
 /// </summary>
 public class BehavioralCorrelationEngine
 {
     private readonly ILogger<BehavioralCorrelationEngine> _logger;
+    // Key: "pid:category" (e.g., "1234:Injection") for per-PID scoping
+    // Special key: "global:AntiTamper" for system-wide signals
     private readonly Dictionary<string, List<TimestampedSignal>> _signalHistory = new();
     private readonly TimeSpan _correlationWindow = TimeSpan.FromSeconds(120);
     private readonly object _lock = new();
+
+    private static readonly Regex PidExtractRegex = new(
+        @"pid:(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public BehavioralCorrelationEngine(ILogger<BehavioralCorrelationEngine>? logger = null)
     {
@@ -41,24 +50,31 @@ public class BehavioralCorrelationEngine
 
         lock (_lock)
         {
-            // Add current signals to history
+            // Add current signals to history (keyed by PID + category)
             foreach (var signal in currentSignals)
             {
                 var category = CategorizeSignal(signal.Type);
                 if (category == SignalCategory.Unknown) continue;
 
-                if (!_signalHistory.TryGetValue(category.ToString(), out var list))
+                var pid = ExtractPid(signal.Type);
+
+                // Anti-tamper signals are system-wide (not tied to a specific PID)
+                var key = category == SignalCategory.AntiTamper
+                    ? $"global:{category}"
+                    : $"{pid}:{category}";
+
+                if (!_signalHistory.TryGetValue(key, out var list))
                 {
                     list = new List<TimestampedSignal>();
-                    _signalHistory[category.ToString()] = list;
+                    _signalHistory[key] = list;
                 }
-                list.Add(new TimestampedSignal(signal, now));
+                list.Add(new TimestampedSignal(signal, now, pid));
             }
 
             // Prune expired entries
             PruneExpired(now);
 
-            // Evaluate composite rules
+            // Evaluate composite rules (per-PID)
             EvaluateComposites(composites, now);
         }
 
@@ -67,52 +83,79 @@ public class BehavioralCorrelationEngine
 
     private void EvaluateComposites(List<Signal> composites, DateTime now)
     {
-        var activeCategories = _signalHistory
-            .Where(kv => kv.Value.Count > 0)
-            .Select(kv => kv.Key)
-            .ToHashSet();
+        // Group active categories by PID
+        var pidCategories = new Dictionary<string, HashSet<SignalCategory>>();
+        var globalCategories = new HashSet<SignalCategory>();
 
-        // Injection + Network → In-Memory Implant
-        if (activeCategories.Contains(nameof(SignalCategory.Injection)) &&
-            activeCategories.Contains(nameof(SignalCategory.Network)))
+        foreach (var (key, signals) in _signalHistory)
         {
-            composites.Add(new Signal("composite:in_memory_implant_active", 96, 0.96));
+            if (signals.Count == 0) continue;
+
+            var parts = key.Split(':', 2);
+            if (parts.Length != 2) continue;
+
+            var pidStr = parts[0];
+            if (!Enum.TryParse<SignalCategory>(parts[1], out var category)) continue;
+
+            if (pidStr == "global")
+            {
+                globalCategories.Add(category);
+            }
+            else
+            {
+                if (!pidCategories.TryGetValue(pidStr, out var cats))
+                {
+                    cats = new HashSet<SignalCategory>();
+                    pidCategories[pidStr] = cats;
+                }
+                cats.Add(category);
+            }
         }
 
-        // CredentialAccess + Network → Credential Theft + Exfil
-        if (activeCategories.Contains(nameof(SignalCategory.CredentialAccess)) &&
-            activeCategories.Contains(nameof(SignalCategory.Network)))
+        // Evaluate per-PID composite rules
+        foreach (var (pid, categories) in pidCategories)
         {
-            composites.Add(new Signal("composite:credential_theft_exfiltration", 95, 0.95));
+            // Injection + Network → In-Memory Implant (same PID)
+            if (categories.Contains(SignalCategory.Injection) &&
+                categories.Contains(SignalCategory.Network))
+            {
+                composites.Add(new Signal($"composite:in_memory_implant_active:pid:{pid}", 96, 0.96));
+            }
+
+            // CredentialAccess + Network → Credential Theft + Exfil (same PID)
+            if (categories.Contains(SignalCategory.CredentialAccess) &&
+                categories.Contains(SignalCategory.Network))
+            {
+                composites.Add(new Signal($"composite:credential_theft_exfiltration:pid:{pid}", 95, 0.95));
+            }
+
+            // ParentChild + EncodedExecution → Fileless Attack Chain (same PID)
+            if (categories.Contains(SignalCategory.ParentChild) &&
+                categories.Contains(SignalCategory.EncodedExecution))
+            {
+                composites.Add(new Signal($"composite:fileless_attack_chain:pid:{pid}", 94, 0.94));
+            }
+
+            // Download + Execution → Staged Payload (same PID)
+            if (categories.Contains(SignalCategory.DownloadCradle) &&
+                categories.Contains(SignalCategory.Execution))
+            {
+                composites.Add(new Signal($"composite:staged_payload_active:pid:{pid}", 92, 0.92));
+            }
+
+            // Multiple LOLBins on same PID → LOLBin Chain
+            var lolbinKey = $"{pid}:{nameof(SignalCategory.LolBin)}";
+            var lolbinCount = _signalHistory.GetValueOrDefault(lolbinKey)?.Count ?? 0;
+            if (lolbinCount >= 2)
+            {
+                composites.Add(new Signal($"composite:lolbin_chain({lolbinCount}):pid:{pid}", 88, 0.88));
+            }
         }
 
-        // ParentChild + EncodedExecution → Fileless Attack Chain
-        if (activeCategories.Contains(nameof(SignalCategory.ParentChild)) &&
-            activeCategories.Contains(nameof(SignalCategory.EncodedExecution)))
-        {
-            composites.Add(new Signal("composite:fileless_attack_chain", 94, 0.94));
-        }
-
-        // Download + Execution → Staged Payload
-        if (activeCategories.Contains(nameof(SignalCategory.DownloadCradle)) &&
-            activeCategories.Contains(nameof(SignalCategory.Execution)))
-        {
-            composites.Add(new Signal("composite:staged_payload_active", 92, 0.92));
-        }
-
-        // AntiTamper + any other → Active EDR Evasion
-        if (activeCategories.Contains(nameof(SignalCategory.AntiTamper)) &&
-            activeCategories.Count > 1)
+        // Global composite: AntiTamper + any PID having signals → Active EDR Evasion
+        if (globalCategories.Contains(SignalCategory.AntiTamper) && pidCategories.Count > 0)
         {
             composites.Add(new Signal("composite:active_edr_evasion", 97, 0.97));
-        }
-
-        // Multiple LOLBins → LOLBin Chain
-        var lolbinSignals = _signalHistory
-            .GetValueOrDefault(nameof(SignalCategory.LolBin))?.Count ?? 0;
-        if (lolbinSignals >= 2)
-        {
-            composites.Add(new Signal($"composite:lolbin_chain({lolbinSignals})", 88, 0.88));
         }
     }
 
@@ -123,9 +166,20 @@ public class BehavioralCorrelationEngine
             kvp.Value.RemoveAll(ts => now - ts.Timestamp > _correlationWindow);
         }
 
-        // Remove empty categories
+        // Remove empty keys
         var empty = _signalHistory.Where(kv => kv.Value.Count == 0).Select(kv => kv.Key).ToList();
         foreach (var key in empty) _signalHistory.Remove(key);
+    }
+
+    /// <summary>
+    /// Extract PID from a signal type string.
+    /// Patterns: "rwx_memory:notepad(pid:1234,regions:3)", "encoded_powershell:pid:5678"
+    /// Returns "unknown" if no PID found.
+    /// </summary>
+    private static string ExtractPid(string signalType)
+    {
+        var match = PidExtractRegex.Match(signalType);
+        return match.Success ? match.Groups[1].Value : "unknown";
     }
 
     private static SignalCategory CategorizeSignal(string signalType)
@@ -154,7 +208,7 @@ public class BehavioralCorrelationEngine
         return SignalCategory.Unknown;
     }
 
-    private record TimestampedSignal(Signal Signal, DateTime Timestamp);
+    private record TimestampedSignal(Signal Signal, DateTime Timestamp, string Pid);
 
     private enum SignalCategory
     {

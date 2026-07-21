@@ -25,7 +25,8 @@ public class DnsQueryMonitor : IPlatformMonitor
     private readonly Dictionary<int, List<DnsQueryRecord>> _queryHistory = new();
     private readonly object _lock = new();
     private const int MaxTrackedProcesses = 500;
-    private const int DgaEntropyThreshold = 35; // Shannon entropy * 10 (integer math)
+    private const int DgaEntropyThreshold = 30; // Shannon entropy * 10 — lowered from 35 to catch shorter DGA
+    private const int DgaMinDomainLength = 12;  // Lowered from 20 to catch short DGA domains
 
     // Suspicious TLDs commonly used in malware/C2
     private static readonly HashSet<string> SuspiciousTlds = new(StringComparer.OrdinalIgnoreCase)
@@ -82,12 +83,16 @@ public class DnsQueryMonitor : IPlatformMonitor
 
                 // DGA detection: high entropy domain names
                 var entropy = CalculateShannonEntropy(ExtractSecondLevelDomain(evt.QueryName));
-                if (entropy > DgaEntropyThreshold && evt.QueryName.Length > 20)
+                if (entropy > DgaEntropyThreshold && evt.QueryName.Length > DgaMinDomainLength)
                 {
                     signals.Add(new Signal(
                         $"dga_domain_query:{evt.QueryName}",
                         65, 0.75));
                 }
+
+                // DGA detection: unique domain rate per process
+                // DGA malware generates many unique domain queries in short bursts
+                DetectUniqueDomainBurst(evt.ProcessId, evt.QueryName, signals);
 
                 // Suspicious TLD detection
                 foreach (var tld in SuspiciousTlds)
@@ -144,6 +149,39 @@ public class DnsQueryMonitor : IPlatformMonitor
                     $"dns_tunneling_indicator:pid:{pid}({recentQueries}_queries_in_30s)",
                     75, confidence));
             }
+        }
+    }
+
+    /// <summary>
+    /// Detect DGA-style unique domain bursts: many unique second-level domains
+    /// from a single process in a short window indicates algorithmic generation.
+    /// Normal processes query the same domains repeatedly; DGA queries are unique.
+    /// </summary>
+    private void DetectUniqueDomainBurst(int pid, string queryName, List<Signal> signals)
+    {
+        if (!_queryHistory.TryGetValue(pid, out var history)) return;
+
+        var windowStart = DateTime.UtcNow.AddSeconds(-60);
+        var recentDomains = history
+            .Where(r => r.Timestamp > windowStart)
+            .Select(r => ExtractSecondLevelDomain(r.Domain))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+
+        // 20+ unique second-level domains in 60 seconds from one process = DGA indicator
+        if (recentDomains >= 20)
+        {
+            var confidence = recentDomains switch
+            {
+                > 100 => 0.93,
+                > 50 => 0.85,
+                > 20 => 0.75,
+                _ => 0.6
+            };
+
+            signals.Add(new Signal(
+                $"dga_unique_domain_burst:pid:{pid}({recentDomains}_unique_in_60s)",
+                70, confidence));
         }
     }
 

@@ -1,6 +1,8 @@
 namespace Behavedr.Agent;
 
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -105,19 +107,95 @@ public sealed class AgentWatchdog : BackgroundService
         }
     }
 
+    [SupportedOSPlatform("windows")]
     private void TrySetProcessProtection()
     {
         try
         {
-            // On Windows, we can set a DACL that denies PROCESS_TERMINATE from non-SYSTEM.
-            // This requires P/Invoke to SetSecurityInfo — simplified version logs intent.
-            _logger.LogInformation("[Watchdog] Process protection enabled (PID {Pid})", Environment.ProcessId);
+            // Set a DACL on our own process that denies PROCESS_TERMINATE from Everyone
+            // except SYSTEM and Administrators. This prevents non-privileged kill attempts
+            // and raises the bar for even admin-level kill (must use SeDebugPrivilege).
+            var hProcess = GetCurrentProcess();
+
+            // Build a security descriptor that:
+            // 1. Allows SYSTEM full control
+            // 2. Allows Administrators full control
+            // 3. Denies Everyone PROCESS_TERMINATE (0x0001)
+            // SDDL: D:(A;;GA;;;SY)(A;;GA;;;BA)(D;;0x0001;;;WD)
+            // GA = GENERIC_ALL, SY = SYSTEM, BA = Builtin Admins, WD = Everyone
+            const string sddl = "D:(A;;GA;;;SY)(A;;GA;;;BA)(D;;0x0001;;;WD)";
+
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl, 1 /* SDDL_REVISION_1 */, out var pSecDesc, out _))
+            {
+                _logger.LogDebug("[Watchdog] Failed to convert SDDL (error {Error})",
+                    Marshal.GetLastWin32Error());
+                return;
+            }
+
+            try
+            {
+                // SE_KERNEL_OBJECT = 6, DACL_SECURITY_INFORMATION = 0x04
+                var result = SetSecurityInfo(
+                    hProcess,
+                    6, // SE_KERNEL_OBJECT
+                    0x04, // DACL_SECURITY_INFORMATION
+                    IntPtr.Zero, IntPtr.Zero,
+                    GetSecurityDescriptorDacl(pSecDesc),
+                    IntPtr.Zero);
+
+                if (result == 0)
+                {
+                    _logger.LogInformation(
+                        "[Watchdog] Process DACL protection set — PROCESS_TERMINATE denied to non-SYSTEM (PID {Pid})",
+                        Environment.ProcessId);
+                }
+                else
+                {
+                    _logger.LogDebug("[Watchdog] SetSecurityInfo failed (error {Error})", result);
+                }
+            }
+            finally
+            {
+                LocalFree(pSecDesc);
+            }
         }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "[Watchdog] Failed to set process protection DACL");
         }
     }
+
+    /// <summary>
+    /// Extract the DACL pointer from a self-relative security descriptor.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static IntPtr GetSecurityDescriptorDacl(IntPtr pSecDesc)
+    {
+        if (GetSecurityDescriptorDacl(pSecDesc, out var daclPresent, out var pDacl, out _) && daclPresent)
+            return pDacl;
+        return IntPtr.Zero;
+    }
+
+    // P/Invoke declarations for process DACL protection
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern uint SetSecurityInfo(
+        IntPtr handle, int objectType, uint securityInfo,
+        IntPtr psidOwner, IntPtr psidGroup, IntPtr pDacl, IntPtr pSacl);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        string stringSecurityDescriptor, uint revision, out IntPtr securityDescriptor, out uint size);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetSecurityDescriptorDacl(
+        IntPtr pSecurityDescriptor, out bool bDaclPresent, out IntPtr pDacl, out bool bDaclDefaulted);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr hMem);
 
     private void WriteLastGasp(string message)
     {

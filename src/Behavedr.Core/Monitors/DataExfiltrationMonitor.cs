@@ -191,17 +191,78 @@ public class DataExfiltrationMonitor : IPlatformMonitor
                     continue;
                 }
 
-                var remoteAddr = new IPAddress(Marshal.ReadInt32(rowPtr + 8));
+                var localAddr = (uint)Marshal.ReadInt32(rowPtr + 4);
+                var localPort = (ushort)IPAddress.NetworkToHostOrder((short)Marshal.ReadInt32(rowPtr + 8));
+                var remoteAddrInt = Marshal.ReadInt32(rowPtr + 12);
+                var remoteAddr = new IPAddress(remoteAddrInt);
+                var remotePort = (ushort)IPAddress.NetworkToHostOrder((short)Marshal.ReadInt32(rowPtr + 16));
                 var pid = Marshal.ReadInt32(rowPtr + 20);
 
-                // Estimate bytes from connection duration (simplified heuristic)
-                // In production, use GetPerTcpConnectionEStats for real byte counters
+                // Query per-connection byte counters via GetPerTcpConnectionEStats
+                long bytesSent = 0;
+                long bytesReceived = 0;
+
+                var row = new MIB_TCPROW
+                {
+                    dwState = 5, // ESTABLISHED
+                    dwLocalAddr = localAddr,
+                    dwLocalPort = (uint)IPAddress.HostToNetworkOrder((short)localPort),
+                    dwRemoteAddr = (uint)remoteAddrInt,
+                    dwRemotePort = (uint)IPAddress.HostToNetworkOrder((short)remotePort),
+                };
+
+                try
+                {
+                    // Try to enable stats and read data transfer counters
+                    // First, enable the data stats object for this connection
+                    var enableRw = new TCP_ESTATS_DATA_RW_v0 { EnableCollection = 1 };
+                    int enableSize = Marshal.SizeOf<TCP_ESTATS_DATA_RW_v0>();
+                    var enablePtr = Marshal.AllocHGlobal(enableSize);
+                    try
+                    {
+                        Marshal.StructureToPtr(enableRw, enablePtr, false);
+                        // SetPerTcpConnectionEStats — enable data collection (best effort)
+                        SetPerTcpConnectionEStats(ref row, TCP_ESTATS_TYPE.TcpConnectionEstatsData,
+                            enablePtr, 0, (uint)enableSize, 0);
+                    }
+                    finally { Marshal.FreeHGlobal(enablePtr); }
+
+                    // Read the data ROD (read-only dynamic) stats
+                    int rodSize = Marshal.SizeOf<TCP_ESTATS_DATA_ROD_v0>();
+                    var rodPtr = Marshal.AllocHGlobal(rodSize);
+                    try
+                    {
+                        // Zero the buffer
+                        for (int j = 0; j < rodSize; j++)
+                            Marshal.WriteByte(rodPtr, j, 0);
+
+                        var result = GetPerTcpConnectionEStats(ref row,
+                            TCP_ESTATS_TYPE.TcpConnectionEstatsData,
+                            IntPtr.Zero, 0, 0,   // RW (not reading)
+                            IntPtr.Zero, 0, 0,   // ROS (not reading)
+                            rodPtr, 0, (uint)rodSize); // ROD (dynamic counters)
+
+                        if (result == 0) // ERROR_SUCCESS
+                        {
+                            var rod = Marshal.PtrToStructure<TCP_ESTATS_DATA_ROD_v0>(rodPtr);
+                            bytesSent = (long)rod.DataBytesOut;
+                            bytesReceived = (long)rod.DataBytesIn;
+                        }
+                    }
+                    finally { Marshal.FreeHGlobal(rodPtr); }
+                }
+                catch
+                {
+                    // GetPerTcpConnectionEStats may fail on older Windows or without admin
+                    // Fall back to zero (will not trigger detection — acceptable degradation)
+                }
+
                 results.Add(new ConnectionStats
                 {
                     Pid = pid,
                     RemoteAddress = remoteAddr.ToString(),
-                    BytesSent = 0, // Populated by per-connection stats when available
-                    BytesReceived = 0,
+                    BytesSent = bytesSent,
+                    BytesReceived = bytesReceived,
                 });
 
                 rowPtr += rowSize;
@@ -213,6 +274,67 @@ public class DataExfiltrationMonitor : IPlatformMonitor
         }
 
         return results;
+    }
+
+    // Per-connection EStats P/Invoke
+    [DllImport("iphlpapi.dll", SetLastError = true)]
+    private static extern uint GetPerTcpConnectionEStats(
+        ref MIB_TCPROW row, TCP_ESTATS_TYPE statsType,
+        IntPtr rw, uint rwVersion, uint rwSize,
+        IntPtr ros, uint rosVersion, uint rosSize,
+        IntPtr rod, uint rodVersion, uint rodSize);
+
+    [DllImport("iphlpapi.dll", SetLastError = true)]
+    private static extern uint SetPerTcpConnectionEStats(
+        ref MIB_TCPROW row, TCP_ESTATS_TYPE statsType,
+        IntPtr rw, uint rwVersion, uint rwSize, uint offset);
+
+    private enum TCP_ESTATS_TYPE
+    {
+        TcpConnectionEstatsSynOpts = 0,
+        TcpConnectionEstatsData = 1,
+        TcpConnectionEstatsSndCong = 2,
+        TcpConnectionEstatsPath = 3,
+        TcpConnectionEstatsSendBuff = 4,
+        TcpConnectionEstatsRec = 5,
+        TcpConnectionEstatsObsRec = 6,
+        TcpConnectionEstatsBandwidth = 7,
+        TcpConnectionEstatsFineRtt = 8,
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MIB_TCPROW
+    {
+        public uint dwState;
+        public uint dwLocalAddr;
+        public uint dwLocalPort;
+        public uint dwRemoteAddr;
+        public uint dwRemotePort;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TCP_ESTATS_DATA_RW_v0
+    {
+        public byte EnableCollection; // BOOLEAN
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TCP_ESTATS_DATA_ROD_v0
+    {
+        public ulong DataBytesOut;
+        public ulong DataSegsOut;
+        public ulong DataBytesIn;
+        public ulong DataSegsIn;
+        public ulong SegsOut;
+        public ulong SegsIn;
+        public ulong SoftErrors;
+        public ulong SoftErrorReason;
+        public ulong SndUna;
+        public ulong SndNxt;
+        public ulong SndMax;
+        public ulong ThruBytesAcked;
+        public ulong RcvNxt;
+        public ulong ThruBytesReceived;
     }
 
     private void PruneExpired()

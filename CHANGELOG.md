@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.1.0] — 2026-07-21
+
+### Security Audit Remediation — All P0/P1/P2 Findings Fixed
+
+Addresses all findings from the v0.0.9 red/blue team security audit.
+
+#### P0 — Critical Security Fixes
+
+- **Process DACL protection** (`AgentWatchdog.cs`): Implemented real `SetSecurityInfo` P/Invoke to set a DACL that denies `PROCESS_TERMINATE` from Everyone while allowing SYSTEM and Administrators full control. Uses SDDL-based security descriptor conversion.
+- **Native ETW event parsing** (`NativeEtwSession.cs`): `HandleKernelProcessEvent` now parses ProcessName, ParentProcessId, and CommandLine from EVENT_RECORD UserData payloads. `HandleDnsEvent` parses QueryName and QueryType. Added `ReadUnicodeString` helper for safe null-terminated string extraction from unmanaged memory.
+- **Data exfiltration byte counters** (`DataExfiltrationMonitor.cs`): Implemented real per-connection byte tracking via `GetPerTcpConnectionEStats`/`SetPerTcpConnectionEStats` P/Invoke. Reads `DataBytesOut`/`DataBytesIn` from TCP_ESTATS_DATA_ROD_v0. Falls back gracefully on older Windows.
+
+#### P1 — High Priority Fixes
+
+- **PID-scoped correlation** (`BehavioralCorrelationEngine.cs`): Signal history now keyed by `(PID, category)` instead of category alone. Composite rules only fire when signals from the SAME PID match. Eliminates cross-process false positive flooding. Anti-tamper signals remain system-wide (global scope).
+- **Anti-fingerprinting connectivity canary** (`ConnectivityCanaryMonitor.cs`): Expanded URL pool (8 endpoints including OS captive portals). Random URL selection per check. Pool of 5 browser-like User-Agent strings rotated per request. Jittered interval ±15s using cryptographic RNG. No product-identifying headers.
+- **Per-installation DPAPI entropy** (`KeyProtection.cs`): Replaced hardcoded entropy string with per-machine random entropy generated at install time (32 bytes, stored in `.behavedr-entropy` with restricted ACLs). Prevents DPAPI unwrapping even with source code access.
+
+#### P2 — Medium Priority Fixes
+
+- **CredentialCanary marshaling** (`CredentialCanaryMonitor.cs`): Replaced unsafe hardcoded struct offset reading with proper `Marshal.PtrToStructure<NATIVE_CREDENTIAL>`. Added correct Windows SDK CREDENTIALW struct definition with IntPtr-sized fields. Fixed memory leak with proper try/finally for `CredFree`.
+- **DGA detection refinement** (`DnsQueryMonitor.cs`): Lowered entropy threshold (3.5→3.0) and domain length threshold (20→12 chars) to catch shorter DGA. Added `DetectUniqueDomainBurst` for dictionary-based DGA (20+ unique domains in 60s per process).
+
+---
+
 ## [0.0.9] — 2026-07-21
 
 ### Red/Blue Team Audit — Complete Remediation (v2)

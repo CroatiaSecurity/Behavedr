@@ -120,13 +120,16 @@ public class CredentialCanaryMonitor : IPlatformMonitor
         {
             if (CredRead(CanaryTarget, CRED_TYPE_GENERIC, 0, out var credPtr) && credPtr != IntPtr.Zero)
             {
-                // Read the LastWritten field from the CREDENTIAL structure
-                // LastWritten is at offset after Flags(4) + Type(4) + TargetName(ptr) + Comment(ptr)
-                // In the native struct it's a FILETIME (8 bytes)
-                var lastWrittenOffset = IntPtr.Size == 8 ? 24 : 16; // Adjust for pointer size
-                var lastWritten = Marshal.ReadInt64(credPtr, lastWrittenOffset);
-                CredFree(credPtr);
-                return lastWritten;
+                try
+                {
+                    // Use proper marshaling to read the native CREDENTIAL structure
+                    var nativeCred = Marshal.PtrToStructure<NATIVE_CREDENTIAL>(credPtr);
+                    return nativeCred.LastWritten;
+                }
+                finally
+                {
+                    CredFree(credPtr);
+                }
             }
         }
         catch { }
@@ -137,6 +140,31 @@ public class CredentialCanaryMonitor : IPlatformMonitor
     private const int CRED_TYPE_GENERIC = 1;
     private const int CRED_PERSIST_LOCAL_MACHINE = 2;
 
+    /// <summary>
+    /// Native CREDENTIAL structure for reading via PtrToStructure.
+    /// Layout matches the Windows SDK CREDENTIALW definition exactly:
+    ///   https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct NATIVE_CREDENTIAL
+    {
+        public uint Flags;
+        public uint Type;
+        public IntPtr TargetName;       // LPWSTR
+        public IntPtr Comment;          // LPWSTR
+        public long LastWritten;        // FILETIME (8 bytes)
+        public uint CredentialBlobSize;
+        public IntPtr CredentialBlob;   // LPBYTE
+        public uint Persist;
+        public uint AttributeCount;
+        public IntPtr Attributes;       // PCREDENTIAL_ATTRIBUTEW
+        public IntPtr TargetAlias;      // LPWSTR
+        public IntPtr UserName;         // LPWSTR
+    }
+
+    /// <summary>
+    /// Managed CREDENTIAL structure for CredWrite (uses string marshaling).
+    /// </summary>
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct CREDENTIAL
     {
