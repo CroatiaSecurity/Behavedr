@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.1.4] — 2026-07-21
+
+### Operational Hardening — Installer Resilience, Safe Mode, Build Automation, Documentation
+
+Addresses all findings from the v0.1.3 red/blue team audit. Focuses on deployment
+reliability, operational security gaps, and professional documentation.
+
+#### Installer Resilience (RT-1 fix)
+
+- **PrepareToInstall Pascal Script**: Handles upgrade over running agent by disabling SCM failure recovery before stop, polling for STOPPED state (10s timeout), force-killing remaining processes, resetting directory ACLs via takeown/icacls (undoes self-protection DACL), and renaming locked files as `.old` fallback.
+- **CurUninstallStepChanged**: Proper uninstall lifecycle — stop service, reset ACLs, delete service registration, clean up Safe Mode registry keys.
+- **Post-install cleanup**: Deletes `.old` files from previous upgrade fallback.
+- **UsePreviousAppDir**: Allows seamless in-place upgrades.
+- **{sysnative} usage**: All system calls use `{sysnative}` to bypass WOW64 redirection.
+
+#### Safe Mode Persistence (RT-3 fix)
+
+- **Registry entries**: Service registered under `SafeBoot\Minimal` and `SafeBoot\Network` — starts in both Safe Mode variants. Prevents T1562.009 (Safe Mode evasion).
+- **Uninstall cleanup**: Safe Mode keys removed on uninstall via `uninsdeletekey` flags and Pascal Script.
+
+#### Build Automation (RT-2 fix)
+
+- **installer/build.ps1**: Complete local build script. Reads version from Directory.Build.props (single source of truth), cleans artifacts, publishes self-contained single-file binary, discovers Inno Setup in standard paths (no Chocolatey dependency), compiles installer. Supports `-SkipClean`, `-SkipTests`, `-Runtime` parameters.
+- **No CI dependency**: Developers and security teams can reproduce release builds offline.
+- **Version consistency**: ISS default updated to match Directory.Build.props.
+
+#### Documentation Overhaul
+
+- **README.md**: Rewritten. Concise product description, platform table, quick start, build instructions. Full legal disclaimer covering liability, operator responsibility, automated response actions, and jurisdictional compliance.
+- **THREAT_MODEL.md**: New. System overview, trust boundary diagram, 6 threat actor profiles, attack surface analysis (local/network/supply chain), threat scenarios with MITRE ATT&CK mappings, accepted risks, security controls summary.
+- **SECURITY.md**: Rewritten. Supported versions, vulnerability reporting process, security architecture (design principles, cryptographic inventory, self-protection mechanisms table, supply chain controls), known limitations.
+- **CHANGELOG.md**: Updated for v0.1.4.
+
+#### Version Stamping (RT-6 fix)
+
+- ISS script default version updated from `0.0.4` to `0.1.4`.
+- build.ps1 passes version from Directory.Build.props to ISCC via `/D` flag.
+
+---
+
 ## [0.1.3] — 2026-07-21
 
 ### Security Audit Full Remediation — All 22 Findings Fixed

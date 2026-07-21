@@ -1,66 +1,74 @@
 # Behavedr
 
-Multi-platform behavioral EDR: **Windows, Linux, macOS, Android, iOS**.
-
-**Current release:** [v0.0.2](https://github.com/CroatiaSecurity/Behavedr/releases/tag/v0.0.2)
-
-### Windows install
-
-1. Download **`Behavedr-Setup-*-win-x64.exe`** from [Releases](https://github.com/CroatiaSecurity/Behavedr/releases)
-2. Run the installer (Program Files + Start Menu)
-3. Or use **Portable** zip → single `Behavedr.exe`
-
-**Core:** GIDR President (closed-list kills), Council of Elders weighted signals, userland-first.
-
-Built with .NET 10. Desktop agent + .NET MAUI phone app share `Behavedr.Core`.
+Behavioral endpoint detection and response agent. Monitors process activity, network connections, and system integrity in real time. Produces scored detections and executes configurable response actions.
 
 ## Platforms
 
-| Platform | Project | Runtime ID / TFM |
-|----------|---------|------------------|
-| Windows | `Behavedr.Agent` | `win-x64` |
-| Linux | `Behavedr.Agent` | `linux-x64` |
-| macOS | `Behavedr.Agent` | `osx-arm64` |
-| Android | `Behavedr.Mobile` | `net10.0-android` |
-| iOS | `Behavedr.Mobile` | `net10.0-ios` |
+| Platform | Status |
+|----------|--------|
+| Windows (x64) | Production |
+| Linux (x64) | Monitoring only |
+| macOS (ARM64) | Monitoring only |
+| Android | Experimental |
+| iOS | Experimental |
 
-Monitors live in `Behavedr.Core` (`WindowsMonitor`, `LinuxMonitor`, `MacOSMonitor`, `AndroidMonitor`, `IosMonitor`) and register via `AgentBootstrap` / `PlatformMonitors`.
+## Quick Start
 
-### Phone notes
-
-- **Android** — UsageStats / package query / accessibility-class hooks (stubs + permission declarations).
-- **iOS** — Sandbox-limited; config profile / network-filter class signals (stubs). Full enterprise reach needs MDM / Network Extension entitlements.
-
-## Build
-
-### Desktop agent
-
-```bash
-dotnet build src/Behavedr.Agent/Behavedr.Agent.csproj -c Release
-dotnet publish src/Behavedr.Agent/Behavedr.Agent.csproj -c Release -r win-x64 --self-contained -o publish/agent
+**Windows (installer):**
+```
+Behavedr-Setup-<version>-win-x64.exe
 ```
 
-### Mobile (requires MAUI workloads)
-
-```bash
-dotnet workload install maui-android maui-ios
-dotnet build src/Behavedr.Mobile/Behavedr.Mobile.csproj -c Release -f net10.0-android
-dotnet build src/Behavedr.Mobile/Behavedr.Mobile.csproj -c Release -f net10.0-ios
+**Windows (portable):**
+```
+Behavedr.exe
 ```
 
-## CI
-
-GitHub Actions builds desktop (3 OS), Android APK, and iOS (simulator, no codesign).
-
-## Releases
-
-Tag a version to publish binaries:
-
-```bash
-git tag v0.0.1
-git push origin v0.0.1
+**Linux:**
+```
+chmod +x Behavedr
+sudo ./Behavedr
 ```
 
-The **Release** workflow attaches self-contained agent zips + Android package to [GitHub Releases](https://github.com/CroatiaSecurity/Behavedr/releases).
+## Building from Source
 
-Icon: use assets under `Assets/` / MAUI `Resources/`.
+Requires .NET 10 SDK.
+
+```powershell
+# Windows — full installer build
+.\installer\build.ps1
+
+# Any platform — portable binary only
+dotnet publish src/Behavedr.Agent/Behavedr.Agent.csproj -c Release -r win-x64 --self-contained
+```
+
+## Documentation
+
+| Document | Contents |
+|----------|----------|
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting, security design, supported versions |
+| [THREAT_MODEL.md](THREAT_MODEL.md) | Threat model, attack surface, trust boundaries |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [docs/](docs/) | Architecture decisions, audit reports |
+
+## License
+
+This software is provided under the terms specified in the repository license file. If no license file is present, all rights are reserved by CroatiaSecurity.
+
+## Legal
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS, COPYRIGHT HOLDERS, OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+**Behavedr is endpoint security software that monitors system activity and may terminate processes or quarantine files based on behavioral analysis.** Deployment and operation of this software is the sole responsibility of the operator. The operator must ensure compliance with all applicable laws, regulations, and organizational policies governing endpoint monitoring, data collection, and automated response actions in their jurisdiction.
+
+CroatiaSecurity is not responsible for:
+- Data loss resulting from automated response actions (process termination, file quarantine)
+- System instability caused by interaction with other security software
+- False positive detections leading to disruption of legitimate processes
+- Regulatory non-compliance arising from deployment without appropriate authorization
+
+By installing or running this software, the operator acknowledges these terms and accepts full responsibility for its configuration and operation.
+
+---
+
+Copyright (c) 2026 CroatiaSecurity. All rights reserved.

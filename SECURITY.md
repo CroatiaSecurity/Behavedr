@@ -4,20 +4,19 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.0.9   | Yes       |
-| < 0.0.9 | No        |
+| 0.1.4   | Yes       |
+| < 0.1.4 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
 ## Reporting a Vulnerability
 
-We take security issues in Behavedr seriously. If you discover a vulnerability, please report it responsibly.
+**Do not open a public GitHub issue for security vulnerabilities.**
 
 ### How to Report
 
-1. **Do NOT open a public GitHub issue** for security vulnerabilities.
-2. Email your report to: **security@croatiasecurity.com**
-3. Alternatively, use [GitHub Security Advisories](https://github.com/CroatiaSecurity/Behavedr/security/advisories/new) to report privately.
+1. Email: **security@croatiasecurity.com**
+2. Or use [GitHub Security Advisories](https://github.com/CroatiaSecurity/Behavedr/security/advisories/new)
 
 ### What to Include
 
@@ -31,78 +30,89 @@ We take security issues in Behavedr seriously. If you discover a vulnerability, 
 
 | Stage | Target |
 |-------|--------|
-| Acknowledgment | Within 48 hours |
-| Initial assessment | Within 5 business days |
-| Fix development | Within 30 days for critical, 90 days for others |
-| Public disclosure | Coordinated with reporter after fix is released |
+| Acknowledgment | 48 hours |
+| Initial assessment | 5 business days |
+| Fix (critical) | 30 days |
+| Fix (other) | 90 days |
+| Disclosure | Coordinated with reporter after fix ships |
 
-### What to Expect
-
-- You will receive an acknowledgment with a tracking reference.
-- We will keep you informed of progress toward a fix.
-- We will credit you in the release notes (unless you prefer anonymity).
-- We will not take legal action against researchers who follow responsible disclosure.
+We will credit reporters in release notes unless anonymity is preferred. We do not take legal action against researchers who follow responsible disclosure.
 
 ## Scope
 
-The following are in scope for security reports:
-
-- Agent binary (desktop: Windows, Linux, macOS)
-- Mobile app (Android, iOS)
+**In scope:**
+- Agent binary (Windows, Linux, macOS)
 - Detection and scoring engines
 - Self-protection mechanisms
+- Cryptographic operations and key management
+- Communication layer (mTLS, policy, updates)
 - Build pipeline and supply chain
-- Configuration handling
+- Installer and packaging scripts
+- Configuration handling and integrity verification
 
-### Out of Scope
-
-- Issues in third-party dependencies (report upstream; let us know so we can track)
-- Social engineering attacks against CroatiaSecurity personnel
+**Out of scope:**
+- Third-party dependency vulnerabilities (report upstream; notify us for tracking)
+- Social engineering against CroatiaSecurity personnel
 - Denial of service against CI/CD infrastructure
 
-## Security Design Principles
+## Security Architecture
 
-Behavedr follows these security principles:
+### Design Principles
 
-- **Userland-first**: The agent operates without kernel drivers where possible.
-- **Least privilege**: Permissions are requested only when features require them.
-- **Defense in depth**: Self-protection, integrity checks, and structured logging.
-- **Minimal attack surface**: Single-file deployment, no temp extraction, pinned dependencies.
-- **Transparency**: Open source, SBOM generated with each release.
+- **Userland operation.** No kernel driver requirement. Reduces attack surface and deployment complexity at the cost of kernel rootkit visibility.
+- **Least privilege where possible.** SYSTEM context is required for ETW, process inspection, and response actions. File permissions are restricted to SYSTEM and Administrators.
+- **Defense in depth.** Multiple independent self-protection mechanisms. No single bypass disables all detection.
+- **Fail-closed communication.** TLS connections are rejected without a valid pinned CA certificate. No fallback to insecure transport.
+- **Cryptographic integrity.** All local storage uses authenticated encryption (AES-256-GCM). Configuration files are HMAC-sealed. Updates require RSA-4096 PSS signatures.
+- **Minimal attack surface.** Single-file deployment. No temp extraction. Deterministic builds. Pinned dependencies with lock files.
+
+### Cryptographic Inventory
+
+| Operation | Algorithm | Key Size | Notes |
+|-----------|-----------|----------|-------|
+| Machine key protection | DPAPI (LocalMachine) + entropy | 256-bit | Per-install random entropy prevents cross-machine unwrap |
+| Local encryption | AES-256-GCM | 256-bit | Purpose-specific keys derived via HKDF-SHA256 |
+| Config integrity | HMAC-SHA256 | 256-bit | Key derived from machine key via HKDF |
+| Update signing | RSA-PSS SHA-256 | 4096-bit | Private key offline; public key baked into binary |
+| Policy signing | RSA-PSS SHA-256 | 4096-bit | Same key infrastructure as updates |
+| Transport | TLS 1.3 (mTLS) | 2048-bit client cert | CA-pinned; fail-closed |
+| Config value encryption | AES-256-GCM (cross-platform) / DPAPI (Windows) | 256-bit | DPAPI uses LocalMachine scope |
+
+### Self-Protection Mechanisms (v0.1.4)
+
+| Mechanism | Check Interval | Description |
+|-----------|---------------|-------------|
+| Process DACL | Startup | Denies PROCESS_TERMINATE to Everyone except SYSTEM/Admins |
+| Anti-debug | 30s | FailFast on Debugger.IsAttached in Release builds |
+| Binary integrity | 10s | SHA-256 of running executable vs startup baseline |
+| QPC suspension detection | ~2s | Detects NtSuspendProcess via performance counter gap |
+| Service registry self-healing | 10s | Re-registers service if registry key deleted |
+| ETW session liveness | 10s | QueryTraceW verifies session not killed externally |
+| ntdll!EtwEventWrite integrity | 10s | Prologue byte comparison against startup baseline |
+| amsi!AmsiScanBuffer integrity | 10s | Prologue byte comparison against startup baseline |
+| Safe Mode persistence | Install-time | Registry entries for Minimal and Network Safe Boot |
+| SCM failure recovery | Service-level | Restart at 5s, 10s, 30s after unexpected stop |
+| Config HMAC seal | Startup | Refuses to start if config has been tampered |
+| Connectivity canary | ~45s (jittered) | Detects network isolation/firewall silencing |
+| Watchdog heartbeat | 3s | Detects monitoring loop suspension or deadlock |
+
+### Supply Chain Controls
+
+- **Deterministic builds** enabled in Directory.Build.props
+- **Package lock files** committed (RestorePackagesWithLockFile)
+- **Pinned CI action SHAs** (no floating tags)
+- **SBOM generation** on Linux release builds
+- **Signed auto-updates** with RSA-4096 PSS verification
+- **Local build capability** via installer/build.ps1 (no CI dependency)
+- **No runtime package downloads** during build (ISCC discovered locally)
 
 ## Known Limitations
 
-- Code signing for the agent binary is not yet implemented (planned for v0.1.0).
-- Native ETW requires elevation (SYSTEM/admin); falls back to WMI polling without it.
-- macOS and iOS monitors are stub implementations (no EndpointSecurity.framework integration yet).
-- Key rotation requires manual invocation of `ConfigProtection.RotateKey()`.
-- Watchdog runs in-process (same binary); a truly separate watchdog process is planned for v0.1.0.
-- Data exfiltration monitor uses connection counts as proxy for byte volume (full per-connection stats require GetPerTcpConnectionEStats).
-
-## Security Features (v0.0.9)
-
-- Native ETW session with Kernel-Process and DNS-Client providers (~50ms latency)
-- DPAPI-wrapped machine key (LocalMachine scope + app-specific entropy)
-- Config pre-seal validation (rejects out-of-bounds thresholds before sealing)
-- Agent watchdog with mutual heartbeat monitoring and last-gasp logging
-- Signal deduplication and exponential decay (prevents score gaming)
-- DNS monitoring with DGA detection, tunneling detection, suspicious TLD alerting
-- Data exfiltration detection (large outbound transfers, upload ratio analysis)
-- Command-line normalization defeating caret/env-var/tick evasion
-- Process ancestry cache for multi-hop parent-child analysis
-- Incident grouping (correlated detection events by process tree)
-- Parallel monitor execution with per-monitor timeout (10s)
-- Boot nonce for cross-session replay prevention
-- Credential canary read detection (not just deletion)
-- Audit log truncation detection (Linux)
-- Signed auto-updates with RSA-PSS SHA-256 verification
-- Fail-closed TLS (no connections without CA cert pinning)
-- Config file HMAC integrity protection
-- Encrypted offline buffer (AES-256-GCM)
-- Authenticated policy updates (server must sign)
-- Anti-debug protection (FailFast in Release builds)
-- Response action rate limiting (60s cooldown per target)
-- Path traversal prevention in file quarantine
-- Machine key versioning and rotation support
-- Android signal injection authentication
-- Deterministic builds enabled
+- No kernel-level visibility. Kernel rootkits can hide from all monitors.
+- Native ETW requires elevation (SYSTEM/admin). Falls back to WMI polling without it.
+- macOS and iOS monitors are stub implementations pending EndpointSecurity.framework integration.
+- Single-process architecture. A successful SYSTEM-level kill terminates all protection until SCM restart (5s).
+- Auto-update rollback is not implemented. A corrupted update that passes signature verification could prevent startup.
+- DPAPI entropy fallback to fixed value when filesystem is unwritable (containers). Logged as CRITICAL.
+- No WFP (Windows Filtering Platform) integration for real-time network filtering.
+- No driver load monitoring.
