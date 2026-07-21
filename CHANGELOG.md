@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.0.5] — 2026-07-21
+
+### Security Hardening (Full Blue/Red Team Audit)
+
+#### P0 — Critical Fixes
+- **Signed auto-updates**: RSA-PSS SHA-256 signature verification on all downloaded update packages. Agent downloads `.sig` sidecar file and verifies against baked-in public key before extraction. Rejects unsigned updates.
+- **Fail-closed TLS**: Removed `DangerousAcceptAnyServerCertificateValidator`. When no CA cert is configured, agent refuses all server connections (prevents MITM). Configure `CaCertPath` to enable communication.
+- **Config integrity protection**: HMAC-SHA256 verification of `appsettings.json` at startup. First run seals the config; subsequent starts verify the seal. Agent refuses to start if config is tampered with.
+
+#### P1 — High Priority
+- **Encrypted offline buffer**: Buffered detection reports are now encrypted with AES-256-GCM using a purpose-derived key (HKDF from machine key). Tampered/corrupted reports are detected and moved to dead-letter.
+- **Authenticated policy updates**: `PolicyUpdate` from server now includes a `Signature` field. Agent verifies RSA-PSS signature before accepting any policy changes.
+- **Anti-debug hardening**: In Release builds, agent calls `Environment.FailFast` immediately when a debugger is detected (startup and periodic checks). Debug builds still allow attached debuggers.
+- **Response rate limiting**: 60-second cooldown per target (PID:ProcessName). Prevents repeated kill/quarantine actions against the same target within the cooldown window.
+
+#### P2 — Medium Priority
+- **Path traversal prevention**: `FileQuarantineAction` now validates file paths extracted from signals. Rejects `..`, path separators, and verifies resolved paths stay within expected directories.
+- **Machine key rotation**: `ConfigProtection.RotateKey()` supports versioned key rotation. Old keys are archived as `.behavedr-key-v{N}` for decrypting existing data during migration.
+- **Android signal injection auth**: `AndroidMonitor.InjectPlatformSignals` now requires a per-session injection token. Unauthorized callers receive `UnauthorizedAccessException`.
+- **Dev cert cleanup**: Certificate generation scripts no longer contain hardcoded passwords. Password must be provided via `BEHAVEDR_CERT_PASSWORD` env var or interactive prompt. Added `certs/`, `*.pfx`, `*.key`, `*.pem` to `.gitignore`.
+
+#### P3 — Supply Chain
+- **Deterministic builds**: Added `<Deterministic>true</Deterministic>` to `Directory.Build.props` for reproducible output.
+- **Lock file guidance**: Added instructions for generating and committing `packages.lock.json` when ready for deterministic restores.
+
+### Build Fixes
+- Fixed NETSDK1047: Removed `SelfContained=true` from csproj (pass via CLI during publish only)
+- Fixed test step: Added explicit restore + build for test project before `dotnet test --no-build`
+- Updated SBOM version reference from 0.0.3 to 0.0.5
+
 ## [0.0.4] — 2026-07-18
 
 ### Real Signal Collection (replaces stubs)

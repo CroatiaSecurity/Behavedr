@@ -1,6 +1,7 @@
 namespace Behavedr.Core.Communication;
 
 using System.Text.Json;
+using Behavedr.Core.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -26,11 +27,11 @@ public class OfflineBuffer
 
     /// <summary>Number of buffered reports waiting to be sent.</summary>
     public int PendingCount => Directory.Exists(_bufferPath)
-        ? Directory.GetFiles(_bufferPath, "*.json").Length
+        ? Directory.GetFiles(_bufferPath, "*.enc").Length
         : 0;
 
     /// <summary>
-    /// Enqueue a report for later delivery.
+    /// Enqueue a report for later delivery. Report is encrypted at rest using AES-256-GCM.
     /// </summary>
     public async Task EnqueueAsync(DetectionReport report, CancellationToken ct = default)
     {
@@ -41,11 +42,14 @@ public class OfflineBuffer
             DropOldest();
         }
 
-        var fileName = $"{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}_{Guid.NewGuid():N}.json";
+        var fileName = $"{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}_{Guid.NewGuid():N}.enc";
         var filePath = Path.Combine(_bufferPath, fileName);
 
         var json = JsonSerializer.Serialize(report, BufferJsonOptions);
-        await File.WriteAllTextAsync(filePath, json, ct);
+
+        // Encrypt the report before writing to disk
+        var sealed = SecureEnvelope.SealString(json, "offline-buffer");
+        await File.WriteAllTextAsync(filePath, sealed, ct);
 
         _logger.LogDebug("Buffered report for {Process} (score={Score:F1})",
             report.Event.ProcessName, report.Score);
@@ -53,13 +57,13 @@ public class OfflineBuffer
 
     /// <summary>
     /// Replay all buffered reports through the client.
-    /// Reports are sent in chronological order and removed on successful delivery.
+    /// Reports are decrypted, sent in chronological order, and removed on successful delivery.
     /// </summary>
     public async Task<int> ReplayAsync(IBehavedrClient client, CancellationToken ct = default)
     {
         if (!Directory.Exists(_bufferPath)) return 0;
 
-        var files = Directory.GetFiles(_bufferPath, "*.json")
+        var files = Directory.GetFiles(_bufferPath, "*.enc")
             .OrderBy(f => f) // Filename starts with timestamp, so alphabetical = chronological
             .ToList();
 
@@ -74,7 +78,18 @@ public class OfflineBuffer
 
             try
             {
-                var json = await File.ReadAllTextAsync(file, ct);
+                var sealed = await File.ReadAllTextAsync(file, ct);
+
+                // Decrypt and verify authenticity
+                var json = SecureEnvelope.UnsealString(sealed, "offline-buffer");
+                if (json is null)
+                {
+                    _logger.LogCritical("SECURITY: Buffered report {File} failed decryption — tampered or corrupted, moving to dead-letter",
+                        Path.GetFileName(file));
+                    MoveToDeadLetter(file);
+                    continue;
+                }
+
                 var report = JsonSerializer.Deserialize<DetectionReport>(json, BufferJsonOptions);
 
                 if (report is null)
@@ -96,7 +111,6 @@ public class OfflineBuffer
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to replay buffered report {File}", Path.GetFileName(file));
-                // Move to a dead-letter directory instead of infinite retries
                 MoveToDeadLetter(file);
             }
         }
@@ -111,7 +125,7 @@ public class OfflineBuffer
     {
         try
         {
-            var oldest = Directory.GetFiles(_bufferPath, "*.json")
+            var oldest = Directory.GetFiles(_bufferPath, "*.enc")
                 .OrderBy(f => f)
                 .FirstOrDefault();
 

@@ -18,10 +18,22 @@ param(
     [string]$ServerDns = "localhost",
     [string]$CaName = "Behavedr CA",
     [int]$ValidDays = 730,
-    [string]$Password = "behavedr-dev"
+    [string]$Password = $env:BEHAVEDR_CERT_PASSWORD
 )
 
 $ErrorActionPreference = "Stop"
+
+# Require password via environment variable or prompt
+if ([string]::IsNullOrEmpty($Password)) {
+    $securePass = Read-Host -Prompt "Enter PFX password (or set BEHAVEDR_CERT_PASSWORD env var)" -AsSecureString
+    $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePass))
+}
+
+if ([string]::IsNullOrEmpty($Password)) {
+    Write-Error "Password is required. Set BEHAVEDR_CERT_PASSWORD or provide at prompt."
+    exit 1
+}
 
 # Ensure output directory
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null

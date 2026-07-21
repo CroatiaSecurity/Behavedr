@@ -1,6 +1,7 @@
 using Behavedr.Agent;
 using Behavedr.Core;
 using Behavedr.Core.Platform;
+using Behavedr.Core.Security;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -14,10 +15,28 @@ Log.Logger = new LoggerConfiguration()
 try
 {
     Log.Information("Behavedr Agent v{Version} starting on {Platform}",
-        typeof(DetectionEngine).Assembly.GetName().Version?.ToString(3) ?? "0.0.3",
+        typeof(DetectionEngine).Assembly.GetName().Version?.ToString(3) ?? "0.0.5",
         PlatformMonitors.CurrentPlatformSummary());
 
     var builder = Host.CreateApplicationBuilder(args);
+
+    // SECURITY: Verify config file integrity before using it
+    var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+    var integrityResult = ConfigIntegrity.VerifyConfigFile(configPath);
+    switch (integrityResult)
+    {
+        case ConfigIntegrityResult.Tampered:
+            Log.Fatal("SECURITY: Configuration file integrity check FAILED — agent refusing to start. " +
+                      "Re-seal config with a trusted copy or reinstall the agent.");
+            return 78; // EX_CONFIG
+        case ConfigIntegrityResult.NotSealed:
+            Log.Warning("Config file not yet sealed — sealing now (first run)");
+            ConfigIntegrity.SealConfigFile(configPath);
+            break;
+        case ConfigIntegrityResult.Valid:
+            Log.Information("Config file integrity verified");
+            break;
+    }
 
     // Serilog replaces the default Microsoft logger
     builder.Services.AddSerilog((services, cfg) => cfg

@@ -35,10 +35,16 @@ jobs:
     - name: Restore
       run: dotnet restore src/Behavedr.Agent/Behavedr.Agent.csproj
 
+    - name: Restore Tests
+      run: dotnet restore tests/Behavedr.Tests/Behavedr.Tests.csproj
+
     - name: Build Core + Agent
       run: |
         dotnet build src/Behavedr.Core/Behavedr.Core.csproj -c Release --no-restore
         dotnet build src/Behavedr.Agent/Behavedr.Agent.csproj -c Release --no-restore
+
+    - name: Build Tests
+      run: dotnet build tests/Behavedr.Tests/Behavedr.Tests.csproj -c Release --no-restore
 
     - name: Run tests
       run: dotnet test tests/Behavedr.Tests/Behavedr.Tests.csproj -c Release --no-build --verbosity normal
@@ -50,7 +56,7 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         dotnet tool install --global Microsoft.Sbom.DotNetTool 2>/dev/null || true
-        sbom-tool generate -b publish/agent -bc src/Behavedr.Agent -pn Behavedr -pv 0.0.3 -ps CroatiaSecurity -nsb https://github.com/CroatiaSecurity/Behavedr || echo "SBOM generation skipped (tool not available)"
+        sbom-tool generate -b publish/agent -bc src/Behavedr.Agent -pn Behavedr -pv 0.0.5 -ps CroatiaSecurity -nsb https://github.com/CroatiaSecurity/Behavedr || echo "SBOM generation skipped (tool not available)"
 
   android:
     name: Android

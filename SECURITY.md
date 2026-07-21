@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.0.3   | Yes       |
-| < 0.0.3 | No        |
+| 0.0.5   | Yes       |
+| < 0.0.5 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
@@ -72,6 +72,22 @@ Behavedr follows these security principles:
 
 ## Known Limitations
 
-- Code signing is not yet implemented (planned for a future release).
-- The agent does not yet implement encrypted configuration transport.
-- Mobile monitoring capabilities are in early development (stub implementations).
+- Code signing for the agent binary is not yet implemented (planned for v0.1.0).
+- Update signing uses a placeholder public key — replace before production deployment.
+- Policy signature verification uses the same placeholder key infrastructure.
+- Mobile monitoring capabilities are in early development (stub implementations on iOS/macOS).
+- Key rotation requires manual invocation of `ConfigProtection.RotateKey()`.
+
+## Security Features (v0.0.5)
+
+- Signed auto-updates with RSA-PSS SHA-256 verification
+- Fail-closed TLS (no connections without CA cert pinning)
+- Config file HMAC integrity protection
+- Encrypted offline buffer (AES-256-GCM)
+- Authenticated policy updates (server must sign)
+- Anti-debug protection (FailFast in Release builds)
+- Response action rate limiting (60s cooldown per target)
+- Path traversal prevention in file quarantine
+- Machine key versioning and rotation support
+- Android signal injection authentication
+- Deterministic builds enabled

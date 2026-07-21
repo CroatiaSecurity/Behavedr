@@ -99,17 +99,20 @@ public sealed class SelfProtectionService : BackgroundService
 
     /// <summary>
     /// Detect if a debugger is attached (anti-reversing measure).
-    /// Logs a warning but does not terminate — allows legitimate debugging in dev builds.
+    /// In Release builds: terminates the process immediately.
+    /// In Debug builds: logs a warning only (allows legitimate debugging).
     /// </summary>
     private void CheckForDebugger()
     {
         if (Debugger.IsAttached)
         {
-            _logger.LogWarning("SECURITY: Debugger detected attached to agent process");
+#if DEBUG
+            _logger.LogWarning("SECURITY: Debugger detected attached to agent process (debug build — allowing)");
+#else
+            _logger.LogCritical("SECURITY: Debugger detected attached to agent process — terminating");
+            Environment.FailFast("Security violation: debugger attached to Behavedr agent in Release mode");
+#endif
         }
-
-        // On Windows, check for remote debugger via P/Invoke would go here
-        // For now, use managed-only detection
     }
 
     /// <summary>
@@ -121,7 +124,12 @@ public sealed class SelfProtectionService : BackgroundService
         // Re-check debugger
         if (Debugger.IsAttached)
         {
-            _logger.LogWarning("SECURITY: Debugger attached during runtime");
+#if DEBUG
+            _logger.LogWarning("SECURITY: Debugger attached during runtime (debug build — allowing)");
+#else
+            _logger.LogCritical("SECURITY: Debugger attached during runtime — terminating");
+            Environment.FailFast("Security violation: debugger attached to Behavedr agent in Release mode");
+#endif
         }
 
         // Verify binary hasn't been replaced on disk

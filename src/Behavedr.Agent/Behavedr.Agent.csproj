@@ -8,10 +8,11 @@
     <Description>Behavedr multi-platform behavioral EDR agent</Description>
   </PropertyGroup>
 
-  <!-- Clean self-contained release layout (single main binary). -->
+  <!-- Publish-time settings for clean single-file output.
+       SelfContained is NOT set here; pass it via CLI (dotnet publish --self-contained)
+       to avoid NETSDK1047 during plain 'dotnet build -c Release'. -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>true</SelfContained>
     <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>none</DebugType>

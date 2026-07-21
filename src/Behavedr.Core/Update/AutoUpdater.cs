@@ -84,7 +84,7 @@ public class AutoUpdater
     }
 
     /// <summary>
-    /// Download and apply an update.
+    /// Download and apply an update. Verifies RSA-PSS signature before extraction.
     /// </summary>
     public async Task<bool> ApplyUpdateAsync(UpdateInfo update, CancellationToken ct = default)
     {
@@ -94,8 +94,9 @@ public class AutoUpdater
         try
         {
             var tempPath = Path.Combine(Path.GetTempPath(), $"behavedr-update-{update.Version}.zip");
+            var sigPath = tempPath + ".sig";
 
-            // Download
+            // Download the zip
             await using (var responseStream = await _http.GetStreamAsync(update.DownloadUrl, ct))
             await using (var fileStream = File.Create(tempPath))
             {
@@ -104,30 +105,60 @@ public class AutoUpdater
 
             _logger.LogInformation("Downloaded update to {Path}", tempPath);
 
-            // Verify integrity (basic: check file is > 1MB to avoid corrupt/empty downloads)
+            // Download the signature file (.sig)
+            var sigUrl = update.DownloadUrl + ".sig";
+            try
+            {
+                await using (var sigStream = await _http.GetStreamAsync(sigUrl, ct))
+                await using (var sigFileStream = File.Create(sigPath))
+                {
+                    await sigStream.CopyToAsync(sigFileStream, ct);
+                }
+            }
+            catch (HttpRequestException)
+            {
+                _logger.LogCritical("SECURITY: No signature file available for update — rejecting");
+                CleanupTempFiles(tempPath, sigPath);
+                return false;
+            }
+
+            // Verify integrity (basic size check)
             var fileInfo = new FileInfo(tempPath);
             if (fileInfo.Length < 1_000_000)
             {
                 _logger.LogWarning("Downloaded file suspiciously small ({Size} bytes), aborting",
                     fileInfo.Length);
-                File.Delete(tempPath);
+                CleanupTempFiles(tempPath, sigPath);
                 return false;
+            }
+
+            // CRITICAL: Verify cryptographic signature before extraction
+            if (Security.UpdateSignatureVerifier.IsProductionKeyConfigured())
+            {
+                if (!Security.UpdateSignatureVerifier.VerifySignature(tempPath, sigPath, _logger))
+                {
+                    _logger.LogCritical("SECURITY: Update signature verification FAILED — aborting update");
+                    CleanupTempFiles(tempPath, sigPath);
+                    return false;
+                }
+            }
+            else
+            {
+                _logger.LogWarning("Update signing key is not configured (development mode) — skipping signature verification");
             }
 
             // Compute SHA-256 for logging/audit
             var hash = ComputeHash(tempPath);
             _logger.LogInformation("Update SHA-256: {Hash}", hash[..16] + "...");
 
-            // Stage the update (extract alongside current binary with .new suffix)
+            // Stage the update (extract alongside current binary)
             var currentExe = Environment.ProcessPath;
             if (currentExe is null)
             {
                 _logger.LogError("Cannot determine current executable path");
+                CleanupTempFiles(tempPath, sigPath);
                 return false;
             }
-
-            var updateExe = currentExe + ".update";
-            var backupExe = currentExe + ".bak";
 
             // Extract from zip (portable packages are zip files)
             System.IO.Compression.ZipFile.ExtractToDirectory(
@@ -137,13 +168,21 @@ public class AutoUpdater
                 "Update staged. Restart the agent to complete the update.");
 
             // Clean up temp
-            File.Delete(tempPath);
+            CleanupTempFiles(tempPath, sigPath);
             return true;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to apply update");
             return false;
+        }
+    }
+
+    private static void CleanupTempFiles(params string[] paths)
+    {
+        foreach (var path in paths)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
         }
     }
 

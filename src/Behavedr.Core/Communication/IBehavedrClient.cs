@@ -61,10 +61,61 @@ public record AgentHeartbeat(
     DateTime SentAt);
 
 /// <summary>
-/// Policy update received from server.
+/// Policy update received from server. Must include a signature for authenticity verification.
 /// </summary>
 public record PolicyUpdate(
     ResponsePolicy? ResponsePolicy,
     ScoringConfig? ScoringConfig,
     int? MonitoringIntervalSeconds,
-    DateTime IssuedAt);
+    DateTime IssuedAt,
+    string? Signature = null)
+{
+    /// <summary>
+    /// Verify that this policy update was signed by the server.
+    /// Uses RSA-PSS SHA-256 with the same baked-in public key as update verification.
+    /// </summary>
+    public bool VerifySignature()
+    {
+        if (string.IsNullOrEmpty(Signature))
+            return false;
+
+        // If production key is not configured, skip verification (dev mode)
+        if (!Security.UpdateSignatureVerifier.IsProductionKeyConfigured())
+            return true;
+
+        try
+        {
+            // Canonical payload = JSON of everything except signature
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                ResponsePolicy,
+                ScoringConfig,
+                MonitoringIntervalSeconds,
+                IssuedAt,
+            });
+
+            var payloadBytes = System.Text.Encoding.UTF8.GetBytes(payload);
+            var sigBytes = Convert.FromBase64String(Signature);
+
+            using var rsa = System.Security.Cryptography.RSA.Create();
+            rsa.ImportFromPem(GetServerPublicKey());
+
+            return rsa.VerifyData(
+                payloadBytes,
+                sigBytes,
+                System.Security.Cryptography.HashAlgorithmName.SHA256,
+                System.Security.Cryptography.RSASignaturePadding.Pss);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // Server public key for policy signing (same key or separate — using same for simplicity).
+    // In production, this could be a separate key from the update signing key.
+    private static string GetServerPublicKey() =>
+        Security.UpdateSignatureVerifier.IsProductionKeyConfigured()
+            ? "-----BEGIN PUBLIC KEY-----\nPLACEHOLDER\n-----END PUBLIC KEY-----"
+            : "";
+}

@@ -14,6 +14,11 @@ public class ResponseEngine
     private readonly ILogger<ResponseEngine> _logger;
     private readonly ResponsePolicy _policy;
 
+    // Rate limiting: track recent response targets to prevent re-executing on same PID/path
+    private readonly Dictionary<string, DateTime> _recentTargets = new();
+    private readonly TimeSpan _cooldownPeriod = TimeSpan.FromSeconds(60);
+    private readonly object _rateLimitLock = new();
+
     public ResponseEngine(ResponsePolicy? policy = null, ILogger<ResponseEngine>? logger = null)
     {
         _policy = policy ?? ResponsePolicy.Default;
@@ -61,6 +66,24 @@ public class ResponseEngine
         // Active mode: execute response actions based on level
         if (level < ResponseLevel.Respond)
             return outcomes;
+
+        // Rate limiting: don't re-execute actions against the same target within cooldown
+        var targetKey = $"{result.Event.ProcessId}:{result.Event.ProcessName}";
+        lock (_rateLimitLock)
+        {
+            // Prune expired entries
+            var expired = _recentTargets.Where(kv => DateTime.UtcNow - kv.Value > _cooldownPeriod).Select(kv => kv.Key).ToList();
+            foreach (var key in expired) _recentTargets.Remove(key);
+
+            if (_recentTargets.ContainsKey(targetKey))
+            {
+                _logger.LogDebug("Rate-limited: already responded to {Target} within cooldown", targetKey);
+                outcomes.Add(ResponseOutcome.Skipped("rate-limit", $"Cooldown active for {targetKey}"));
+                return outcomes;
+            }
+
+            _recentTargets[targetKey] = DateTime.UtcNow;
+        }
 
         foreach (var action in _actions)
         {
