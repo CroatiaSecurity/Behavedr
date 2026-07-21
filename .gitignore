@@ -8,3 +8,10 @@ dist/
 .vs/
 TestResults/
 packages.lock.json
+
+# Certificates — never commit private keys or PFX files
+certs/
+*.pfx
+*.key
+*.pem
+!*pub.pem

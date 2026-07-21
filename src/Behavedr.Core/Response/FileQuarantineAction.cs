@@ -114,6 +114,7 @@ public class FileQuarantineAction : IResponseAction
     /// <summary>
     /// Extract file paths from detection signals.
     /// Signals containing "executable_in_tmp:", "suspicious_file:", etc. may reference file paths.
+    /// SECURITY: Validates paths to prevent path traversal attacks.
     /// </summary>
     private static List<string> ExtractFilePaths(DetectionResult result)
     {
@@ -125,13 +126,24 @@ public class FileQuarantineAction : IResponseAction
             if (signal.Type.StartsWith("executable_in_tmp:", StringComparison.Ordinal))
             {
                 var fileName = signal.Type["executable_in_tmp:".Length..];
+
+                // SECURITY: Reject path traversal attempts
+                if (!IsValidFileName(fileName))
+                    continue;
+
                 // Try common tmp directories
                 foreach (var dir in new[] { "/tmp", "/var/tmp", "/dev/shm" })
                 {
                     var fullPath = Path.Combine(dir, fileName);
-                    if (File.Exists(fullPath))
+
+                    // SECURITY: Verify resolved path is still under expected directory
+                    var resolvedPath = Path.GetFullPath(fullPath);
+                    if (!resolvedPath.StartsWith(dir, StringComparison.Ordinal))
+                        continue; // Path traversal detected — skip
+
+                    if (File.Exists(resolvedPath))
                     {
-                        paths.Add(fullPath);
+                        paths.Add(resolvedPath);
                         break;
                     }
                 }
@@ -139,6 +151,29 @@ public class FileQuarantineAction : IResponseAction
         }
 
         return paths;
+    }
+
+    /// <summary>
+    /// Validates that a filename doesn't contain path traversal or dangerous characters.
+    /// </summary>
+    private static bool IsValidFileName(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return false;
+
+        // Reject path separators and traversal
+        if (fileName.Contains("..") ||
+            fileName.Contains('/') ||
+            fileName.Contains('\\') ||
+            fileName.Contains('\0'))
+            return false;
+
+        // Reject if it contains any invalid path characters
+        var invalidChars = Path.GetInvalidFileNameChars();
+        if (fileName.Any(c => invalidChars.Contains(c)))
+            return false;
+
+        return true;
     }
 
     private static string ComputeFileHash(string filePath)

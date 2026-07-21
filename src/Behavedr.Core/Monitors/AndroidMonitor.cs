@@ -37,15 +37,57 @@ public class AndroidMonitor : IPlatformMonitor
 
     private readonly List<Signal> _injectedSignals = new();
     private readonly object _lock = new();
+    private string? _injectionToken;
+
+    /// <summary>
+    /// Set the injection token that callers must provide to inject signals.
+    /// Call this once during initialization with a unique per-session token.
+    /// </summary>
+    public void SetInjectionToken(string token)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(token);
+        lock (_lock)
+        {
+            _injectionToken = token;
+        }
+    }
 
     /// <summary>
     /// Inject signals from the Android platform layer (MAUI/Java interop).
+    /// Requires the injection token set during initialization for authentication.
     /// Call this from the Android-specific code that has access to PackageManager, etc.
     /// </summary>
+    /// <param name="signals">Signals to inject.</param>
+    /// <param name="token">Authentication token (must match the token set via SetInjectionToken).</param>
+    /// <exception cref="UnauthorizedAccessException">Thrown if token is invalid.</exception>
+    public void InjectPlatformSignals(IEnumerable<Signal> signals, string token)
+    {
+        lock (_lock)
+        {
+            // SECURITY: Verify caller provides valid injection token
+            if (_injectionToken is null)
+                throw new InvalidOperationException("Injection token not configured. Call SetInjectionToken first.");
+
+            if (!string.Equals(token, _injectionToken, StringComparison.Ordinal))
+                throw new UnauthorizedAccessException("Invalid injection token — signal injection rejected.");
+
+            _injectedSignals.Clear();
+            _injectedSignals.AddRange(signals);
+        }
+    }
+
+    /// <summary>
+    /// Inject signals (legacy overload without token — throws if token is configured).
+    /// Kept for backward compat; will be removed in v0.1.0.
+    /// </summary>
+    [Obsolete("Use InjectPlatformSignals(signals, token) overload for authenticated injection.")]
     public void InjectPlatformSignals(IEnumerable<Signal> signals)
     {
         lock (_lock)
         {
+            if (_injectionToken is not null)
+                throw new UnauthorizedAccessException("Injection token is configured — use the authenticated overload.");
+
             _injectedSignals.Clear();
             _injectedSignals.AddRange(signals);
         }

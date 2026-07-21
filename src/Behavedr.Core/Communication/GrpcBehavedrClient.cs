@@ -114,7 +114,16 @@ public class GrpcBehavedrClient : IBehavedrClient
                 return null;
 
             var json = await response.Content.ReadAsStringAsync(ct);
-            return JsonSerializer.Deserialize<PolicyUpdate>(json, JsonOptions);
+            var policy = JsonSerializer.Deserialize<PolicyUpdate>(json, JsonOptions);
+
+            // SECURITY: Verify policy update signature before accepting
+            if (policy is not null && !policy.VerifySignature())
+            {
+                _logger.LogCritical("SECURITY: Policy update signature verification FAILED — rejecting policy");
+                return null;
+            }
+
+            return policy;
         }
         catch (Exception ex)
         {
@@ -143,7 +152,9 @@ public class GrpcBehavedrClient : IBehavedrClient
             handler.ClientCertificates.Add(cert);
         }
 
-        // Certificate pinning: validate server cert against known CA
+        // Certificate pinning: validate server cert against known CA.
+        // SECURITY: Fail-closed — if no CA cert is configured, reject ALL server certificates.
+        // This prevents MITM attacks when the agent is misconfigured.
         if (!string.IsNullOrEmpty(config.CaCertPath) && File.Exists(config.CaCertPath))
         {
             var caCert = X509CertificateLoader.LoadCertificateFromFile(config.CaCertPath);
@@ -151,7 +162,7 @@ public class GrpcBehavedrClient : IBehavedrClient
             {
                 if (cert is null) return false;
 
-                // Accept if signed by our CA
+                // Accept only if signed by our pinned CA
                 using var chain2 = new X509Chain();
                 chain2.ChainPolicy.ExtraStore.Add(caCert);
                 chain2.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
@@ -162,9 +173,9 @@ public class GrpcBehavedrClient : IBehavedrClient
         }
         else
         {
-            // In development: allow self-signed (MUST be replaced in production)
-            handler.ServerCertificateCustomValidationCallback =
-                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+            // SECURITY: Fail-closed — no CA cert means we cannot verify the server identity.
+            // Reject all connections to prevent MITM. Configure CaCertPath to enable comms.
+            handler.ServerCertificateCustomValidationCallback = (_, _, _, _) => false;
         }
 
         return handler;

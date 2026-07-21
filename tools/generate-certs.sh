@@ -13,7 +13,18 @@ set -euo pipefail
 OUTPUT_DIR="${1:-./certs}"
 SERVER_DNS="${2:-localhost}"
 VALID_DAYS=730
-PASSWORD="behavedr-dev"
+PASSWORD="${BEHAVEDR_CERT_PASSWORD:-}"
+
+if [ -z "$PASSWORD" ]; then
+    echo -n "Enter PFX password (or set BEHAVEDR_CERT_PASSWORD env var): "
+    read -rs PASSWORD
+    echo ""
+fi
+
+if [ -z "$PASSWORD" ]; then
+    echo "ERROR: Password is required. Set BEHAVEDR_CERT_PASSWORD or provide at prompt." >&2
+    exit 1
+fi
 
 mkdir -p "$OUTPUT_DIR"
 
