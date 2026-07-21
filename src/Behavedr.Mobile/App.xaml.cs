@@ -1,5 +1,8 @@
 namespace Behavedr.Mobile;
 
+/// <summary>
+/// Zero-visuals application shell. No user-facing UI — just icon and background service.
+/// </summary>
 public partial class App : Application
 {
     public App()
@@ -8,5 +11,5 @@ public partial class App : Application
     }
 
     protected override Window CreateWindow(IActivationState? activationState) =>
-        new Window(new AppShell());
+        new Window(new AgentPage());
 }

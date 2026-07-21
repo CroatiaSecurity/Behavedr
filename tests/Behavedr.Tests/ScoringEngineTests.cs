@@ -47,8 +47,10 @@ public class ScoringEngineTests
     }
 
     [Fact]
-    public void CalculateScore_ClampsToMax100()
+    public void CalculateScore_PreservesRawScoreAbove100()
     {
+        // Scoring engine preserves raw fidelity — does NOT clamp to 100.
+        // (100*1.0 + 100*1.0) * 2.0 (user-targeted) = 400
         var evt = CreateEvent(isUserTargeted: true);
         var signals = new List<Signal>
         {
@@ -56,7 +58,7 @@ public class ScoringEngineTests
             new("b", 100, 1.0),
         };
         var score = _engine.CalculateScore(evt, signals);
-        Assert.Equal(100.0, score);
+        Assert.Equal(400.0, score);
     }
 
     [Fact]

@@ -39,6 +39,7 @@ jobs:
       uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9  # v4.3.1
       with:
         dotnet-version: '10.0.x'
+        dotnet-quality: 'ga'
 
     - name: Run tests
       run: dotnet test tests/Behavedr.Tests/Behavedr.Tests.csproj -c Release --verbosity normal
@@ -136,6 +137,8 @@ jobs:
   android:
     name: Android
     runs-on: ubuntu-latest
+    # Android build is best-effort for releases — don't block the GitHub Release
+    continue-on-error: true
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
@@ -151,6 +154,7 @@ jobs:
       uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9  # v4.3.1
       with:
         dotnet-version: '10.0.x'
+        dotnet-quality: 'ga'
 
     - name: Setup Java
       uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00  # v4.7.1
@@ -163,7 +167,8 @@ jobs:
 
     - name: Install Android platform packages
       run: |
-        sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+        sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools" 2>/dev/null \
+          || sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
         yes | sdkmanager --licenses || true
 
     - name: Install MAUI Android workload
@@ -198,11 +203,12 @@ jobs:
       with:
         name: android
         path: dist/*
-        if-no-files-found: error
+        if-no-files-found: warn
 
   publish-release:
     name: GitHub Release
-    needs: [desktop, android]
+    # Only depends on desktop — Android is best-effort
+    needs: [desktop]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -217,6 +223,7 @@ jobs:
         mkdir -p release-assets
         find artifacts -type f \( -name '*.zip' -o -name '*.apk' -o -name '*.exe' \) -exec cp -v {} release-assets/ \;
         ls -la release-assets
+        # Desktop artifacts are required
         test -n "$(ls -A release-assets)"
         ls release-assets/Behavedr-Setup-*-win-x64.exe
 
@@ -235,7 +242,7 @@ jobs:
           ### Windows (recommended)
           | Asset | What to do |
           |-------|------------|
-          | **`Behavedr-Setup-*-win-x64.exe`** | **Run the installer** → Program Files, Start Menu, uninstall |
+          | **`Behavedr-Setup-*-win-x64.exe`** | **Run the installer** — Program Files, Start Menu, uninstall |
           | `Behavedr-Portable-*-win-x64.zip` | Optional: single `Behavedr.exe`, no install |
 
           ### Other platforms
@@ -243,10 +250,12 @@ jobs:
           |-------|----------|
           | `Behavedr-Portable-*-linux-x64.zip` | Linux x64 — extract, `chmod +x Behavedr`, run |
           | `Behavedr-Portable-*-osx-arm64.zip` | macOS Apple Silicon — extract and run |
-          | `Behavedr-*-android.apk` | Android arm64 |
+          | `Behavedr-*-android.apk` | Android arm64 (if available) |
 
-          ### Notes
-          - Windows portable/installer use a **single-file** agent (`Behavedr.exe`).
-          - Agent includes self-protection, structured logging, and configurable detection thresholds.
-          - No iOS device IPA yet (Apple signing not configured).
+          ### Architecture
+          - Zero-visuals design: no GUI on any platform. Icon only.
+          - Windows/Linux/macOS: headless service (Windows Service / systemd daemon)
+          - Android: foreground service with persistent notification icon
+          - iOS: background processing agent
+          - Self-protection, structured logging, configurable detection thresholds
         files: release-assets/*

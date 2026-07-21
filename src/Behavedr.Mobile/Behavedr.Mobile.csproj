@@ -12,10 +12,9 @@
 
     <ApplicationTitle>Behavedr</ApplicationTitle>
     <ApplicationId>com.croatiasecurity.behavedr</ApplicationId>
-    <ApplicationDisplayVersion>0.0.6</ApplicationDisplayVersion>
-    <ApplicationVersion>6</ApplicationVersion>
+    <ApplicationDisplayVersion>0.0.7</ApplicationDisplayVersion>
+    <ApplicationVersion>7</ApplicationVersion>
 
-    <!-- Avoid host RID Mono.* packages that are not published for .NET 10. -->
     <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">android-arm64;android-x64</RuntimeIdentifiers>
     <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">iossimulator-arm64;ios-arm64</RuntimeIdentifiers>
 
@@ -24,8 +23,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Icon only — no splash screen (zero visuals) -->
     <MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#1B2A4A" />
-    <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#1B2A4A" BaseSize="128,128" />
   </ItemGroup>
 
   <ItemGroup>

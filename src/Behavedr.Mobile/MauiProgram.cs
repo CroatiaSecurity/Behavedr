@@ -13,11 +13,7 @@ public static class MauiProgram
         builder.Logging.AddDebug();
 #endif
 
-        builder.Services.AddSingleton(sp =>
-        {
-            var engine = Core.AgentBootstrap.CreateEngine();
-            return engine;
-        });
+        builder.Services.AddSingleton(_ => Core.AgentBootstrap.CreateEngine());
 
         return builder.Build();
     }

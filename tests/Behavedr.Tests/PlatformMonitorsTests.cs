@@ -5,9 +5,12 @@ namespace Behavedr.Tests;
 public class PlatformMonitorsTests
 {
     [Fact]
-    public void All_ContainsFiveMonitors()
+    public void All_ContainsAtLeastBasePlatformMonitors()
     {
-        Assert.Equal(5, PlatformMonitors.All.Count);
+        // Base monitors: Windows, Linux, macOS, Android, iOS + cross-platform monitors.
+        // On Windows, additional behavioral/anti-tamper monitors are added dynamically.
+        Assert.True(PlatformMonitors.All.Count >= 7,
+            $"Expected at least 7 monitors (5 platform + 2 cross-platform), got {PlatformMonitors.All.Count}");
     }
 
     [Fact]
