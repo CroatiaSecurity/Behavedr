@@ -177,7 +177,7 @@ jobs:
         TAG="${{ steps.version.outputs.tag }}"
         if git rev-parse "$TAG" >/dev/null 2>&1; then
           echo "exists=true" >> "$GITHUB_OUTPUT"
-          echo "Tag $TAG already exists — skipping"
+          echo "Tag $TAG already exists — skipping tag creation"
         else
           echo "exists=false" >> "$GITHUB_OUTPUT"
           echo "Tag $TAG does not exist — will create"
@@ -192,10 +192,25 @@ jobs:
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git tag -a "$TAG" -m "Release $TAG"
         git push origin "$TAG"
-        echo "✓ Created and pushed tag: $TAG"
+        echo "Created and pushed tag: $TAG"
+
+    - name: Check if release exists
+      id: release_check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        TAG="${{ steps.version.outputs.tag }}"
+        if gh release view "$TAG" >/dev/null 2>&1; then
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+          echo "Release $TAG already exists — skipping"
+        else
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+          echo "Release $TAG does not exist — will trigger"
+        fi
 
     - name: Trigger release workflow
-      if: steps.check.outputs.exists == 'false'
+      if: steps.release_check.outputs.exists == 'false'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -203,3 +218,4 @@ jobs:
         TAG="${{ steps.version.outputs.tag }}"
         echo "Triggering release workflow for $TAG"
         gh workflow run release.yml --ref "$TAG"
+        echo "Release workflow dispatched for $TAG"
