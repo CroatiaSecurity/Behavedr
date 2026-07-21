@@ -57,7 +57,7 @@ Name: "installservice"; Description: "Install as Windows &Service (auto-start)";
 [Files]
 ; Single-file publish: Behavedr.exe (+ optional Assets + config)
 Source: "{#PublishDir}\Behavedr.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PublishDir}\appsettings.json"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist
+Source: "{#PublishDir}\appsettings.json"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist skipifsourcedoesntexist
 Source: "{#PublishDir}\Assets\*"; DestDir: "{app}\Assets"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 Source: "{#PublishDir}\README.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 

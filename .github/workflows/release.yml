@@ -103,6 +103,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path "publish/agent-win-x64/Assets" | Out-Null
           Copy-Item "Assets/*" "publish/agent-win-x64/Assets/" -Recurse -Force
         }
+        # Copy appsettings.json if it exists in source
+        if (Test-Path "src/Behavedr.Agent/appsettings.json") {
+          Copy-Item "src/Behavedr.Agent/appsettings.json" "publish/agent-win-x64/" -Force
+        }
         $publish = (Resolve-Path "publish/agent-win-x64").Path
         $outDir = Join-Path (Get-Location) "dist\windows"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
