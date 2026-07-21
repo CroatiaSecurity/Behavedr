@@ -1,6 +1,7 @@
 namespace Behavedr.Core.Response;
 
 using System.Diagnostics;
+using Behavedr.Core.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -8,14 +9,44 @@ using Microsoft.Extensions.Logging.Abstractions;
 /// Handles threats from isolation environments: mounted ISOs (T1553.005),
 /// Docker containers, and VMs. Provides containment by dismounting/stopping
 /// the isolation layer after killing the malicious process.
+/// v0.1.3: Now implements IResponseAction for integration with ResponseEngine (M-4 fix).
 /// </summary>
-public class IsolationResponseEngine
+public class IsolationResponseEngine : IResponseAction
 {
     private readonly ILogger<IsolationResponseEngine> _logger;
 
     public IsolationResponseEngine(ILogger<IsolationResponseEngine>? logger = null)
     {
         _logger = logger ?? NullLogger<IsolationResponseEngine>.Instance;
+    }
+
+    public string Name => "IsolationResponse";
+    public bool IsSupported => OperatingSystem.IsWindows();
+
+    /// <summary>
+    /// IResponseAction implementation: inspects signals for isolation-related threats
+    /// and handles ISO dismount, Docker stop, or VM termination as appropriate.
+    /// </summary>
+    public async Task<ResponseOutcome> ExecuteAsync(DetectionResult result, CancellationToken ct = default)
+    {
+        // Check for ISO-mounted threat signals
+        var isoSignal = result.Signals.FirstOrDefault(s =>
+            s.Type.Contains("iso_mount", StringComparison.OrdinalIgnoreCase));
+        if (isoSignal is not null && int.TryParse(result.Event.ProcessId, out var isoPid))
+        {
+            await HandleIsoThreatAsync(isoPid, "");
+            return ResponseOutcome.Ok(Name, $"ISO threat handled for PID {isoPid}");
+        }
+
+        // Check for Docker-based threat signals
+        var dockerSignal = result.Signals.FirstOrDefault(s =>
+            s.Type.Contains("docker", StringComparison.OrdinalIgnoreCase));
+        if (dockerSignal is not null)
+        {
+            return ResponseOutcome.Skipped(Name, "Docker container ID not available in signal");
+        }
+
+        return ResponseOutcome.Skipped(Name, "No isolation-related threat signals");
     }
 
     /// <summary>

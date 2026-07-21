@@ -4,9 +4,22 @@ using Behavedr.Core.Monitors;
 
 /// <summary>
 /// Catalog of all Behavedr platform monitors (desktop + mobile).
+/// v0.1.3: Shared NativeEtwSession and ProcessAncestryCache are created once
+/// and injected into all monitors that need them (fixes C-2, H-4 from audit).
 /// </summary>
 public static class PlatformMonitors
 {
+    // Shared infrastructure instances — created once, shared across monitors.
+    private static NativeEtwSession? _sharedEtwSession;
+    private static ProcessAncestryCache? _sharedAncestryCache;
+
+    /// <summary>Shared ETW session for all monitors that consume process/DNS events.</summary>
+    public static NativeEtwSession? SharedEtwSession => _sharedEtwSession;
+
+    /// <summary>Shared process ancestry cache for PPID spoof detection and chain tracing.</summary>
+    public static ProcessAncestryCache SharedAncestryCache =>
+        _sharedAncestryCache ??= new ProcessAncestryCache();
+
     /// <summary>Every known platform monitor (supported or not).</summary>
     public static IReadOnlyList<IPlatformMonitor> All { get; } = BuildMonitorList();
 
@@ -29,7 +42,13 @@ public static class PlatformMonitors
         // v0.0.7+: Windows-only behavioral detection & anti-tamper monitors
         if (OperatingSystem.IsWindows())
         {
-            monitors.Add(new BehavioralMonitor());
+            // v0.1.3: Create shared ETW session and ancestry cache (C-2 fix)
+            _sharedEtwSession = new NativeEtwSession();
+            _sharedEtwSession.TryStart();
+
+            _sharedAncestryCache = new ProcessAncestryCache();
+
+            monitors.Add(new BehavioralMonitor(_sharedEtwSession));
             monitors.Add(new AntiTamperGuard());
             monitors.Add(new NetworkConnectionMonitor());
             monitors.Add(new MemoryAnalyzer());
@@ -39,12 +58,12 @@ public static class PlatformMonitors
             monitors.Add(new RegistryPersistenceMonitor());
 
             // v0.0.9: Monitors from audit remediation
-            monitors.Add(new DnsQueryMonitor());
+            monitors.Add(new DnsQueryMonitor(_sharedEtwSession));
             monitors.Add(new DataExfiltrationMonitor());
 
             // v0.1.1: P0 — Critical audit findings from Sentinel cross-reference
             monitors.Add(new LsassDumpMonitor());
-            monitors.Add(new ParentPidSpoofDetector());
+            monitors.Add(new ParentPidSpoofDetector(_sharedAncestryCache));
             monitors.Add(new DllSideloadDetector());
 
             // v0.1.1: P1 — High-priority detection gaps

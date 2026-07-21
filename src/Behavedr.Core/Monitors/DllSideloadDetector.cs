@@ -124,7 +124,12 @@ public class DllSideloadDetector : IPlatformMonitor
                 finally { proc.Dispose(); }
             }
 
-            if (_alertedKeys.Count > 1000) _alertedKeys.Clear();
+            if (_alertedKeys.Count > 1000)
+        {
+            // LRU eviction: remove oldest half instead of clearing all (M-5 fix)
+            var toRemove = _alertedKeys.Take(_alertedKeys.Count / 2).ToList();
+            foreach (var key in toRemove) _alertedKeys.Remove(key);
+        }
         }
         catch (Exception ex)
         {

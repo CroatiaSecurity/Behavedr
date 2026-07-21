@@ -2,6 +2,7 @@ namespace Behavedr.Core.Security;
 
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// DPAPI-based key protection for the machine key on Windows.
@@ -56,6 +57,56 @@ public static class KeyProtection
         var newKey = RandomNumberGenerator.GetBytes(32);
         WriteProtectedKey(keyPath, newKey);
         return newKey;
+    }
+
+    /// <summary>
+    /// Rotate the machine key. Old key is preserved as .behavedr-key-v{oldVersion}
+    /// for decrypting existing data during migration.
+    /// v0.1.3: Moved here from ConfigProtection to consolidate key management (H-1 fix).
+    /// </summary>
+    public static void RotateKey(Microsoft.Extensions.Logging.ILogger? logger = null)
+    {
+        var keyDir = GetKeyDirectory();
+        var keyPath = Path.Combine(keyDir, KeyFileName);
+        var versionPath = Path.Combine(keyDir, ".behavedr-key-version");
+
+        int currentVersion = 1;
+        if (File.Exists(versionPath))
+        {
+            int.TryParse(File.ReadAllText(versionPath).Trim(), out currentVersion);
+        }
+
+        // Archive current key
+        if (File.Exists(keyPath))
+        {
+            var archivePath = Path.Combine(keyDir, $".behavedr-key-v{currentVersion}");
+            File.Copy(keyPath, archivePath, overwrite: true);
+        }
+
+        // Generate new key
+        var newKey = RandomNumberGenerator.GetBytes(32);
+        WriteProtectedKey(keyPath, newKey);
+
+        File.WriteAllText(versionPath, (currentVersion + 1).ToString());
+
+        logger?.LogInformation("Machine key rotated: v{Old} → v{New}", currentVersion, currentVersion + 1);
+    }
+
+    /// <summary>
+    /// Get a previous key version (for decrypting data encrypted with an older key).
+    /// Returns null if the version doesn't exist.
+    /// v0.1.3: Moved here from ConfigProtection to consolidate key management (H-1 fix).
+    /// </summary>
+    public static byte[]? GetKeyVersion(int version)
+    {
+        var keyDir = GetKeyDirectory();
+        var archivePath = Path.Combine(keyDir, $".behavedr-key-v{version}");
+
+        if (!File.Exists(archivePath))
+            return null;
+
+        var keyBase64 = File.ReadAllText(archivePath).Trim();
+        return Convert.FromBase64String(keyBase64);
     }
 
     /// <summary>

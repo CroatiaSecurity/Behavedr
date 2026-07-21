@@ -80,15 +80,6 @@ public class DetectionEngine
     }
 
     /// <summary>
-    /// Synchronous processing (deprecated — use ProcessEventAsync instead).
-    /// </summary>
-    [Obsolete("Use ProcessEventAsync instead. Sync-over-async can cause deadlocks.")]
-    public DetectionResult ProcessEvent(DetectionEvent evt)
-    {
-        return ProcessEventAsync(evt, CancellationToken.None).GetAwaiter().GetResult();
-    }
-
-    /// <summary>
     /// Collect signals from all registered monitors that are supported on this platform.
     /// Runs monitors concurrently with per-monitor timeout to prevent slow monitors
     /// from blocking the detection cycle.

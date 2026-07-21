@@ -21,7 +21,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 public class BehavioralMonitor : IPlatformMonitor
 {
     private readonly ILogger<BehavioralMonitor> _logger;
-    private readonly EtwSession? _etwSession;
+    private readonly NativeEtwSession? _etwSession;
 
     public string PlatformName => "BehavioralAnalysis";
     public bool IsSupported => OperatingSystem.IsWindows();
@@ -68,7 +68,7 @@ public class BehavioralMonitor : IPlatformMonitor
         @"(amsiInitFailed|AmsiScanBuffer|amsi\.dll|SetProtectionLevel|Unload\(|Remove-MpThreat)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    public BehavioralMonitor(EtwSession? etwSession = null, ILogger<BehavioralMonitor>? logger = null)
+    public BehavioralMonitor(NativeEtwSession? etwSession = null, ILogger<BehavioralMonitor>? logger = null)
     {
         _logger = logger ?? NullLogger<BehavioralMonitor>.Instance;
         _etwSession = etwSession;

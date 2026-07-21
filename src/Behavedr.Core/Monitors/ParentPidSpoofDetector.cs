@@ -88,7 +88,12 @@ public class ParentPidSpoofDetector : IPlatformMonitor
                 finally { proc.Dispose(); }
             }
 
-            if (_alertedPids.Count > 500) _alertedPids.Clear();
+            if (_alertedPids.Count > 500)
+        {
+            // LRU eviction: remove oldest half instead of clearing all (M-5 fix)
+            var toRemove = _alertedPids.Take(_alertedPids.Count / 2).ToList();
+            foreach (var pid in toRemove) _alertedPids.Remove(pid);
+        }
         }
         catch (Exception ex)
         {

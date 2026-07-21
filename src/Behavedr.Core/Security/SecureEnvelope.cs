@@ -125,10 +125,4 @@ public static class SecureEnvelope
             outputLength: 32,
             info: Encoding.UTF8.GetBytes($"behavedr-{purpose}-v1"));
     }
-
-    /// <summary>
-    /// Get the raw machine key bytes (delegates to KeyProtection for DPAPI unwrapping).
-    /// </summary>
-    private static byte[] GetMachineKeyBytes() => KeyProtection.GetMachineKey();
-
 }

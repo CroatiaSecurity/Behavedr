@@ -1,7 +1,10 @@
 using Behavedr.Agent;
 using Behavedr.Core;
+using Behavedr.Core.Communication;
 using Behavedr.Core.Platform;
+using Behavedr.Core.Response;
 using Behavedr.Core.Security;
+using Behavedr.Core.Update;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -15,7 +18,7 @@ Log.Logger = new LoggerConfiguration()
 try
 {
     Log.Information("Behavedr Agent v{Version} starting on {Platform}",
-        typeof(DetectionEngine).Assembly.GetName().Version?.ToString(3) ?? "0.0.5",
+        typeof(DetectionEngine).Assembly.GetName().Version?.ToString(3) ?? "0.1.3",
         PlatformMonitors.CurrentPlatformSummary());
 
     var builder = Host.CreateApplicationBuilder(args);
@@ -70,6 +73,36 @@ try
     builder.Services.AddSingleton<BehavioralCorrelationEngine>();
     builder.Services.AddSingleton<DetectionEngine>();
 
+    // v0.1.3: Response engine with process kill and file quarantine (C-1 fix)
+    var responsePolicy = builder.Configuration
+        .GetSection("Response")
+        .Get<ResponsePolicy>() ?? ResponsePolicy.Default;
+    if (!responsePolicy.IsValid())
+    {
+        Log.Warning("Invalid response policy detected, falling back to defaults");
+        responsePolicy = ResponsePolicy.Default;
+    }
+    builder.Services.AddSingleton(responsePolicy);
+    builder.Services.AddSingleton<ResponseEngine>();
+    builder.Services.AddSingleton<ProcessKillAction>();
+    builder.Services.AddSingleton<FileQuarantineAction>();
+    builder.Services.AddSingleton<IsolationResponseEngine>();
+    builder.Services.AddSingleton<ChainTracer>(sp =>
+        new ChainTracer(PlatformMonitors.SharedAncestryCache,
+            sp.GetService<ILogger<ChainTracer>>()));
+
+    // v0.1.3: Communication layer — agent-to-server reporting (C-3 fix)
+    var commConfig = builder.Configuration
+        .GetSection("Communication")
+        .Get<CommunicationConfig>() ?? CommunicationConfig.Default;
+    builder.Services.AddSingleton(commConfig);
+    builder.Services.AddSingleton<IBehavedrClient>(sp =>
+        new GrpcBehavedrClient(commConfig, sp.GetService<ILogger<GrpcBehavedrClient>>()));
+    builder.Services.AddSingleton<OfflineBuffer>();
+
+    // v0.1.3: Auto-updater (H-6 fix)
+    builder.Services.AddSingleton<AutoUpdater>();
+
     // Agent self-protection service
     builder.Services.AddHostedService<SelfProtectionService>();
 
@@ -79,6 +112,12 @@ try
     // Core monitoring background service
     builder.Services.AddHostedService<MonitoringService>();
 
+    // v0.1.3: Communication background service
+    builder.Services.AddHostedService<CommunicationService>();
+
+    // v0.1.3: Auto-update check background service
+    builder.Services.AddHostedService<UpdateCheckService>();
+
     // Windows Service / systemd integration
     if (OperatingSystem.IsWindows())
         builder.Services.AddWindowsService(options => options.ServiceName = "Behavedr");
@@ -87,6 +126,12 @@ try
     // when the NOTIFY_SOCKET env var is set by systemd.
 
     var host = builder.Build();
+
+    // v0.1.3: Register response actions after build (C-1 fix)
+    var responseEngine = host.Services.GetRequiredService<ResponseEngine>();
+    responseEngine.RegisterAction(host.Services.GetRequiredService<ProcessKillAction>());
+    responseEngine.RegisterAction(host.Services.GetRequiredService<FileQuarantineAction>());
+
     await host.RunAsync();
 }
 catch (Exception ex)

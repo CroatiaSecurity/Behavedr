@@ -1,27 +1,42 @@
 namespace Behavedr.Agent;
 
 using Behavedr.Core;
+using Behavedr.Core.Communication;
 using Behavedr.Core.Models;
 using Behavedr.Core.Platform;
+using Behavedr.Core.Response;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// Background service that periodically collects behavioral signals and runs detection.
+/// v0.1.3: Now wires ResponseEngine and Communication (C-1, H-5 fix).
 /// </summary>
 public sealed class MonitoringService : BackgroundService
 {
     private readonly DetectionEngine _engine;
+    private readonly ResponseEngine _responseEngine;
+    private readonly IBehavedrClient _client;
+    private readonly OfflineBuffer _offlineBuffer;
+    private readonly CommunicationConfig _commConfig;
     private readonly ILogger<MonitoringService> _logger;
     private readonly TimeSpan _interval;
 
     public MonitoringService(
         DetectionEngine engine,
+        ResponseEngine responseEngine,
+        IBehavedrClient client,
+        OfflineBuffer offlineBuffer,
+        CommunicationConfig commConfig,
         IConfiguration configuration,
         ILogger<MonitoringService> logger)
     {
         _engine = engine;
+        _responseEngine = responseEngine;
+        _client = client;
+        _offlineBuffer = offlineBuffer;
+        _commConfig = commConfig;
         _logger = logger;
 
         var seconds = configuration.GetValue("Agent:MonitoringIntervalSeconds", 5);
@@ -82,8 +97,11 @@ public sealed class MonitoringService : BackgroundService
 
         var result = await _engine.ProcessEventAsync(evt, ct);
 
-        // RT-12 FIX: For signals that contain PID attribution (e.g., "dll_sideload:proc:pid:1234:..."),
-        // extract the target PID and create targeted detection events for response actions.
+        // v0.1.3 (C-1 fix): Execute response actions when score warrants it
+        var responses = await _responseEngine.RespondAsync(result, ct);
+
+        // v0.1.3 (H-5 fix): For signals with PID attribution, create targeted detection events
+        // and execute response actions against the specific malicious process.
         if (result.Score > 50.0 && result.Signals.Count > 0)
         {
             var attributedSignals = ExtractAttributedSignals(result.Signals);
@@ -100,21 +118,41 @@ public sealed class MonitoringService : BackgroundService
 
                 // Re-score with just the attributed signals
                 var targetedResult = new DetectionResult(targetedEvt, result.Score, result.PresidentKill, signals);
+
                 _logger.LogInformation(
                     "Attributed detection: {Process} (PID {Pid}) — {SignalCount} signals, score={Score:F1}",
                     processName, pid, signals.Count, result.Score);
+
+                // Execute response actions against the attributed process
+                var targetedResponses = await _responseEngine.RespondAsync(targetedResult, ct);
+                responses.AddRange(targetedResponses);
+            }
+        }
+
+        // v0.1.3 (C-3 fix): Report detection to server if score warrants it
+        if (result.Score > _responseEngine.Policy.AlertThreshold && _commConfig.Enabled)
+        {
+            var report = DetectionReport.FromResult(_commConfig.AgentId, result, responses);
+            try
+            {
+                await _client.ReportDetectionAsync(report, ct);
+            }
+            catch
+            {
+                // Server unreachable — buffer for later replay
+                await _offlineBuffer.EnqueueAsync(report, ct);
             }
         }
 
         if (result.Signals.Count > 0)
         {
-            _logger.LogDebug("Cycle complete: {SignalCount} signals, score={Score:F1}, kill={Kill}",
-                result.Signals.Count, result.Score, result.PresidentKill);
+            _logger.LogDebug("Cycle complete: {SignalCount} signals, score={Score:F1}, kill={Kill}, responses={ResponseCount}",
+                result.Signals.Count, result.Score, result.PresidentKill, responses.Count);
         }
     }
 
     /// <summary>
-    /// RT-12 FIX: Extract process attribution from signal type strings.
+    /// Extract process attribution from signal type strings.
     /// Signals containing "pid:NNNN" are grouped by their target PID for targeted response.
     /// </summary>
     private static List<(int Pid, string ProcessName, List<Signal> Signals)> ExtractAttributedSignals(List<Signal> signals)

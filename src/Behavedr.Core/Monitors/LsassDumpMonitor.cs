@@ -187,7 +187,12 @@ public class LsassDumpMonitor : IPlatformMonitor
 
     private void PruneAlerted()
     {
-        if (_alertedKeys.Count > 500) _alertedKeys.Clear();
+        if (_alertedKeys.Count > 500)
+        {
+            // LRU eviction: remove oldest half instead of clearing all (M-5 fix)
+            var toRemove = _alertedKeys.Take(_alertedKeys.Count / 2).ToList();
+            foreach (var key in toRemove) _alertedKeys.Remove(key);
+        }
     }
 
     private static string? ExtractXmlField(string xml, string fieldName)

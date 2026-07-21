@@ -22,6 +22,7 @@ public static class ConfigIntegrity
     /// Validate configuration values are within acceptable bounds before sealing.
     /// Prevents first-run config injection attacks where an attacker pre-places
     /// a malicious config that would then be sealed as "trusted."
+    /// v0.1.3: Expanded to validate Communication and Update sections (M-8 fix).
     /// </summary>
     public static bool ValidateConfigBeforeSealing(string configPath, ILogger? logger = null)
     {
@@ -76,6 +77,76 @@ public static class ConfigIntegrity
                     if (value is < 1 or > 60)
                     {
                         logger.LogCritical("Config validation FAILED: MonitoringIntervalSeconds={Value} is outside [1, 60]", value);
+                        return false;
+                    }
+                }
+
+                // v0.1.3 (M-8 fix): Validate self-protection cannot be disabled in config
+                if (agent.TryGetProperty("EnableSelfProtection", out var esp))
+                {
+                    if (!esp.GetBoolean())
+                    {
+                        logger.LogCritical("Config validation FAILED: EnableSelfProtection cannot be set to false");
+                        return false;
+                    }
+                }
+            }
+
+            // v0.1.3 (M-8 fix): Validate Communication section
+            if (root.TryGetProperty("Communication", out var comm))
+            {
+                if (comm.TryGetProperty("ServerUrl", out var serverUrl))
+                {
+                    var url = serverUrl.GetString() ?? "";
+                    if (!url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+                        !url.StartsWith("http://localhost", StringComparison.OrdinalIgnoreCase) &&
+                        !url.StartsWith("https://localhost", StringComparison.OrdinalIgnoreCase))
+                    {
+                        logger.LogCritical("Config validation FAILED: ServerUrl must use HTTPS (got: {Url})", url);
+                        return false;
+                    }
+                }
+
+                if (comm.TryGetProperty("TimeoutSeconds", out var timeout))
+                {
+                    var value = timeout.GetInt32();
+                    if (value is < 5 or > 120)
+                    {
+                        logger.LogCritical("Config validation FAILED: TimeoutSeconds={Value} is outside [5, 120]", value);
+                        return false;
+                    }
+                }
+
+                if (comm.TryGetProperty("HeartbeatIntervalSeconds", out var hbi))
+                {
+                    var value = hbi.GetInt32();
+                    if (value is < 10 or > 3600)
+                    {
+                        logger.LogCritical("Config validation FAILED: HeartbeatIntervalSeconds={Value} is outside [10, 3600]", value);
+                        return false;
+                    }
+                }
+            }
+
+            // v0.1.3 (M-8 fix): Validate Response section
+            if (root.TryGetProperty("Response", out var response))
+            {
+                if (response.TryGetProperty("AlertThreshold", out var at))
+                {
+                    var value = at.GetDouble();
+                    if (value is < 10.0 or > 100.0)
+                    {
+                        logger.LogCritical("Config validation FAILED: AlertThreshold={Value} is outside [10, 100]", value);
+                        return false;
+                    }
+                }
+
+                if (response.TryGetProperty("ResponseThreshold", out var rt))
+                {
+                    var value = rt.GetDouble();
+                    if (value is < 20.0 or > 100.0)
+                    {
+                        logger.LogCritical("Config validation FAILED: ResponseThreshold={Value} is outside [20, 100]", value);
                         return false;
                     }
                 }

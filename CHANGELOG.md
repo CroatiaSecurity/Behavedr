@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.1.3] — 2026-07-21
+
+### Security Audit Full Remediation — All 22 Findings Fixed
+
+Addresses all findings from the July 2026 red/blue team audit: 3 critical wiring gaps,
+6 high-severity issues, 8 medium findings, and 5 low/informational items.
+
+#### Critical Fixes (Wiring — Agent Now Fully Operational)
+
+- **C-1: Response engine wired** — `ResponseEngine`, `ProcessKillAction`, `FileQuarantineAction` are now registered in DI and invoked after every detection cycle. The agent can now kill malicious processes and quarantine files.
+- **C-2: ETW session created and shared** — `NativeEtwSession` is instantiated in `PlatformMonitors` and injected into `BehavioralMonitor`, `DnsQueryMonitor`, and via shared `ProcessAncestryCache` to `ParentPidSpoofDetector`. Real-time ~50ms detection latency is active.
+- **C-3: Communication layer wired** — `GrpcBehavedrClient`, `OfflineBuffer`, and new `CommunicationService` background service handle heartbeats, detection reporting, offline buffering, and policy fetching.
+
+#### High-Severity Fixes
+
+- **H-1: Key management consolidated** — Removed duplicate `GetOrCreateMachineKey()` and `GetKeyDirectory()` from `ConfigProtection`. All key operations now delegate to `KeyProtection`. Added `RotateKey()` and `GetKeyVersion()` to `KeyProtection`.
+- **H-2: Dead code removed** — Deleted unused `SecureEnvelope.GetMachineKeyBytes()`.
+- **H-3: Sync-over-async removed** — Deleted `DetectionEngine.ProcessEvent()` (deadlock-prone `.GetAwaiter().GetResult()` wrapper).
+- **H-4: Shared ProcessAncestryCache** — Single `ProcessAncestryCache` instance shared between `ParentPidSpoofDetector` and `ChainTracer` via `PlatformMonitors.SharedAncestryCache`.
+- **H-5: Attributed signals acted upon** — `MonitoringService` now executes response actions against PID-attributed detections (not just logging them).
+- **H-6: AutoUpdater wired** — New `UpdateCheckService` background service checks for updates every 6 hours with signature verification.
+
+#### Medium-Severity Fixes
+
+- **M-1: File renamed** — `NetworkMonitor.cs` → `NetworkConnectionMonitor.cs` (matches class name).
+- **M-2: BehavioralMonitor updated** — Now accepts `NativeEtwSession` (not legacy `EtwSession`), enabling native ETW process events.
+- **M-4: IsolationResponseEngine implements IResponseAction** — Can now be registered in the ResponseEngine pipeline.
+- **M-5: LRU dedup eviction** — Replaced hard-clear (`Clear()`) with half-eviction in `ParentPidSpoofDetector`, `DllSideloadDetector`, and `LsassDumpMonitor`. Prevents dedup-reset flooding attacks.
+- **M-6: CI permissions scoped** — `build.yml` now uses `contents: read` globally, `contents: write` only on the `auto-tag` job.
+- **M-7: Duplicate integrity check removed** — Binary integrity verification removed from `SelfProtectionService` (now handled exclusively by `AntiTamperGuard`).
+- **M-8: Config validation expanded** — Pre-seal validation now checks `Communication` (HTTPS requirement, timeout/heartbeat bounds), `Response` (threshold bounds), and `Agent.EnableSelfProtection` (cannot be false).
+
+#### Low/Informational Fixes
+
+- **L-1: Dead field removed** — `DetectionEvent.Score` (always 0.0, never used) removed from the record.
+
+#### New Files
+
+- `src/Behavedr.Agent/CommunicationService.cs` — Background service for server communication lifecycle.
+- `src/Behavedr.Agent/UpdateCheckService.cs` — Background service for periodic update checks.
+
+---
+
 ## [0.1.2] — 2026-07-21
 
 ### Security Audit Remediation — All RT/V Findings Resolved
