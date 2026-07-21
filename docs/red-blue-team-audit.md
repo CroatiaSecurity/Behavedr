@@ -1,156 +1,129 @@
 # Behavedr EDR — Red/Blue Team Security Audit
 
 **Date:** 2026-07-21  
-**Version Audited:** 0.0.6  
+**Version Audited:** 0.0.9  
+**Previous Audit:** v0.0.6 (see git history)  
 **Auditor:** AI-assisted security analysis  
-**Cross-reference:** Sentinel EDR v1.5.4 (Windows-only EDR for pattern comparison)  
 **Scope:** Full source code review, architecture analysis, evasion modeling  
 
 ---
 
 ## Executive Summary
 
-Behavedr is a promising multi-platform behavioral EDR with solid cryptographic foundations (AES-256-GCM, HKDF, mTLS, RSA-PSS signing) and good defensive coding practices (path traversal prevention, rate limiting, fail-closed TLS). However, as a **v0.0.6 project**, it has critical gaps that make it trivially bypassable by even commodity malware. The most severe issues are:
+Behavedr has matured significantly since the v0.0.6 audit. The v0.0.7 release addressed
+all P0 critical findings from the previous audit: real RSA-4096 signing key, behavioral
+detection engine, ETW integration, anti-tamper guard, network monitoring, credential
+protection, and behavioral correlation. The v0.0.9 release addresses all remaining
+findings from the v0.0.8 audit: watchdog process, native ETW, signal deduplication,
+DPAPI key protection, DNS monitoring, data exfiltration detection, command-line
+normalization, process ancestry cache, incident grouping, and parallel execution.
 
-1. **Placeholder signing key** — updates and policies are effectively unsigned
-2. **Process-name-only detection** — trivially evaded by renaming binaries
-3. **No ETW integration** — polling-based detection has multi-second blind spots
-4. **No network monitoring** — C2 traffic is completely invisible
-5. **No anti-tamper beyond basic debugger check** — attacker can kill/suspend/blind the agent
+The codebase now has **15 monitors on Windows**, native ETW with ~50ms latency,
+DPAPI-protected keys, and comprehensive defense-in-depth.
 
-Compared to Sentinel's 70+ monitors, unified ETW session, behavioral correlation, and active deception, Behavedr currently operates at approximately 5-10% of the detection surface area needed for production deployment.
+However, as a **v0.0.8 pre-production project**, exploitable gaps remain. This audit
+identifies the residual attack surface and validates remediations from v0.0.7.
+
+### Remediation Status from v0.0.6 Audit
+
+| Previous Finding | Status | Notes |
+|---|---|---|
+| RT-1: Placeholder signing key | **FIXED** | Real RSA-4096 key in UpdateSignatureVerifier.cs |
+| RT-2: Process-name-only detection | **FIXED** | BehavioralMonitor with cmdline/parent-child/LOLBin analysis |
+| RT-3: No anti-termination | **PARTIALLY FIXED** | AntiTamperGuard added (QPC, integrity, service heal). No watchdog process yet. |
+| RT-4: No network monitoring | **FIXED** | NetworkConnectionMonitor + BeaconingDetector |
+| RT-5: No ETW (polling gaps) | **PARTIALLY FIXED** | WMI-based EtwSession. Full kernel ETW not yet implemented. |
+| RT-6: Policy forgery | **FIXED** | Real RSA-PSS key validates policy signatures |
+| RT-7: Score manipulation | **UNCHANGED** | No deduplication or decay implemented |
+| RT-8: First-run config window | **UNCHANGED** | Still seals whatever is present on first run |
+| RT-9: Machine key extraction | **UNCHANGED** | File ACLs only, no TPM/DPAPI binding |
+| RT-10: Linux /proc race conditions | **UNCHANGED** | No eBPF/fanotify integration |
+| RT-11: Android token weakness | **UNCHANGED** | String comparison, in-memory token |
+| RT-12: AlertOnly default | **BY DESIGN** | Documented, intentional for safety |
 
 ---
 
-## RED TEAM ANALYSIS — Attack Scenarios & Exploitable Gaps
+## RED TEAM ANALYSIS — Current Attack Surface (v0.0.8)
 
-### RT-1: Update Supply Chain Hijack (CRITICAL)
+### RT-1: Process Kill / No Watchdog (HIGH)
 
-**Attack:** Attacker compromises the GitHub release or performs MITM to serve a malicious update zip.
+**Attack:** `taskkill /f /im Behavedr.exe` or NtSuspendProcess + NtTerminateProcess.
 
 **Current State:**
-- `UpdateSignatureVerifier.cs` contains a **PLACEHOLDER** RSA public key (`0PLACEHOLDER000...`)
-- `IsProductionKeyConfigured()` returns `false` → signature verification is **skipped entirely**
-- `AutoUpdater.ApplyUpdateAsync()` logs a warning but proceeds without verification in dev mode
+- `AntiTamperGuard` detects suspension via QPC timing gaps (4s threshold)
+- Service registry self-healing re-registers the service if deleted
+- Binary integrity verified periodically
+- **No separate watchdog process** — killing the single process kills all protection
+- No `PROCESS_TERMINATE` deny handle on own process
+- SCM will restart the service, but there is a gap window
 
-**Exploitability:** Trivial. Any attacker controlling DNS or GitHub can push arbitrary code.
+**Exploitability:** Moderate. Admin-level access + process kill = temporary blind spot
+until SCM restart. BYOVD kernel driver = permanent kill.
 
-**Impact:** Complete agent compromise — attacker replaces the EDR binary with their own.
+**Impact:** Complete EDR bypass during the restart gap. With kernel access, permanent.
 
-**Recommendation:** Generate a real RSA-4096 keypair immediately. Embed the public key. Sign all releases. Never ship with the placeholder.
-
----
-
-### RT-2: Process Name Evasion (CRITICAL)
-
-**Attack:** Rename offensive tools to bypass detection.
-
-**Current State (WindowsMonitor.cs):**
-```csharp
-private static readonly HashSet<string> SuspiciousProcessNames = new(...)
-{
-    "mimikatz", "psexec", "cobalt", "meterpreter", ...
-};
-// Detection: name.Contains(suspiciousName)
-```
-
-**Exploitability:** Trivial. Rename `mimikatz.exe` to `updater.exe` → zero detection.
-
-**Impact:** All Windows process-name-based detections are bypassed with a single rename.
-
-**What Sentinel does differently:** Sentinel uses behavioral signals (API calls via ETW ThreatIntel provider, memory patterns, parent-child anomalies) rather than process names. Process names are metadata enrichment only, never detection triggers.
+**Recommendation:**
+1. Spawn a separate watchdog service (randomized name) with mutual monitoring
+2. Set `DACL` on own process handle to deny PROCESS_TERMINATE from non-SYSTEM
+3. Implement last-gasp logging (write forensic evidence before death)
+4. Consider PPL (Protected Process Light) via ELAM driver for production
 
 ---
 
-### RT-3: EDR Process Termination (CRITICAL)
+### RT-2: WMI-Only ETW — Detection Latency (HIGH)
 
-**Attack:** `taskkill /f /im Behavedr.exe` or BYOVD kernel-level kill.
+**Attack:** Fast-acting malware (credential stealers, shellcode loaders) that complete
+within 1-2 seconds, between WMI event delivery intervals.
 
 **Current State:**
-- `SelfProtectionService.cs` detects debuggers and checks binary integrity
-- No anti-termination mechanism (no deny-terminate handle protection)
-- No watchdog process that survives agent death
-- No service recovery beyond standard SCM restart
-- No WFP monitoring — attacker can silently block all agent network traffic
+- `EtwSession` uses WMI `Win32_ProcessStartTrace` (managed subscription)
+- WMI delivery latency is 1-2 seconds (vs ~50ms for raw ETW)
+- No subscription to `Microsoft-Windows-Threat-Intelligence` (requires PPL/ELAM)
+- Process creation events only — no file I/O, registry, or network ETW providers
 
-**Exploitability:** Trivial with admin access. One command kills the EDR permanently.
+**Exploitability:** High for fast-acting malware. WMI latency creates a real blind spot.
 
-**Impact:** Complete EDR bypass. Agent dies, no forensic evidence survives.
+**Impact:** Sub-second credential stealers and injection attacks may complete before
+the WMI event is delivered to the monitoring thread.
 
-**What Sentinel does differently:**
-- `AntiTamperGuard`: Denies `PROCESS_TERMINATE` on own handles, detects suspension gaps via QPC timing, auto-reinstalls service registry entries
-- `AgentWatchdog`: Separate SYSTEM service restarts agent in user session via `CreateProcessAsUser`
-- Mutual monitoring between Service and Agent processes
-- Last-gasp logging on unexpected exit
-
----
-
-### RT-4: Network Blindness — No C2 Detection (HIGH)
-
-**Attack:** Any C2 framework (Cobalt Strike, Sliver, Havoc) communicates freely over HTTPS.
-
-**Current State:** Behavedr has **zero network monitoring**. No TCP table scanning, no DNS monitoring, no beaconing detection, no connection tracking.
-
-**Exploitability:** Trivial. All network-based attacks are invisible.
-
-**Impact:** Attackers maintain persistent C2 access indefinitely without detection.
-
-**What Sentinel does:** `NetworkMonitor` (TCP/UDP table scanning), `BeaconingDetector` (statistical CV analysis), `DnsQueryMonitor` (ETW DNS-Client), `GhostProcessMonitor` (PIDs with connections but no process name), `DataExfiltrationMonitor` (large outbound transfers).
+**Recommendation:**
+1. Implement native ETW via `StartTraceW`/`EnableTraceEx2`/`ProcessTrace` (constants
+   and P/Invoke declarations already exist in EtwSession.cs)
+2. Subscribe to Kernel-Process, DNS-Client, and File providers at minimum
+3. Long-term: ELAM driver for Threat Intelligence provider access
 
 ---
 
-### RT-5: No ETW — Detection Latency & Blind Spots (HIGH)
+### RT-3: Signal Deduplication & Score Gaming (MEDIUM)
 
-**Attack:** Fast-acting malware completes its mission before the 5-second polling interval fires.
+**Attack:** Generate conditions that produce duplicate signals to either inflate
+scores (false positives → alert fatigue) or understand scoring thresholds.
 
 **Current State:**
-- `MonitoringService.cs` polls every 5 seconds (configurable, minimum 1s)
-- `WindowsMonitor` uses `Process.GetProcesses()` — userland snapshot, no kernel visibility
-- No ETW Threat Intelligence provider (misses VirtualAllocEx, VirtualProtect, MapViewOfSection)
-- No ETW Kernel-Process (misses process creation events in real-time)
+- `DetectionEngine.CollectSignalsAsync()` accumulates all signals without dedup
+- `ScoringEngine` sums weight×confidence for all signals — unbounded
+- `BehavioralCorrelationEngine` can fire the same composite rule every cycle
+  if signals remain in the 120-second window
+- No per-signal-type cooldown or per-PID deduplication
 
-**Exploitability:** High. Any malware that executes and exits within 5 seconds is never observed.
+**Exploitability:** Medium. Requires understanding of the scoring algorithm
+(open source, so trivial).
 
-**Impact:** Credential stealers (complete in <3s), fileless attacks, injection attacks all invisible.
+**Impact:** Alert fatigue via false positive flooding, or threshold manipulation
+to understand exactly what score triggers response.
 
-**What Sentinel does:** `UnifiedEtwSession` subscribes to 9 kernel/system providers simultaneously, achieving ~50ms detection latency vs Behavedr's 5000ms.
-
----
-
-### RT-6: Policy Update Forgery (HIGH)
-
-**Attack:** MITM or rogue server sends malicious policy update to reconfigure scoring thresholds.
-
-**Current State:**
-- `PolicyUpdate.VerifySignature()` uses the same placeholder public key
-- When `IsProductionKeyConfigured()` returns false, verification returns `true` unconditionally
-- An attacker could set `PresidentKillThreshold` to 999.0, effectively disabling all response
-
-**Exploitability:** Medium (requires network position). With placeholder key: trivial.
-
-**Impact:** Attacker remotely disarms all detection/response by pushing benign-looking policy.
+**Recommendation:**
+1. Deduplicate signals by type within a single detection cycle
+2. Add per-signal-type cooldown (e.g., same signal type max once per 30s)
+3. Cap composite signal re-firing to once per correlation window
+4. Consider signal decay over time rather than binary window
 
 ---
 
-### RT-7: Scoring Manipulation via Signal Flooding (MEDIUM)
+### RT-4: First-Run Config Sealing Race (MEDIUM)
 
-**Attack:** Generate benign signals to dilute scoring or exploit unbounded score accumulation.
-
-**Current State:**
-- `ScoringEngine.CalculateScore()` does NOT clamp to 100 — scores can grow unbounded
-- No deduplication of signals within a cycle
-- If a monitor returns 1000 low-weight signals, the score inflates artificially
-- No decay/aging of signals between cycles
-
-**Exploitability:** Medium. Requires understanding of the scoring algorithm.
-
-**Impact:** Either false positives (causing alert fatigue) or manipulation of thresholds.
-
----
-
-### RT-8: Config Integrity Bypass — First-Run Window (MEDIUM)
-
-**Attack:** Modify `appsettings.json` before the agent's first run to set favorable thresholds.
+**Attack:** Modify `appsettings.json` before agent's first startup to set
+`PresidentKillThreshold: 999` or `MonitoringIntervalSeconds: 3600`.
 
 **Current State (Program.cs):**
 ```csharp
@@ -160,592 +133,667 @@ case ConfigIntegrityResult.NotSealed:
     break;
 ```
 
-**Exploitability:** Medium. Attacker who can write to the install directory pre-first-run wins.
+The agent trusts whatever config exists at first boot and seals it permanently.
 
-**Impact:** Permanently tampered config is sealed as "legitimate" — agent trusts malicious values forever.
+**Exploitability:** Medium. Requires write access to install directory before first run.
+Installers typically write configs during install (admin context), so the window exists
+between install completion and first service start.
 
-**Fix:** Ship a pre-sealed config with the installer. Or seal against a known-good embedded hash.
+**Impact:** Permanently weakened detection thresholds sealed as "legitimate."
+
+**Recommendation:**
+1. Ship pre-sealed config with the installer (compute HMAC during build)
+2. Or embed expected default values and validate against them on first seal
+3. Add config value bounds checking before sealing (already have `ScoringConfig.IsValid()`)
 
 ---
 
-### RT-9: Machine Key Extraction (MEDIUM)
+### RT-5: Machine Key Single Point of Failure (MEDIUM)
 
-**Attack:** Extract `.behavedr-key` to decrypt offline buffer, forge config HMACs, or decrypt sensitive config values.
+**Attack:** Read `.behavedr-key` → decrypt offline buffer, forge config HMACs,
+decrypt sensitive config values.
 
 **Current State:**
-- Key stored in `C:\ProgramData\Behavedr\.behavedr-key` (base64 plaintext)
-- On Windows: `RestrictFileToAdminsAndSystem()` is called but the method implementation is cut off in the source
-- On Linux: `chmod 600` (user read/write only)
-- Key is a single file — no hardware binding (no TPM, no DPAPI)
+- Key stored at `C:\ProgramData\Behavedr\.behavedr-key` (base64 plaintext)
+- Windows: ACLs restrict to Admins/SYSTEM (via `RestrictFileToAdminsAndSystem`)
+- Linux: `chmod 600`
+- Same key used for: config HMAC, offline buffer encryption, sensitive value decryption
+- No hardware binding (no TPM, no DPAPI wrapping of the key itself)
 
-**Exploitability:** Medium-High with admin access. Read one file → decrypt everything.
+**Exploitability:** Medium-High with admin/SYSTEM access. One file read compromises
+all cryptographic operations.
 
-**What Sentinel does:** Uses DPAPI (machine-scope) for key protection, incorporates installation entropy into HMAC derivation, binds cache to boot nonce.
+**Impact:** Full compromise of local security guarantees — can forge config integrity,
+decrypt buffered reports, and decrypt encrypted config values.
+
+**Recommendation:**
+1. Wrap the machine key with DPAPI (`ProtectedData.Protect`, LocalMachine scope)
+2. Incorporate hardware entropy (TPM if available, or boot nonce)
+3. Separate keys by purpose (config integrity key ≠ offline buffer key) — currently
+   uses HKDF with purpose labels which is cryptographically sound, but key material
+   compromise at the root defeats all derived keys
 
 ---
 
-### RT-10: Linux Monitor Evasion — /proc Race Conditions (MEDIUM)
+### RT-6: NetworkConnectionMonitor Evasion via DNS-over-HTTPS (MEDIUM)
 
-**Attack:** Process exits before LinuxMonitor's /proc scan reaches its PID directory.
+**Attack:** C2 over DNS-over-HTTPS (DoH) to port 443, or tunneling via legitimate
+cloud services (Azure Blob, S3, GitHub raw).
 
 **Current State:**
-- `LinuxMonitor.ScanProcFilesystem()` iterates `/proc/[pid]/comm` sequentially
-- No event-driven detection (no eBPF, no auditd subscription, no fanotify)
-- Audit log reading is best-effort (last 8KB, 30-second cutoff)
+- `NetworkConnectionMonitor` flags connections to specific suspicious ports (4444, 5555, etc.)
+- `BeaconingDetector` tracks interval regularity per (PID, IP, Port)
+- No DNS monitoring (no ETW DNS-Client subscription)
+- No TLS fingerprinting or JA3/JA4 hashing
+- No domain reputation / threat intelligence feed integration
+- Connections to port 443 (HTTPS) are effectively invisible
 
-**Exploitability:** High for fast-acting malware. Moderate for persistent threats.
+**Exploitability:** High. Modern C2 frameworks (Cobalt Strike, Sliver, Havoc) all
+support HTTPS on 443 with domain fronting or legitimate cloud infra.
 
-**Impact:** Short-lived processes (droppers, stagers) never observed on Linux.
+**Impact:** C2 communication over HTTPS to cloud providers is completely undetected.
+Only the statistical beaconing detector has a chance, and only if intervals are regular.
+
+**Recommendation:**
+1. Add ETW DNS-Client subscription for DNS query visibility
+2. Implement basic domain reputation checking (suspicious TLDs, DGA detection)
+3. Add JA3/JA4 TLS fingerprinting for known malware profiles
+4. Track bytes sent/received per connection for data exfiltration detection
 
 ---
 
-### RT-11: Android Signal Injection Token Weakness (LOW-MEDIUM)
+### RT-7: BehavioralMonitor Regex Evasion (MEDIUM)
 
-**Attack:** If attacker can read the injection token from memory or inter-process communication, they can inject false signals.
+**Attack:** Obfuscate command-line arguments to bypass regex-based detection.
+
+**Current State (BehavioralMonitor.cs):**
+```csharp
+private static readonly Regex EncodedPsRegex = new(
+    @"-(?:enc|encodedcommand|e)\s+[A-Za-z0-9+/=]{20,}", ...);
+private static readonly Regex DownloadCradleRegex = new(
+    @"(Invoke-WebRequest|wget|curl|Net\.WebClient|DownloadString|...)", ...);
+```
+
+**Evasion techniques that bypass current detection:**
+- PowerShell: `powershell -en` (truncated flag), `$env:comspec /c "..."`, `iEx(...)` 
+- String concatenation: `"Inv" + "oke-Web" + "Request"`
+- Environment variable expansion: `%comspec% /c certutil...`
+- Unicode/null byte insertion in process names (Windows accepts some)
+- Calling renamed copies of PowerShell from unusual paths
+- Using `pwsh.exe` aliases or `dotnet-script` as PowerShell alternative
+
+**Exploitability:** Medium. Well-known evasion techniques in the offensive community.
+
+**Impact:** Moderate. BehavioralMonitor is one layer — other monitors (MemoryAnalyzer,
+NetworkMonitor, CredentialGuard) provide defense in depth. But command-line analysis
+specifically can be bypassed by moderately skilled attackers.
+
+**Recommendation:**
+1. Normalize command lines before matching (expand env vars, resolve aliases)
+2. Add entropy-based analysis (high-entropy strings = likely encoded)
+3. Detect script block logging bypass attempts
+4. Track PowerShell script block text via ETW Microsoft-Windows-PowerShell provider
+
+---
+
+### RT-8: CredentialCanary False Negative — Non-Destructive Access (LOW-MEDIUM)
+
+**Attack:** Read the canary credential without deleting it. Tools like `cmdkey /list`
+or `CredEnumerate` read credentials without removing them.
+
+**Current State (CredentialCanaryMonitor.cs):**
+```csharp
+// Check if canary credential still exists
+if (!_canaryTripped && !CanaryExists())
+{
+    _canaryTripped = true;
+    signals.Add(new Signal("credential_canary_tripped:deleted", 95, 0.98));
+}
+```
+
+The monitor only detects **deletion** of the canary, not **read access**.
+
+**Exploitability:** Low-Medium. Sophisticated credential stealers read credentials
+without deleting them. The canary detects only crude harvesting tools.
+
+**Impact:** Stealthier credential theft goes undetected by this specific monitor.
+However, `CredentialGuardMonitor` provides complementary detection via SQLite/file access.
+
+**Recommendation:**
+1. Use a Windows API hook or ETW to detect `CredRead` calls against the canary target
+2. Track `LastWritten` timestamp changes on the canary credential
+3. Consider deploying multiple canaries with different detection mechanisms
+
+---
+
+### RT-9: Offline Buffer Replay — No Server-Side Dedup (LOW-MEDIUM)
+
+**Attack:** If an attacker can access the encrypted buffer files and has the machine
+key, they could craft reports with manipulated timestamps/scores.
 
 **Current State:**
-- `AndroidMonitor.SetInjectionToken()` uses a string comparison
-- Token is stored in-memory in a `private string? _injectionToken`
-- No cryptographic binding to caller identity
+- Reports encrypted with AES-256-GCM (purpose: "offline-buffer")
+- Includes `Nonce` (GUID) and `SequenceNumber` (monotonic counter) per report
+- Dead-letter directory for failed decryption (tamper detected)
+- **Server-side validation of nonce/sequence is not implemented in the codebase**
 
-**Exploitability:** Low (requires same-process memory access or IPC interception on Android).
+**Exploitability:** Low. Requires machine key extraction (RT-5) first. The AES-GCM
+authentication tag prevents modification without the key.
 
-**Impact:** Attacker could inject fake "safe" signals or trigger false positives.
+**Impact:** With key compromise: forged or replayed detection reports to the server.
+
+**Recommendation:**
+1. Server must validate sequence numbers are monotonically increasing per agent
+2. Server must reject nonce reuse (track seen nonces per agent)
+3. Consider binding nonce to a server-provided challenge (prevents offline forgery)
 
 ---
 
-### RT-12: Response Engine Default Mode — AlertOnly (LOW)
+### RT-10: Linux Monitor — Static Audit Log Scraping (LOW)
 
-**Attack:** Behavedr defaults to `ResponseMode.AlertOnly` — even if threats are detected, no action is taken.
+**Attack:** Attacker clears or rotates audit log before LinuxMonitor reads it.
 
 **Current State:**
-- `ResponsePolicy.Default` sets `Mode = ResponseMode.AlertOnly`
-- Unless explicitly configured to `Active`, the agent is observe-only
-- An attacker who knows this can operate freely as long as no human reviews logs
+- `LinuxMonitor.ScanAuditLog()` reads last 8KB of `/var/log/audit/audit.log`
+- Only processes events within last 30 seconds
+- No real-time subscription (no auditd netlink, no eBPF)
+- Attacker with root: `truncate -s 0 /var/log/audit/audit.log`
 
-**Impact:** Low (by design for safety), but means the EDR provides zero active protection out-of-box.
+**Exploitability:** Trivial with root access (which attacker likely has if they need to evade).
+
+**Impact:** Complete audit trail blindness on Linux until next log entries are written.
+
+**Recommendation:**
+1. Subscribe to audit events via netlink socket for real-time delivery
+2. Monitor audit log file size — sudden truncation is itself a high-confidence signal
+3. Long-term: eBPF programs for kernel-level event capture immune to log tampering
 
 ---
 
-## RED TEAM SUMMARY TABLE
+### RT-11: Mobile Platform — Stub Implementations (LOW)
 
-| # | Gap | Severity | Exploitability | Current Mitigation |
+**Attack:** On macOS and iOS, all monitors return hardcoded stub signals regardless
+of actual system state.
+
+**Current State:**
+- `MacOSMonitor`: Returns `new Signal("process_exec", 45, 0.75)` unconditionally
+- `IosMonitor`: Returns 3 hardcoded signals unconditionally
+- No real EndpointSecurity.framework integration
+- No real iOS Network Extension or MDM integration
+
+**Exploitability:** N/A — these platforms simply have no detection capability.
+
+**Impact:** Zero protection on macOS and iOS. Android has partial protection via
+the signal injection API.
+
+**Recommendation:**
+1. macOS: Implement EndpointSecurity.framework via native interop for process/file monitoring
+2. iOS: Implement NEFilterProvider for network-level detection (enterprise MDM required)
+3. Remove hardcoded stub signals that generate noise without detection value
+
+---
+
+## RED TEAM SUMMARY TABLE (v0.0.8)
+
+| # | Gap | Severity | Exploitability | Status vs v0.0.6 |
 |---|-----|----------|---------------|-------------------|
-| RT-1 | Placeholder signing key | CRITICAL | Trivial | None (skipped in dev) |
-| RT-2 | Process-name-only detection | CRITICAL | Trivial | None |
-| RT-3 | No anti-termination | CRITICAL | Trivial (admin) | SCM restart only |
-| RT-4 | No network monitoring | HIGH | Trivial | None |
-| RT-5 | No ETW (5s polling gaps) | HIGH | High | None |
-| RT-6 | Policy forgery (placeholder key) | HIGH | Medium | None effective |
-| RT-7 | Score manipulation | MEDIUM | Medium | Partial (confidence clamp) |
-| RT-8 | First-run config window | MEDIUM | Medium | None |
-| RT-9 | Machine key extraction | MEDIUM | Medium-High (admin) | File ACLs |
-| RT-10 | Linux /proc race conditions | MEDIUM | High | None |
-| RT-11 | Android token weakness | LOW-MEDIUM | Low | String comparison |
-| RT-12 | AlertOnly default | LOW | N/A | By design |
+| RT-1 | No watchdog process | HIGH | Moderate (admin) | Partially fixed |
+| RT-2 | WMI latency (1-2s blind spot) | HIGH | High | New finding (WMI vs ETW) |
+| RT-3 | Signal dedup / score gaming | MEDIUM | Medium | Unchanged |
+| RT-4 | First-run config sealing race | MEDIUM | Medium | Unchanged |
+| RT-5 | Machine key single file | MEDIUM | Medium-High (admin) | Unchanged |
+| RT-6 | HTTPS/443 C2 invisible | MEDIUM | High | New (network mon exists but limited) |
+| RT-7 | Regex-based cmdline evasion | MEDIUM | Medium | New (behavioral mon exists but bypassable) |
+| RT-8 | Credential canary read-not-delete | LOW-MEDIUM | Low-Medium | New finding |
+| RT-9 | Offline buffer replay (needs key) | LOW-MEDIUM | Low | Low risk |
+| RT-10 | Linux audit log scraping | LOW | Trivial (root) | Unchanged |
+| RT-11 | macOS/iOS stubs | LOW | N/A | Unchanged |
 
 ---
 
-## BLUE TEAM ANALYSIS — Defensive Strengths & Gaps
+## BLUE TEAM ANALYSIS — Defensive Strengths (v0.0.8)
 
-### What Behavedr Does Well (Strengths)
+### S1: Cryptographic Architecture (STRONG)
 
-#### S1: Cryptographic Architecture
-- AES-256-GCM authenticated encryption for data at rest (SecureEnvelope)
-- HKDF key derivation with purpose-specific context labels
-- HMAC-SHA256 config integrity with constant-time comparison
-- RSA-PSS SHA-256 for update/policy signing (when key is real)
-- Proper nonce generation via `RandomNumberGenerator`
+- AES-256-GCM authenticated encryption for offline buffer (`SecureEnvelope`)
+- HKDF key derivation with purpose-specific context labels (prevents key reuse attacks)
+- HMAC-SHA256 config integrity with `CryptographicOperations.FixedTimeEquals` (timing-safe)
+- RSA-4096 PSS SHA-256 for update and policy signature verification
+- Proper nonce generation via `RandomNumberGenerator.GetBytes`
+- Key rotation support with versioned archives (`ConfigProtection.RotateKey()`)
+- DPAPI on Windows for sensitive config values (`DataProtectionScope.LocalMachine`)
 
-#### S2: Fail-Closed Communication
-- `GrpcBehavedrClient` rejects ALL server connections when no CA cert is configured
-- Certificate pinning via custom X509Chain validation
-- mTLS with client certificates for agent authentication
-- No `DangerousAcceptAnyServerCertificateValidator` anywhere in codebase
-
-#### S3: Supply Chain Awareness
-- `<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>` in Directory.Build.props
-- `<Deterministic>true</Deterministic>` for reproducible builds
-- `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`
-- Pinned NuGet package versions (lock file)
-
-#### S4: Path Traversal Prevention
-- `FileQuarantineAction.IsValidFileName()` rejects `..`, `/`, `\`, null bytes
-- Resolved path verified against expected directory with `Path.GetFullPath()`
-- `AutoUpdater` has Zip Slip protection (rejects entries resolving outside target dir)
-
-#### S5: Response Safety
-- Rate limiting (60s cooldown per target PID:ProcessName)
-- Protected process list (never kills csrss, lsass, svchost, explorer, etc.)
-- PID reuse validation (double-checks process name matches before kill)
-- AlertOnly default mode prevents accidental production damage
-
-#### S6: Offline Resilience
-- Encrypted offline buffer survives network outages
-- Chronological replay on reconnection
-- Dead-letter directory for corrupted/tampered reports
-- Max buffer size enforcement prevents disk exhaustion
+**Assessment:** Cryptographic implementation is sound. No custom crypto. Uses .NET's
+built-in primitives correctly. The HKDF purpose separation means deriving one key
+does not compromise others even from the same root material.
 
 ---
 
-### Defensive Gaps (Blue Team Perspective)
+### S2: Fail-Closed Communication Security (STRONG)
 
-#### BT-1: No Behavioral Correlation Engine
+- `GrpcBehavedrClient`: When no CA cert configured, `ServerCertificateCustomValidationCallback`
+  returns `false` unconditionally (no connections possible without explicit trust)
+- Certificate pinning via `X509ChainTrustMode.CustomRootTrust` (only accepts server
+  certs signed by the specific pinned CA)
+- mTLS: Client certificate required for authentication
+- Policy updates verified with RSA-PSS before acceptance
+- `Uri.EscapeDataString` used for query parameters (injection prevention)
 
-**Gap:** Signals are scored independently per cycle. No temporal correlation across cycles.
-
-**Impact:** Cannot detect multi-stage attacks (recon → staging → execution → exfiltration) that span multiple polling intervals. Each 5-second window is evaluated in isolation.
-
-**What Sentinel does:** `BehavioralCorrelationEngine` correlates signals across a 120-second window per-PID. Multiple weak signals from different sources produce composite kills (e.g., "unsigned binary + injection API + C2 network" → 0.98 confidence kill).
-
----
-
-#### BT-2: No Credential Protection
-
-**Gap:** No monitoring of browser credential files, LSASS access, token theft, or credential canaries.
-
-**Impact:** Infostealers (Lumma, Amatera, RedLine) can freely read Chrome Login Data, Firefox key4.db, Windows credential vaults without triggering any signal.
-
-**What Sentinel does:** `ChromeCredentialGuardMonitor`, `FirefoxCredentialGuardMonitor`, `MicrosoftAccountGuardMonitor`, `LsassDumpCanaryMonitor`, `CredentialCanaryMonitor` — comprehensive credential theft detection with 3-10s scan intervals.
+**Assessment:** The communication layer correctly implements defense-in-depth.
+Misconfiguration results in no connectivity (fail-closed), not in insecure connectivity.
 
 ---
 
-#### BT-3: No File Integrity/Activity Monitoring
+### S3: Supply Chain Hardening (STRONG)
 
-**Gap:** No `FileSystemWatcher` on sensitive paths. No real-time file I/O monitoring.
+- `<Deterministic>true</Deterministic>` — reproducible builds
+- `<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>` — pinned dependencies
+- `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>` — catches unsafe patterns
+- GitHub Actions pinned to commit SHAs (e.g., `actions/checkout@11bd71901bbe...`)
+- SBOM generation via `Microsoft.Sbom.DotNetTool`
+- Single-file deployment with `IncludeAllContentForSelfExtract` (no temp extraction)
+- NuGet packages locked (`packages.lock.json`)
 
-**Impact:** Ransomware (bulk file encryption), data staging, DLL sideloading, and sensitive file access all go undetected.
-
-**What Sentinel does:** `FileActivityMonitor` (FileSystemWatcher on user profile + configurable paths), `RansomwareIoMonitor` (shadow copy + bulk rename + I/O rate + extension counting), `ApplicationIntegrityMonitor` (SHA-256 baseline of protected executables).
-
----
-
-#### BT-4: No Registry Monitoring (Windows)
-
-**Gap:** No detection of persistence via Run keys, scheduled tasks, WMI subscriptions, or service creation.
-
-**Impact:** Attacker establishes persistence silently. No signal generated for any registry-based persistence technique.
-
-**What Sentinel does:** `RegistryMonitor` (ETW Kernel-Registry provider), `ScheduledTaskMonitor`, `WmiPersistenceMonitor`, `PersistenceRule` (covers Run keys, services, WMI, tasks).
+**Assessment:** Build pipeline supply chain is well-hardened. Pinned actions prevent
+upstream compromise via tag replacement. Lock files prevent dependency confusion.
 
 ---
 
-#### BT-5: No Parent-Child Process Validation
+### S4: Multi-Layer Detection (STRONG — Windows)
 
-**Gap:** `WindowsMonitor` has `SuspiciousParentChild` dictionary defined but **never uses it** — there's no code that checks parent-child relationships.
+The v0.0.7 additions created genuine defense-in-depth on Windows:
 
-**Impact:** Classic attack chains (Word → cmd → PowerShell, Explorer → mshta) go completely undetected.
+| Layer | Monitor | What It Detects |
+|-------|---------|----------------|
+| Process behavior | BehavioralMonitor | Parent-child anomalies, LOLBins, encoded PS, AMSI bypass |
+| Process creation | EtwSession (WMI) | Real-time process start/stop with parent PID |
+| Memory | MemoryAnalyzer | RWX regions in non-JIT processes (injection indicator) |
+| Network | NetworkConnectionMonitor | Suspicious ports, connection bursts, high conn counts |
+| Network timing | BeaconingDetector | Statistical C2 beacon via CV analysis |
+| Credential files | CredentialGuardMonitor | Non-browser SQLite loading, credential file access |
+| Credential canary | CredentialCanaryMonitor | Honeypot credential deletion (near-zero FP) |
+| File activity | FileActivityMonitor | Ransomware rename bursts, exe drops in temp, DLL sideload |
+| Registry | RegistryPersistenceMonitor | New Run keys, suspicious service registrations |
+| Self-protection | AntiTamperGuard | QPC suspension, binary integrity, service heal |
+| Connectivity | ConnectivityCanaryMonitor | EDRSilencer/WFP network blocking |
+| Correlation | BehavioralCorrelationEngine | Multi-signal composite detections (120s window) |
 
-**What Sentinel does:** `ProcessAncestryCache` (refreshed every 2s), `ParentPidSpoofDetector` (ETW truth vs snapshot comparison), parent-child signals feed into every detection rule.
-
----
-
-#### BT-6: No Memory Analysis
-
-**Gap:** No scanning for RWX regions, shellcode patterns, process hollowing, or unbacked executables.
-
-**Impact:** In-memory implants (Cobalt Strike Beacon, Meterpreter reflective DLL) operate undetected. Process injection is invisible.
-
-**What Sentinel does:** `MemoryBehaviorAnalyzer` (VirtualQueryEx + ReadProcessMemory, scans every 45s for RWX/shellcode/unbacked), `HollowProcessMonitor` (GetMappedFileName vs module path mismatch), `EtwThreatIntelMonitor` (kernel-level VirtualAllocEx/VirtualProtect observation).
-
----
-
-#### BT-7: No Deception/Honeypot Capabilities
-
-**Gap:** No canary files, credential honeypots, or deception infrastructure.
-
-**Impact:** Cannot detect reconnaissance or credential harvesting with zero false positives.
-
-**What Sentinel does:** `CredentialCanaryMonitor` (Windows Credential Manager honeypot — 0.98-0.99 confidence, zero FP), `CanaryFileMonitor` (honeypot files in sensitive directories), active deception v1.7.0 (BeaconFlooder, ClipboardPoisonTactic, FileTrapTactic, HoneypotWeaponizer).
+**Assessment:** 13 monitors on Windows provide meaningful coverage across MITRE ATT&CK
+tactics: Execution, Persistence, Privilege Escalation, Defense Evasion, Credential Access,
+Discovery, Lateral Movement (limited), Collection, and C2. The correlation engine
+converts weak individual signals into high-confidence composite detections.
 
 ---
 
-#### BT-8: No Structured Detection Rules/Tiers
+### S5: Anti-Tamper Defenses (GOOD)
 
-**Gap:** Behavedr has a flat scoring model — all signals contribute equally to a single score. No concept of detection tiers, composite rules, or behavioral correlation.
+- **QPC timing detection:** Immune to clock manipulation (QueryPerformanceCounter is
+  hardware-backed). 4-second threshold detects NtSuspendProcess attacks.
+- **Binary integrity:** SHA-256 baseline at startup, periodic re-verification
+- **Service self-healing:** Registry-based service re-registration if entry deleted
+- **Anti-debug:** `Environment.FailFast` in Release builds when debugger detected
+- **Process hollowing check:** Type resolution verification (Behavedr.Core.DetectionEngine)
+- **Config forced in Release:** Self-protection cannot be disabled via config in Release
 
-**Impact:** Cannot differentiate between "slightly suspicious" and "confirmed active attack." No composite detection (e.g., injection + C2 + credential access = confirmed implant).
-
-**What Sentinel does:** Two-tier system — Tier1 (behavioral, kill-authorized) and Tier2 (corroborating, log-only). Composite detections require signals from different sources on the same PID within 120s. President's Law governs which behaviors authorize automated response.
-
----
-
-#### BT-9: No Telemetry Fusion / Event Graph
-
-**Gap:** Each monitoring cycle is independent. No event chain tracking, no process timeline, no causal graph.
-
-**Impact:** Cannot reconstruct attack timelines, correlate across data sources, or identify multi-vector campaigns.
-
-**What Sentinel does:** `TelemetryFusionEngine` (enriches events with cross-source context, builds temporal chains per-process), `EventGraph` (in-memory graph of processes/files/network with temporal/causal edges), `IncidentManager` (groups related detections into incidents).
+**Assessment:** Good for userland protection. The QPC suspension detection is a smart
+technique. Main gap: no kernel-level protection (no ELAM/PPL, no deny-terminate handle).
 
 ---
 
-#### BT-10: No macOS/iOS Monitors Are Implemented
+### S6: Response Safety Design (GOOD)
 
-**Gap:** While the architecture supports these platforms, no actual monitor implementations exist for macOS or iOS beyond stubs.
+- **AlertOnly default:** No automated response until explicitly configured
+- **Protected process list:** System-critical processes can never be killed
+- **PID reuse validation:** Verifies process name still matches before kill
+- **Rate limiting:** 60-second cooldown per target (PID:ProcessName)
+- **Process tree kill:** `Kill(entireProcessTree: true)` prevents child survival
+- **File quarantine metadata:** SHA-256 + original path + signals for forensic restore
+- **Path traversal prevention:** Validated in FileQuarantineAction and SecurityValidation
 
-**Impact:** The agent runs but detects nothing on Apple platforms.
-
----
-
-## CROSS-REFERENCE: Patterns to Import from Sentinel
-
-### Priority 1 — Architectural Patterns (Foundation)
-
-| Sentinel Pattern | What It Provides | Implementation Effort |
-|---|---|---|
-| **Unified ETW Session** | Real-time kernel-level visibility into process/file/registry/network/DNS events (~50ms latency) | High — requires P/Invoke ETW APIs, but transforms detection from blind to sighted |
-| **Tiered Detection Model** | Tier1 (kill-authorized) vs Tier2 (corroborating) prevents single-signal false kills | Medium — restructure ScoringEngine to emit tiered events |
-| **Behavioral Correlation Engine** | Time-windowed multi-signal correlation produces composite high-confidence detections | Medium — new component correlating signals across multiple cycles |
-| **ProcessAncestryCache** | Enables parent-child validation, ancestry chain analysis for all detections | Low-Medium — CreateToolhelp32Snapshot + refresh loop |
-| **TelemetryFusionEngine** | Cross-source enrichment, per-process event chains, behavioral velocity metrics | Medium — new layer between monitors and detection engine |
-
-### Priority 2 — Critical Monitors to Port (Windows)
-
-| Sentinel Monitor | Detection Capability | Port Complexity |
-|---|---|---|
-| **NetworkMonitor** | `GetExtendedTcpTable`/`GetExtendedUdpTable` — tracks all connections with PID attribution | Low (P/Invoke + polling) |
-| **BeaconingDetector** | Statistical C2 detection via connection interval coefficient of variation | Medium (requires NetworkMonitor data) |
-| **MemoryBehaviorAnalyzer** | `VirtualQueryEx` + `ReadProcessMemory` — detects RWX, shellcode, unbacked exec | Medium (P/Invoke, careful with permissions) |
-| **ChromeCredentialGuardMonitor** | FileSystemWatcher on browser credential files | Low (FileSystemWatcher) |
-| **ScheduledTaskMonitor** | `schtasks /query` parsing for malicious task detection | Low (shell command + parse) |
-| **RegistryMonitor** | ETW Kernel-Registry or polling of persistence keys | Medium (ETW preferred, registry polling fallback) |
-| **HollowProcessMonitor** | `GetMappedFileName` vs loaded module path — detects process hollowing | Medium (P/Invoke) |
-| **GhostProcessMonitor** | PIDs with network but no resolvable name — catches DLL sideloading | Low (cross-reference TCP table vs Process.GetProcesses) |
-
-### Priority 3 — Self-Protection Improvements
-
-| Sentinel Pattern | What It Provides |
-|---|---|
-| **AntiTamperGuard** with QPC timing | Detects suspension attacks via QueryPerformanceCounter (immune to clock manipulation) |
-| **AgentWatchdog** (separate process) | Mutual monitoring — if either dies, the other restarts it |
-| **Service registry self-healing** | If attacker deletes the service, re-registers via SCM P/Invoke (not sc.exe) |
-| **Last-gasp logging** | On unexpected exit, writes forensic evidence before death |
-| **ConnectivityCanaryMonitor** | Detects if agent's network is being silenced (WFP/EDRSilencer) |
-| **Native SCM P/Invoke** | Avoids shelling out to sc.exe (which can be intercepted/blocked) |
-
-### Priority 4 — Deception Capabilities
-
-| Sentinel Pattern | What It Provides |
-|---|---|
-| **CredentialCanaryMonitor** | Zero-FP honeypot credential in Windows Credential Manager |
-| **CanaryFileMonitor** | Honeypot files in sensitive directories detect reconnaissance |
-| **ClipboardPoisonTactic** | Active deception — fake credentials to waste attacker time |
-| **NetworkHoneypotDeployer** | Fake service listeners as lateral movement traps |
+**Assessment:** Response actions are designed with safety as priority. The protected
+process list, PID validation, and rate limiting prevent most classes of self-harm.
+President-kill authority (highest level) requires both high score AND user-targeted flag.
 
 ---
 
-## PRIORITIZED RECOMMENDATIONS
+### S7: Offline Resilience (GOOD)
 
-### P0 — Critical (Must Fix Before Any Production Use)
+- Reports encrypted with AES-256-GCM before writing to disk
+- Tampered reports detected via authentication tag failure → moved to dead-letter
+- Chronological replay on reconnection (filename-based ordering)
+- Buffer size cap prevents disk exhaustion (max 1000 reports)
+- Sequence numbers and nonces enable server-side replay detection
 
-#### 1. Replace Placeholder Signing Key
-- Generate RSA-4096 keypair
-- Embed real public key in `UpdateSignatureVerifier.cs`
-- Sign all release zips and policy updates
-- Remove the `IsProductionKeyConfigured()` bypass path entirely in Release builds
-
-#### 2. Add Behavioral Detection (Not Name-Based)
-- Remove reliance on `SuspiciousProcessNames` as primary detection
-- Implement parent-child anomaly detection (the dictionary exists but is unused!)
-- Add command-line argument analysis (encoded PowerShell, download cradles, LOLBin patterns)
-- Port Sentinel's approach: detect what processes DO, not what they ARE named
-
-#### 3. Implement ETW Integration (Windows)
-- Subscribe to `Microsoft-Windows-Kernel-Process` for real-time process creation
-- Subscribe to `Microsoft-Windows-Threat-Intelligence` for injection API observation
-- Subscribe to `Microsoft-Windows-DNS-Client` for DNS monitoring
-- Fall back to current polling when ETW is unavailable (non-admin)
-
-#### 4. Add Anti-Termination / Watchdog
-- Spawn a separate watchdog process with randomized name
-- Implement mutual PID monitoring (service watches agent, agent watches service)
-- Add `DenyProcessTermination` handle protection where OS supports it
-- Register for SCM failure recovery with escalating restart delays
+**Assessment:** Offline operation is handled correctly. An attacker who disconnects the
+agent from the network cannot prevent evidence preservation (encrypted on disk).
 
 ---
 
-### P1 — High Priority (Next Release)
+### S8: Input Validation (GOOD)
 
-#### 5. Add Network Monitoring
-- `GetExtendedTcpTable`/`GetExtendedUdpTable` P/Invoke for connection inventory
-- Track new connections per PID per cycle
-- Flag connections to known-bad IPs or non-standard ports from suspicious processes
-- Implement basic beaconing detection (interval regularity)
+`SecurityValidation.cs` provides centralized validation:
+- Safe filename checks (no traversal, no reserved names, no null bytes)
+- Path containment verification (`Path.GetFullPath` comparison)
+- IP address validation with private range detection
+- PID and port range validation
+- Constant-time string comparison (`SecureEquals`)
+- Windows reserved name checking (CON, PRN, AUX, NUL, COM*, LPT*)
 
-#### 6. Add Credential Protection
-- `FileSystemWatcher` on Chrome/Edge/Firefox credential database paths
-- Alert when non-browser process accesses credential files
-- Implement a credential canary (Windows Credential Manager honeypot)
-
-#### 7. Implement Behavioral Correlation
-- Maintain per-PID signal history across cycles (120s sliding window)
-- Define composite rules: injection + network = implant, credential access + network = exfiltration
-- Require corroboration for high-confidence kills (no single-signal kills)
-
-#### 8. Fix Parent-Child Detection
-- Actually implement the `SuspiciousParentChild` dictionary logic in WindowsMonitor
-- Use `ProcessAncestryCache` (CreateToolhelp32Snapshot) for ancestry resolution
-- Detect: Office → shell, Explorer → mshta/regsvr32/rundll32
+**Assessment:** Well-designed utility class. Used consistently in file quarantine and
+other security-sensitive paths.
 
 ---
 
-### P2 — Medium Priority (v0.1.0 Milestone)
+## BLUE TEAM GAPS — What's Still Missing
 
-#### 9. Add File Activity Monitoring
-- `FileSystemWatcher` on user profile, Downloads, temp directories
-- Detect ransomware patterns (bulk renames, shadow copy deletion attempts)
-- Monitor sensitive system files (hosts, SAM, etc.)
+### BT-1: No DNS Visibility
 
-#### 10. Add Registry Persistence Detection (Windows)
-- Poll HKLM/HKCU Run keys, scheduled tasks, services
-- Baseline at startup, alert on changes
-- Detect WMI event subscription persistence
+**Gap:** No monitoring of DNS queries. Cannot detect DGA domains, DNS tunneling,
+DNS-over-HTTPS C2, or suspicious domain lookups.
 
-#### 11. Implement Memory Scanning
-- `VirtualQueryEx` to enumerate memory regions per-process
-- Flag RWX regions in non-JIT processes
-- Detect unbacked executable regions (process hollowing indicator)
+**Impact:** Entire class of network-based attack detection is unavailable.
+BeaconingDetector works on connection timing but cannot identify what domain
+is being contacted.
 
-#### 12. Add Connectivity Health Check
-- Periodic canary request to known endpoint
-- Detect if agent's network traffic is being blocked (EDRSilencer pattern)
-- Alert and switch to hardened local-only detection if silenced
-
-#### 13. Improve Self-Protection
-- QPC-based timing to detect suspension (as Sentinel does)
-- Service registry self-healing via native SCM P/Invoke
-- Binary integrity on configurable interval (already have SHA-256 baseline)
-- Block config changes from non-SYSTEM processes
+**Recommendation:** Subscribe to ETW `Microsoft-Windows-DNS-Client` provider
+(`{1C95126E-7EEA-49A9-A3FE-A378B03DDB4D}`) — already identified in EtwSession.cs
+constants.
 
 ---
 
-### P3 — Lower Priority (Future Roadmap)
+### BT-2: No Data Exfiltration Detection
 
-#### 14. Add DPAPI Key Protection (Windows)
-- Wrap machine key with `ProtectedData.Protect(scope: LocalMachine)`
-- Incorporate installation entropy into HMAC derivation
-- Bind key to boot nonce to prevent cross-boot replay
+**Gap:** No monitoring of outbound data volume per process. Large file uploads,
+bulk data transfers, and staging operations are invisible.
 
-#### 15. Linux: Add eBPF/fanotify Integration
-- Replace /proc polling with eBPF program for real-time process/file/network events
-- Use fanotify for file access monitoring
-- Subscribe to auditd netlink socket for real-time audit events
+**Impact:** Attackers can exfiltrate arbitrary amounts of data without triggering
+any signal. Only connection count is tracked, not data volume.
 
-#### 16. Add Telemetry Fusion Layer
-- Per-process event chains with temporal ordering
-- Cross-source enrichment (process + network + file = context)
-- Event graph for incident timeline reconstruction
-
-#### 17. Implement Active Deception
-- Deploy credential canaries (Windows Credential Manager, /etc/shadow entries)
-- Deploy canary files in high-value directories
-- Optional: fake service listeners as lateral movement traps
-
-#### 18. Add SecurityValidation Utility Class
-- Centralized input validation (paths, filenames, IPs, PIDs, ports)
-- Consistent across all components (port from Sentinel's `SecurityValidation.cs`)
-- Includes Windows reserved name checking, private IP detection, path containment
+**Recommendation:** Track bytes sent/received per (PID, destination) pair. Alert
+on unusual outbound volume from non-browser processes.
 
 ---
 
-## DESIGN PRINCIPLES TO ADOPT FROM SENTINEL
+### BT-3: No Process Ancestry Cache
 
-1. **Behavioral over static** — Detect what processes DO (API calls, memory operations, network activity), not what they ARE (process name, hash). Process names are metadata enrichment, never detection triggers.
+**Gap:** `BehavioralMonitor` resolves parent process name via `Process.GetProcessById()`
+at detection time. If parent has already exited, relationship is lost.
 
-2. **No single-signal kills** — Require corroboration from different data sources before automated response. One weak signal should never trigger a kill (except self-protection).
+**Impact:** Short-lived parent processes (droppers that exit after spawning payload)
+leave no ancestry trace for child process analysis.
 
-3. **Tiered detection** — Tier1 rules can authorize response. Tier2 rules only log and feed correlation. This prevents false positives from causing damage.
+**Recommendation:** Maintain an in-memory process ancestry cache populated from
+EtwSession process start events. Keep last 60 seconds of parent-child mappings.
 
-4. **Assume the attacker reads the code** — No security-by-obscurity. Detection must work even when adversary knows all rule logic.
+---
 
-5. **Graceful degradation** — When ETW isn't available, fall back to WMI/polling. When network is silenced, switch to local-only hardened mode. Never crash on degraded capability.
+### BT-4: No Kernel-Level Visibility (Windows)
 
-6. **President's Law (Closed Kill List)** — Only explicitly enumerated behaviors authorize automated process termination. New rules default to log-only. This prevents scope creep in response authority.
+**Gap:** All detection operates in userland. No ETW Threat Intelligence provider
+(requires ELAM), no minifilter driver, no kernel callbacks.
 
-7. **Self-protection is non-negotiable** — In Release builds, self-protection cannot be disabled via config. If attacker tampers config, they must not be able to disable the protections that would detect them.
+**Impact:** Cannot detect:
+- VirtualAllocEx/VirtualProtect cross-process (injection primitives)
+- Kernel-level process manipulation (DKOM)
+- Driver-based rootkits
+- Direct hardware access
 
-8. **Monitor groups with priority** — Critical self-protection monitors start first and restart indefinitely. Lower-priority monitors have limited restart budgets. Prevents thundering herd at startup.
+**Note:** This is an architectural constraint, not a bug. ELAM/PPL requires
+Microsoft-signed driver, which is a significant production deployment requirement.
+
+---
+
+### BT-5: No Incident Grouping / Timeline
+
+**Gap:** Each detection cycle is independent. No correlation of events into
+incidents, no timeline reconstruction, no causal graph.
+
+**Impact:** SOC analysts receive individual alerts without context of how they
+relate to a single campaign. Manual correlation required.
+
+**Recommendation:** Implement per-process event chains. Group related detections
+(same PID, same parent tree, same timeframe) into incidents.
+
+---
+
+### BT-6: No Threat Intelligence Integration
+
+**Gap:** All detection is heuristic-based. No IOC feeds, no hash blacklists,
+no IP reputation, no YARA rules.
+
+**Impact:** Known-bad indicators (specific C2 IPs, malware hashes, malicious domains)
+are not checked. Detection relies entirely on behavioral anomaly detection.
+
+**Recommendation:** Add optional threat intel feed integration (STIX/TAXII,
+MISP, or simple IOC file) for known-bad matching alongside behavioral detection.
 
 ---
 
 ## CODE-LEVEL FINDINGS
 
-### Finding 1: Unused SuspiciousParentChild Dictionary (Bug)
+### CL-1: Potential Deadlock in MonitoringService (LOW)
 
-**File:** `src/Behavedr.Core/Monitors/WindowsMonitor.cs`
-
-The `SuspiciousParentChild` dictionary is defined but never referenced anywhere in the detection logic. This appears to be dead code from an incomplete implementation.
-
-```csharp
-// This dictionary is defined but NEVER USED in GetSignalsAsync()
-private static readonly Dictionary<string, HashSet<string>> SuspiciousParentChild = new(...)
-{
-    ["winword"] = new(...) { "cmd", "powershell", "pwsh", ... },
-    ...
-};
-```
-
-**Recommendation:** Implement parent-child checking or remove the dead code to avoid false confidence.
-
----
-
-### Finding 2: Short-Lived PowerShell Detection is Unreliable
-
-**File:** `src/Behavedr.Core/Monitors/WindowsMonitor.cs`
+`MonitoringService.ExecuteAsync()` registers monitors in its `ExecuteAsync` method,
+but `AgentBootstrap.CreateEngine()` (used in tests and mobile) also registers monitors.
+If both code paths execute (unlikely in production, possible in test scenarios),
+monitors could be registered twice.
 
 ```csharp
-var runTime = DateTime.Now - startTime;
-if (runTime.TotalSeconds < 3)
+// MonitoringService.cs line 37-41
+foreach (var monitor in PlatformMonitors.Supported())
 {
-    signals.Add(new Signal("short_lived_powershell", 40, 0.6));
+    _engine.RegisterMonitor(monitor);
 }
 ```
 
-**Issue:** This checks currently-running PowerShell processes. If PowerShell exits in <3s, it will already be gone by the time the 5-second polling cycle runs. This detection only fires if the scan happens to run during the 0-3s window — an unlikely coincidence.
+**Impact:** Double-counting of signals. Low risk in production.
 
 ---
 
-### Finding 3: Process Burst Detection Races with Scan Interval
+### CL-2: Sync-over-Async in ProcessEvent (DOCUMENTED)
 
-**File:** `src/Behavedr.Core/Monitors/WindowsMonitor.cs`
+`DetectionEngine.ProcessEvent()` uses `.GetAwaiter().GetResult()` and is correctly
+marked `[Obsolete]`. No production code calls it — only tests.
 
-```csharp
-var recentThreshold = DateTime.Now.AddSeconds(-10);
-// counts processes started in last 10 seconds
-if (recentCount > 20) { /* signal */ }
-```
-
-**Issue:** With a 5-second scan interval, this detection may fire multiple times for the same burst (counts overlap between scans) or miss bursts that happen between scans and whose processes exit quickly.
+**Status:** Properly documented, migration path clear. No action needed.
 
 ---
 
-### Finding 4: DetectionEvent.Score Field Unused
-
-**File:** `src/Behavedr.Core/Models/DetectionEvent.cs`
+### CL-3: CredentialGuardMonitor Module Enumeration (LOW)
 
 ```csharp
-public record DetectionEvent(..., double Score, ...);
-```
-
-The `Score` field in `DetectionEvent` is always passed as `0.0` via `DetectionEvent.Create()` and is never used by the scoring engine (which calculates its own score from signals). This is confusing dead state.
-
----
-
-### Finding 5: Synchronous ProcessEvent Anti-Pattern
-
-**File:** `src/Behavedr.Core/DetectionEngine.cs`
-
-```csharp
-public DetectionResult ProcessEvent(DetectionEvent evt)
+foreach (ProcessModule module in proc.Modules)
 {
-    return ProcessEventAsync(evt, CancellationToken.None).GetAwaiter().GetResult();
+    if (module.ModuleName?.Contains("sqlite", ...) == true && ...)
 }
 ```
 
-**Issue:** Sync-over-async can cause deadlocks in certain synchronization contexts. Mark as `[Obsolete]` and remove callers.
+Enumerating modules of other processes requires the same access level as reading
+their memory. On newer Windows versions with process protection, this may silently
+fail for protected processes.
+
+**Impact:** Low — gracefully handled by try/catch. Detection may miss some processes.
 
 ---
 
-## COMPARISON MATRIX: Behavedr vs Sentinel
+### CL-4: AntiTamperGuard Service Re-Registration (LOW)
 
-| Capability | Behavedr v0.0.6 | Sentinel v1.5.4 |
-|---|---|---|
-| **Platforms** | Windows, Linux, macOS, Android, iOS | Windows only |
-| **Detection latency** | 5000ms (polling) | ~50ms (ETW) |
-| **Process monitoring** | Process.GetProcesses() name matching | ETW Kernel-Process + WMI fallback |
-| **Network monitoring** | None | GetExtendedTcpTable + DNS ETW + BeaconingDetector |
-| **Memory analysis** | None | VirtualQueryEx + shellcode pattern + RWX detection |
-| **File monitoring** | None (quarantine only) | FileSystemWatcher + ETW Kernel-File |
-| **Registry monitoring** | None | ETW Kernel-Registry + persistence key polling |
-| **Credential protection** | None | Chrome/Firefox/MS Account guards + LSASS canary |
-| **Injection detection** | None | ETW Threat-Intelligence (kernel-level API observation) |
-| **Parent-child analysis** | Defined but unused | ProcessAncestryCache + PPID spoof detection |
-| **Behavioral correlation** | None (flat scoring) | 120s sliding window + 10 composite rules |
-| **Detection tiers** | Single score threshold | Tier1 (kill) + Tier2 (corroborate) |
-| **Self-protection** | Debugger check + binary hash | Anti-tamper (suspend/terminate/service heal) + watchdog |
-| **Deception** | None | Credential canary + file canary + active deception suite |
-| **Anti-tamper** | Basic | QPC timing + handle protection + service self-heal + WFP guard |
-| **Update signing** | Placeholder (bypassed) | N/A (no auto-update) |
-| **Config protection** | HMAC-SHA256 seal | SHA-256 baseline + runtime tamper detection |
-| **Communication security** | mTLS + cert pinning + fail-closed | HMAC-signed telemetry to proxy |
-| **Offline resilience** | AES-256-GCM encrypted buffer | N/A (local detection only) |
-| **Metrics/telemetry** | OpenTelemetry counters + histograms | SentinelMetrics (P50/P90/P95/P99 histograms) |
-| **Test coverage** | 49 tests | 367 tests |
-| **Monitor count** | 3 (Windows, Linux, Android) | 70+ specialized monitors |
-
----
-
-## WHAT BEHAVEDR HAS THAT SENTINEL DOESN'T
-
-Behavedr has legitimate architectural advantages to preserve:
-
-1. **Multi-platform support** — Linux, macOS, Android, iOS coverage is unique. Sentinel is Windows-only by design constraint.
-
-2. **Agent-server communication** — mTLS client certs, encrypted offline buffering, policy distribution. Sentinel operates purely locally with no server communication.
-
-3. **Encrypted offline buffer** — AES-256-GCM encrypted reports survive network outages and resist forensic extraction. Sentinel has no equivalent.
-
-4. **Auto-update mechanism** — Self-updating agent infrastructure (once signing key is real). Sentinel requires manual update.
-
-5. **OpenTelemetry metrics** — Standard OTel counters/histograms exportable to Prometheus/OTLP. Sentinel has custom metrics.
-
-6. **Centralized policy management** — Server can push scoring config, response policy, monitoring intervals. Sentinel has local-only config.
-
-7. **Cross-platform detection engine** — Shared `Behavedr.Core` between desktop and mobile. Same scoring/response logic everywhere.
-
----
-
-## IMPLEMENTATION ROADMAP (Suggested)
-
+```csharp
+using var key = Registry.LocalMachine.CreateSubKey(
+    @"SYSTEM\CurrentControlSet\Services\Behavedr");
+key.SetValue("ImagePath", exePath);
 ```
-v0.0.7 — Security Critical
-├── Replace placeholder signing key (RT-1)
-├── Add parent-child process detection (actually use the existing dictionary)
-├── Add command-line argument scanning (encoded PS, LOLBins, download cradles)
-└── Add connectivity health canary
 
-v0.0.8 — Windows Detection Maturity
-├── NetworkMonitor (GetExtendedTcpTable/GetExtendedUdpTable P/Invoke)
-├── FileActivityMonitor (FileSystemWatcher on user profile + Downloads)
-├── Basic beaconing detection (interval CV analysis)
-└── ScheduledTaskMonitor (schtasks parsing)
+Re-registration uses `CreateSubKey` which requires admin/SYSTEM. If the agent is
+running as the service (SYSTEM), this works. If running standalone for testing,
+it may fail silently.
 
-v0.0.9 — ETW Integration
-├── UnifiedEtwSession (Kernel-Process, Kernel-File, DNS-Client)
-├── ETW Threat-Intelligence for injection detection
-├── Real-time process creation monitoring
-└── Graceful degradation when ETW unavailable
+**Impact:** Low — failure is logged and doesn't affect monitoring.
 
-v0.1.0 — Behavioral Correlation
-├── BehavioralCorrelationEngine (120s sliding window)
-├── Tiered detection model (Tier1 kill-authorized, Tier2 log-only)
-├── Composite detection rules
-├── ProcessAncestryCache
-└── Memory analysis (VirtualQueryEx + RWX detection)
+---
 
-v0.2.0 — Self-Protection & Deception
-├── AntiTamperGuard (QPC timing, handle protection, service self-heal)
-├── Watchdog process (mutual monitoring)
-├── CredentialCanaryMonitor
-├── ChromeCredentialGuardMonitor
-└── WFP integrity monitoring
-```
+### CL-5: BeaconingDetector Memory Growth (LOW)
+
+`_connectionTimestamps` dictionary can grow up to `MaxTrackedConnections` (5000)
+entries, each with up to 60 timestamps. Total memory: ~5000 × 60 × 8 bytes ≈ 2.4MB.
+
+Eviction removes oldest 1000 entries. During high-traffic periods, the eviction
+frequency could cause brief CPU spikes.
+
+**Impact:** Low. Memory is bounded. Performance impact negligible on modern systems.
+
+---
+
+## PRIORITIZED RECOMMENDATIONS (v0.0.8 → v0.1.0)
+
+### P0 — Critical (Before Production Deployment)
+
+#### 1. Watchdog Process
+- Spawn a separate lightweight service (different binary name) that monitors the main agent
+- Mutual PID heartbeat: if either misses 3 heartbeats (6s), the other restarts it
+- Watchdog binary should be in a different directory than the main agent
+- Both register as Windows services with different restart parameters
+
+#### 2. Native ETW Session
+- Replace WMI subscription with direct `StartTraceW`/`EnableTraceEx2`/`ProcessTrace`
+- P/Invoke declarations already exist in `EtwSession.cs` (commented out)
+- Subscribe to at minimum: Kernel-Process, DNS-Client, File-IO
+- Reduces detection latency from 1-2 seconds to ~50ms
+- Fall back to current WMI if native ETW fails (non-admin scenario)
+
+#### 3. Config Pre-Sealing
+- Compute config HMAC during build/install (not first run)
+- Ship `.hmac` sidecar with the installer
+- If HMAC is missing at startup, refuse to start (don't auto-seal)
+- Or: validate config values against embedded bounds before sealing
+
+---
+
+### P1 — High Priority (v0.1.0 Release)
+
+#### 4. DNS Monitoring
+- ETW `Microsoft-Windows-DNS-Client` provider subscription
+- Track DNS queries per process: DGA scoring (entropy + length + TLD), frequency
+- Flag processes making DNS queries to newly registered domains or suspicious TLDs
+- Integration with BeaconingDetector for domain-based beacon pattern detection
+
+#### 5. Signal Deduplication & Decay
+- Deduplicate by signal type per detection cycle
+- Add cooldown per (signal_type, PID): suppress repeats within 30 seconds
+- Composite correlation rules: fire once per window, not every cycle
+- Exponential decay of signal weight over time within correlation window
+
+#### 6. Process Ancestry Cache
+- Populate from EtwSession process events
+- Maintain parent-child mappings for 120 seconds (matches correlation window)
+- Enable "grandparent" analysis (e.g., Word → cmd → PowerShell → encoded command)
+- Expose ancestry chain to all monitors for enrichment
+
+#### 7. Data Volume Tracking
+- Track cumulative bytes sent per (PID, remote IP) per 5-minute window
+- Alert when non-browser process exceeds configurable threshold (e.g., 50MB outbound)
+- Flag processes with high upload-to-download ratio (exfiltration indicator)
+
+---
+
+### P2 — Medium Priority (v0.2.0)
+
+#### 8. DPAPI Key Protection
+- Wrap `.behavedr-key` with `ProtectedData.Protect(DataProtectionScope.LocalMachine)`
+- Only SYSTEM on the same machine can unwrap
+- Prevents offline key extraction (e.g., from disk image or backup)
+- Rotate existing key to DPAPI-protected version on upgrade
+
+#### 9. Linux: Real-Time Event Source
+- Replace /proc polling with one of:
+  - auditd netlink socket subscription (real-time audit events)
+  - fanotify for file access monitoring
+  - eBPF programs (requires privileged context, but provides kernel-level visibility)
+- At minimum: monitor audit log file truncation as a signal
+
+#### 10. macOS: EndpointSecurity Framework
+- Native interop with ESF for process, file, and network events
+- Remove hardcoded stub signals that produce noise
+- Requires entitlements and Apple Developer Program enrollment
+
+#### 11. Threat Intelligence Integration
+- Simple IOC matching: IP blocklist, domain blocklist, hash blocklist
+- File format: simple JSON/CSV updated via server policy or local file
+- Match against NetworkMonitor connections and FileActivityMonitor events
+- Optional STIX/TAXII feed consumption for automated updates
+
+---
+
+### P3 — Future Roadmap
+
+#### 12. TLS Fingerprinting (JA3/JA4)
+- Capture TLS ClientHello from raw sockets or ETW
+- Compare against known malware fingerprint database
+- Detect C2 frameworks even when using legitimate-looking domains
+
+#### 13. Incident Grouping
+- Group detections by process tree and time window
+- Assign incident IDs, track lifecycle (open → investigating → resolved)
+- Expose incident timeline for SOC consumption
+
+#### 14. Protected Process Light (PPL)
+- ELAM driver enables PPL for the agent process
+- Access to ETW Threat Intelligence provider
+- Kernel-level anti-termination protection
+- Requires Microsoft driver signing (significant effort)
+
+#### 15. Active Deception Expansion
+- Deploy canary files in Documents, Desktop, shared drives
+- Network honeypot listeners on common lateral movement ports
+- Fake admin shares that alert on access
+- Clipboard monitoring for pasted credentials
+
+---
+
+## ARCHITECTURE ASSESSMENT
+
+### What's Working Well
+
+1. **Separation of concerns:** Core library shared across desktop/mobile, platform
+   monitors are pluggable via interface, response actions are composable
+2. **Graceful degradation:** Monitors that fail don't crash the agent, ETW falls back
+   to WMI, WMI falls back to polling, offline buffer handles disconnection
+3. **Security-first defaults:** Fail-closed TLS, AlertOnly response mode, protected
+   process list, Release-mode hardening overrides config
+4. **Observability:** OpenTelemetry metrics cover all key operations (cycles, signals,
+   detections, responses, buffer state), structured Serilog logging
+
+### Structural Concerns
+
+1. **Single-process architecture:** All 13 monitors run in one process. Monitor crash
+   (unhandled exception in a monitor) is caught per-monitor, but a native crash
+   (P/Invoke, stack overflow in VirtualQueryEx scan) takes everything down.
+
+2. **Synchronous signal collection:** `CollectSignalsAsync` runs monitors sequentially.
+   A slow monitor (e.g., MemoryAnalyzer scanning many processes) delays all others.
+   Consider parallel execution with per-monitor timeout.
+
+3. **No configuration hot-reload:** Config changes require agent restart. Policy updates
+   from server don't trigger runtime reconfiguration of the monitoring service.
 
 ---
 
 ## CONCLUSION
 
-Behavedr has a solid **foundation** — the cryptographic primitives, communication security, and architectural patterns are well-designed. The multi-platform ambition and agent-server model give it capabilities Sentinel doesn't have.
+Behavedr v0.0.8 represents a significant security improvement over v0.0.6. The core
+detection architecture is sound, cryptographic implementations are correct, and the
+multi-monitor approach provides genuine defense-in-depth on Windows.
 
-However, the **detection surface is critically underdeveloped**. The current implementation detects almost nothing a real attacker would do. The three most impactful improvements are:
+**Key strengths:** Crypto, fail-closed communication, supply chain hardening, behavioral
+correlation, credential deception, anti-tamper via QPC timing.
 
-1. **ETW integration** — transforms the agent from blind (5s polling snapshots) to real-time kernel visibility
-2. **Behavioral detection** — move from "is this named mimikatz?" to "is this process injecting code into another?"
-3. **Anti-tamper hardening** — an attacker who can `taskkill` the EDR has won; this must be prevented
+**Key gaps:** No watchdog (single-process kill defeats all), WMI latency (1-2s blind spot),
+no DNS visibility, HTTPS/443 C2 invisible, regex evasion in command-line analysis.
 
-The Sentinel codebase provides a comprehensive reference implementation for Windows-specific detection. Its key lesson: **detect behaviors, not names; correlate signals, don't score in isolation; and protect yourself before protecting others.**
+**Production readiness:** Not yet suitable for adversarial environments. The watchdog
+process and native ETW are prerequisites for any deployment where an attacker has
+admin-level access. For monitoring environments without active adversaries (compliance,
+visibility), the current state provides useful telemetry.
 
----
-
-*This audit assumes the attacker has read the source code. No security-by-obscurity.*
+**Overall risk rating:** MEDIUM-HIGH for production adversarial use, LOW-MEDIUM for
+compliance/visibility monitoring.

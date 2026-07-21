@@ -118,7 +118,7 @@ public static class SecureEnvelope
     /// </summary>
     private static byte[] DeriveKey(string purpose)
     {
-        var machineKey = GetMachineKeyBytes();
+        var machineKey = KeyProtection.GetMachineKey();
         return HKDF.DeriveKey(
             HashAlgorithmName.SHA256,
             machineKey,
@@ -127,53 +127,8 @@ public static class SecureEnvelope
     }
 
     /// <summary>
-    /// Get the raw machine key bytes (shared key store with ConfigProtection/ConfigIntegrity).
+    /// Get the raw machine key bytes (delegates to KeyProtection for DPAPI unwrapping).
     /// </summary>
-    private static byte[] GetMachineKeyBytes()
-    {
-        var keyDir = GetKeyDirectory();
-        Directory.CreateDirectory(keyDir);
-        var keyPath = Path.Combine(keyDir, ".behavedr-key");
+    private static byte[] GetMachineKeyBytes() => KeyProtection.GetMachineKey();
 
-        if (File.Exists(keyPath))
-        {
-            var keyBase64 = File.ReadAllText(keyPath).Trim();
-            return Convert.FromBase64String(keyBase64);
-        }
-
-        // Generate new key if none exists
-        var newKey = RandomNumberGenerator.GetBytes(32);
-        File.WriteAllText(keyPath, Convert.ToBase64String(newKey));
-
-        try
-        {
-            if (!OperatingSystem.IsWindows())
-            {
-                File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            }
-        }
-        catch { }
-
-        return newKey;
-    }
-
-    private static string GetKeyDirectory()
-    {
-        if (OperatingSystem.IsWindows())
-            return Path.Combine(Environment.GetFolderPath(
-                Environment.SpecialFolder.CommonApplicationData), "Behavedr");
-
-        const string systemDir = "/etc/behavedr";
-        try
-        {
-            if (Directory.Exists(systemDir) ||
-                Directory.CreateDirectory(systemDir).Exists)
-                return systemDir;
-        }
-        catch { }
-
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".behavedr");
-    }
 }

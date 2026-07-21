@@ -19,6 +19,7 @@ public class CredentialCanaryMonitor : IPlatformMonitor
     private readonly ILogger<CredentialCanaryMonitor> _logger;
     private bool _canaryDeployed;
     private bool _canaryTripped;
+    private long? _lastWrittenTime;
     private const string CanaryTarget = "WindowsLive:target=wl_blob:behavedr-internal-svc";
     private const string CanaryUser = "svc-internal@corp.local";
 
@@ -39,10 +40,11 @@ public class CredentialCanaryMonitor : IPlatformMonitor
         {
             DeployCanary();
             _canaryDeployed = true;
+            _lastWrittenTime = GetCanaryLastWritten();
             return Task.FromResult<IEnumerable<Signal>>(signals);
         }
 
-        // Check if canary credential still exists
+        // Check if canary credential still exists (deletion detection)
         if (!_canaryTripped && !CanaryExists())
         {
             _canaryTripped = true;
@@ -54,6 +56,21 @@ public class CredentialCanaryMonitor : IPlatformMonitor
             // Re-deploy to catch repeated harvesting
             DeployCanary();
             _canaryTripped = false;
+        }
+
+        // Check if canary was READ (LastWritten timestamp changes on CredRead in some cases,
+        // or we detect enumeration via CredEnumerate by checking if our credential metadata changed)
+        if (!_canaryTripped)
+        {
+            var currentLastWritten = GetCanaryLastWritten();
+            if (_lastWrittenTime.HasValue && currentLastWritten.HasValue &&
+                currentLastWritten.Value != _lastWrittenTime.Value)
+            {
+                signals.Add(new Signal("credential_canary_tripped:read_or_modified", 90, 0.95));
+                _logger.LogCritical(
+                    "SECURITY: Credential canary metadata changed — possible credential read/enumeration detected.");
+                _lastWrittenTime = currentLastWritten;
+            }
         }
 
         return Task.FromResult<IEnumerable<Signal>>(signals);
@@ -96,6 +113,26 @@ public class CredentialCanaryMonitor : IPlatformMonitor
         catch { return false; }
     }
 
+    [SupportedOSPlatform("windows")]
+    private long? GetCanaryLastWritten()
+    {
+        try
+        {
+            if (CredRead(CanaryTarget, CRED_TYPE_GENERIC, 0, out var credPtr) && credPtr != IntPtr.Zero)
+            {
+                // Read the LastWritten field from the CREDENTIAL structure
+                // LastWritten is at offset after Flags(4) + Type(4) + TargetName(ptr) + Comment(ptr)
+                // In the native struct it's a FILETIME (8 bytes)
+                var lastWrittenOffset = IntPtr.Size == 8 ? 24 : 16; // Adjust for pointer size
+                var lastWritten = Marshal.ReadInt64(credPtr, lastWrittenOffset);
+                CredFree(credPtr);
+                return lastWritten;
+            }
+        }
+        catch { }
+        return null;
+    }
+
     // P/Invoke for Credential Manager
     private const int CRED_TYPE_GENERIC = 1;
     private const int CRED_PERSIST_LOCAL_MACHINE = 2;
@@ -122,4 +159,7 @@ public class CredentialCanaryMonitor : IPlatformMonitor
 
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool CredRead(string target, int type, int reservedFlag, out IntPtr credentialPtr);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern void CredFree(IntPtr buffer);
 }

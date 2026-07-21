@@ -26,6 +26,10 @@ public interface IBehavedrClient : IAsyncDisposable
 
 /// <summary>
 /// A detection report to send to the server.
+/// Includes replay prevention fields: Nonce (unique per report), SequenceNumber (monotonic),
+/// and BootNonce (unique per agent boot, prevents cross-session replay).
+/// Server MUST validate: sequence is monotonically increasing per agent, nonce is unique,
+/// boot nonce matches current session.
 /// </summary>
 public record DetectionReport(
     string AgentId,
@@ -36,10 +40,17 @@ public record DetectionReport(
     List<ResponseOutcome> ResponsesTaken,
     DateTime ReportedAt,
     string Nonce,
-    long SequenceNumber)
+    long SequenceNumber,
+    string BootNonce)
 {
     /// <summary>Monotonically increasing sequence counter for replay prevention.</summary>
     private static long _sequenceCounter = DateTime.UtcNow.Ticks;
+
+    /// <summary>
+    /// Per-boot unique nonce — changes every time the agent starts.
+    /// Server uses this to detect if an attacker is replaying reports from a previous session.
+    /// </summary>
+    public static readonly string CurrentBootNonce = Guid.NewGuid().ToString("N");
 
     public static DetectionReport FromResult(string agentId, DetectionResult result, List<ResponseOutcome> responses) =>
         new(
@@ -51,7 +62,8 @@ public record DetectionReport(
             responses,
             DateTime.UtcNow,
             Guid.NewGuid().ToString("N"),
-            Interlocked.Increment(ref _sequenceCounter));
+            Interlocked.Increment(ref _sequenceCounter),
+            CurrentBootNonce);
 }
 
 public record SignalReport(string Type, double Weight, double Confidence);

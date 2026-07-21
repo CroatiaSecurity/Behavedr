@@ -30,6 +30,9 @@ public class LinuxMonitor : IPlatformMonitor
         "/proc/kcore",
     ];
 
+    // Track audit log size for truncation detection
+    private static long _lastAuditLogSize = -1;
+
     [SupportedOSPlatform("linux")]
     public Task<IEnumerable<Signal>> GetSignalsAsync(CancellationToken ct = default)
     {
@@ -130,6 +133,9 @@ public class LinuxMonitor : IPlatformMonitor
         const string auditLogPath = "/var/log/audit/audit.log";
         if (!File.Exists(auditLogPath)) return;
 
+        // RT-10: Detect audit log truncation (attacker clearing evidence)
+        DetectAuditLogTruncation(signals, auditLogPath);
+
         try
         {
             using var stream = new FileStream(auditLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -169,6 +175,34 @@ public class LinuxMonitor : IPlatformMonitor
         }
         catch (UnauthorizedAccessException) { }
         catch (IOException) { }
+    }
+
+    [SupportedOSPlatform("linux")]
+    private static void DetectAuditLogTruncation(List<Signal> signals, string auditLogPath)
+    {
+        try
+        {
+            var currentSize = new FileInfo(auditLogPath).Length;
+
+            if (_lastAuditLogSize >= 0)
+            {
+                // Audit logs should only grow (or rotate to a new file with similar size).
+                // A significant decrease indicates truncation (attacker clearing evidence).
+                if (currentSize < _lastAuditLogSize * 0.5 && _lastAuditLogSize > 4096)
+                {
+                    signals.Add(new Signal(
+                        $"audit_log_truncated:was:{_lastAuditLogSize}:now:{currentSize}",
+                        90, 0.92));
+                }
+                else if (currentSize == 0 && _lastAuditLogSize > 0)
+                {
+                    signals.Add(new Signal("audit_log_cleared", 95, 0.98));
+                }
+            }
+
+            _lastAuditLogSize = currentSize;
+        }
+        catch { }
     }
 
     [SupportedOSPlatform("linux")]

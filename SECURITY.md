@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.0.5   | Yes       |
-| < 0.0.5 | No        |
+| 0.0.9   | Yes       |
+| < 0.0.9 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
@@ -73,13 +73,28 @@ Behavedr follows these security principles:
 ## Known Limitations
 
 - Code signing for the agent binary is not yet implemented (planned for v0.1.0).
-- Update signing uses a placeholder public key — replace before production deployment.
-- Policy signature verification uses the same placeholder key infrastructure.
-- Mobile monitoring capabilities are in early development (stub implementations on iOS/macOS).
+- Native ETW requires elevation (SYSTEM/admin); falls back to WMI polling without it.
+- macOS and iOS monitors are stub implementations (no EndpointSecurity.framework integration yet).
 - Key rotation requires manual invocation of `ConfigProtection.RotateKey()`.
+- Watchdog runs in-process (same binary); a truly separate watchdog process is planned for v0.1.0.
+- Data exfiltration monitor uses connection counts as proxy for byte volume (full per-connection stats require GetPerTcpConnectionEStats).
 
-## Security Features (v0.0.5)
+## Security Features (v0.0.9)
 
+- Native ETW session with Kernel-Process and DNS-Client providers (~50ms latency)
+- DPAPI-wrapped machine key (LocalMachine scope + app-specific entropy)
+- Config pre-seal validation (rejects out-of-bounds thresholds before sealing)
+- Agent watchdog with mutual heartbeat monitoring and last-gasp logging
+- Signal deduplication and exponential decay (prevents score gaming)
+- DNS monitoring with DGA detection, tunneling detection, suspicious TLD alerting
+- Data exfiltration detection (large outbound transfers, upload ratio analysis)
+- Command-line normalization defeating caret/env-var/tick evasion
+- Process ancestry cache for multi-hop parent-child analysis
+- Incident grouping (correlated detection events by process tree)
+- Parallel monitor execution with per-monitor timeout (10s)
+- Boot nonce for cross-session replay prevention
+- Credential canary read detection (not just deletion)
+- Audit log truncation detection (Linux)
 - Signed auto-updates with RSA-PSS SHA-256 verification
 - Fail-closed TLS (no connections without CA cert pinning)
 - Config file HMAC integrity protection

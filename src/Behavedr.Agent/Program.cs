@@ -30,7 +30,15 @@ try
                       "Re-seal config with a trusted copy or reinstall the agent.");
             return 78; // EX_CONFIG
         case ConfigIntegrityResult.NotSealed:
-            Log.Warning("Config file not yet sealed — sealing now (first run)");
+            Log.Warning("Config file not yet sealed — validating before sealing (first run)");
+            // SECURITY: Validate config values are within acceptable bounds before sealing.
+            // Prevents an attacker from pre-placing a malicious config that gets sealed as trusted.
+            if (!ConfigIntegrity.ValidateConfigBeforeSealing(configPath))
+            {
+                Log.Fatal("SECURITY: Configuration values are outside acceptable bounds — refusing to seal. " +
+                          "Verify appsettings.json contains valid values and restart.");
+                return 78; // EX_CONFIG
+            }
             ConfigIntegrity.SealConfigFile(configPath);
             break;
         case ConfigIntegrityResult.Valid:
@@ -64,6 +72,9 @@ try
 
     // Agent self-protection service
     builder.Services.AddHostedService<SelfProtectionService>();
+
+    // Agent watchdog service (mutual monitoring, last-gasp logging)
+    builder.Services.AddHostedService<AgentWatchdog>();
 
     // Core monitoring background service
     builder.Services.AddHostedService<MonitoringService>();

@@ -26,7 +26,7 @@ public static class PlatformMonitors
             new ConnectivityCanaryMonitor(),
         };
 
-        // v0.0.7: Windows-only behavioral detection & anti-tamper monitors
+        // v0.0.7+: Windows-only behavioral detection & anti-tamper monitors
         if (OperatingSystem.IsWindows())
         {
             monitors.Add(new BehavioralMonitor());
@@ -37,6 +37,10 @@ public static class PlatformMonitors
             monitors.Add(new CredentialGuardMonitor());
             monitors.Add(new CredentialCanaryMonitor());
             monitors.Add(new RegistryPersistenceMonitor());
+
+            // v0.0.9: New monitors from audit remediation
+            monitors.Add(new DnsQueryMonitor());
+            monitors.Add(new DataExfiltrationMonitor());
         }
 
         return monitors;

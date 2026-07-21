@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.0.9] — 2026-07-21
+
+### Red/Blue Team Audit — Complete Remediation (v2)
+
+Full implementation of all findings from the v0.0.8 red/blue team security audit.
+
+#### P0 — Critical Security Fixes
+
+- **Agent Watchdog** (`AgentWatchdog.cs`): Mutual heartbeat monitoring between watchdog and monitoring service. Detects monitoring loop suspension/deadlock (15s threshold). Last-gasp forensic logging on unexpected termination. Process exit event capture. Windows process protection DACL setup.
+- **Native ETW Session** (`NativeEtwSession.cs`): Full P/Invoke ETW implementation using `StartTraceW`/`EnableTraceEx2`/`OpenTraceW`/`ProcessTrace`. Subscribes to Microsoft-Windows-Kernel-Process and Microsoft-Windows-DNS-Client providers (~50ms latency vs 1-2s WMI). Graceful fallback to WMI-based EtwSession when native unavailable.
+- **Config pre-seal validation** (`ConfigIntegrity.ValidateConfigBeforeSealing`): Validates all scoring thresholds and monitoring intervals are within acceptable bounds BEFORE sealing. Prevents first-run config injection attacks.
+- **DPAPI key protection** (`KeyProtection.cs`): Machine key wrapped with `ProtectedData.Protect(LocalMachine)` + app-specific entropy on Windows. Auto-upgrades legacy unprotected keys. Prevents offline key extraction from disk images.
+
+#### P1 — High Priority Additions
+
+- **DNS monitoring** (`DnsQueryMonitor.cs`): Consumes ETW DNS-Client events. DGA detection via Shannon entropy scoring. Suspicious TLD detection. Unexpected process DNS detection (shells/LOLBins making queries). DNS tunneling detection (>50 queries in 30s from single PID).
+- **Data exfiltration detection** (`DataExfiltrationMonitor.cs`): Tracks outbound bytes per (PID, RemoteIP). Large transfer detection (>50MB from non-browser). High upload-to-download ratio (>5:1). Shell/LOLBin upload detection (any >5MB).
+- **Command-line normalization** (`CommandLineAnalyzer.cs`): Defeats evasion via caret insertion, env var expansion, backtick removal, null byte stripping. Shannon entropy scoring for encoded payloads. PowerShell obfuscation detection (format operator, char array, replace, reverse patterns).
+- **Process ancestry cache** (`ProcessAncestryCache.cs`): In-memory parent-child cache populated from ETW events. 120s retention matching correlation window. Supports 5-hop ancestry chain resolution. Enables grandparent analysis for multi-stage attacks.
+- **Incident grouping** (`IncidentManager.cs`): Groups related detections by PID and process name within 120s window. Incident lifecycle tracking (Open→Active→Closed). Maintains involved PIDs, process names, max score, president-kill flag.
+- **Signal deduplication** (`SignalDeduplicator.cs`): Within-cycle dedup (keep highest confidence). Cross-cycle cooldown (30s per signal type, 120s for composites). Exponential decay of signal weight over time (60s half-life).
+- **Credential canary enhancement**: Now detects both deletion AND read/enumeration via LastWritten timestamp tracking. Added `CredFree` P/Invoke and metadata change detection.
+
+#### P2 — Architecture Improvements
+
+- **Parallel monitor execution**: All monitors run concurrently via `Task.WhenAll` with 10s per-monitor timeout. Slow monitors no longer block the detection cycle.
+- **Replay prevention**: `DetectionReport` now includes `BootNonce` (unique per agent boot) in addition to existing Nonce and SequenceNumber. Server can validate monotonic sequence + unique nonce + boot session.
+- **Linux audit log truncation detection**: Tracks audit log file size; significant shrinkage (>50%) or zeroing triggers high-confidence signal (0.92-0.98). Detects attacker clearing evidence.
+- **Double registration fix**: MonitoringService now guards against registering monitors when engine already has them (prevents duplicate signals from DI + manual registration).
+
+#### Monitor Count: 13 → 15 (Windows)
+
+| New Monitor | Platform | Detection |
+|---|---|---|
+| DnsQueryMonitor | Windows | DGA, suspicious TLDs, DNS tunneling, unexpected DNS from shells |
+| DataExfiltrationMonitor | Windows | Large outbound transfers, upload ratio, shell uploads |
+
+#### New Core Components
+
+| Component | Purpose |
+|---|---|
+| SignalDeduplicator | Within-cycle dedup + cross-cycle cooldown + exponential decay |
+| ProcessAncestryCache | ETW-fed parent-child cache with ancestry chain resolution |
+| IncidentManager | Detection grouping by process tree and time window |
+| CommandLineAnalyzer | Normalization + entropy scoring for cmdline evasion defeat |
+| KeyProtection | DPAPI wrapping for machine key (Windows) |
+| NativeEtwSession | Full native ETW with Kernel-Process + DNS-Client providers |
+| AgentWatchdog | Mutual monitoring + last-gasp logging |
+
 ## [0.0.8] — 2026-07-21
 
 ### Zero Visuals + CI Fix

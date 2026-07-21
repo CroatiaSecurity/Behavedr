@@ -178,34 +178,46 @@ public class BehavioralMonitor : IPlatformMonitor
 
     private static void AnalyzeCommandLine(string cmdLine, string processName, int pid, List<Signal> signals)
     {
-        // Encoded PowerShell detection
-        if ((processName is "powershell" or "pwsh") && EncodedPsRegex.IsMatch(cmdLine))
+        // Normalize command line to defeat evasion (caret, env vars, ticks)
+        var normalizedCmdLine = CommandLineAnalyzer.Normalize(cmdLine);
+
+        // Entropy-based encoded payload detection
+        var (entropyScore, entropyConf, entropyReason) = CommandLineAnalyzer.AnalyzeCommandLine(cmdLine);
+        if (entropyScore >= 50)
+        {
+            signals.Add(new Signal(
+                $"obfuscated_cmdline:{processName}:pid:{pid}:{entropyReason}",
+                entropyScore, entropyConf));
+        }
+
+        // Encoded PowerShell detection (use normalized for matching)
+        if ((processName is "powershell" or "pwsh") && EncodedPsRegex.IsMatch(normalizedCmdLine))
         {
             signals.Add(new Signal($"encoded_powershell:pid:{pid}", 70, 0.8));
         }
 
         // Execution policy bypass
-        if ((processName is "powershell" or "pwsh") && BypassRegex.IsMatch(cmdLine))
+        if ((processName is "powershell" or "pwsh") && BypassRegex.IsMatch(normalizedCmdLine))
         {
             signals.Add(new Signal($"execution_policy_bypass:pid:{pid}", 40, 0.6));
         }
 
         // Download cradles
-        if (DownloadCradleRegex.IsMatch(cmdLine))
+        if (DownloadCradleRegex.IsMatch(normalizedCmdLine))
         {
             signals.Add(new Signal($"download_cradle:{processName}:pid:{pid}", 65, 0.75));
         }
 
         // AMSI bypass attempts
-        if (AmsiBypassRegex.IsMatch(cmdLine))
+        if (AmsiBypassRegex.IsMatch(normalizedCmdLine))
         {
             signals.Add(new Signal($"amsi_bypass_attempt:pid:{pid}", 85, 0.9));
         }
 
-        // LOLBin pattern matching
+        // LOLBin pattern matching (use normalized)
         foreach (var (pattern, description, weight, confidence) in LolBinPatterns)
         {
-            if (Regex.IsMatch(cmdLine, pattern, RegexOptions.IgnoreCase))
+            if (Regex.IsMatch(normalizedCmdLine, pattern, RegexOptions.IgnoreCase))
             {
                 signals.Add(new Signal($"lolbin:{description}:pid:{pid}", weight, confidence));
                 break; // One LOLBin signal per process
@@ -214,8 +226,8 @@ public class BehavioralMonitor : IPlatformMonitor
 
         // Hidden window + NoProfile (common in malicious PS)
         if ((processName is "powershell" or "pwsh") &&
-            cmdLine.Contains("-w hidden", StringComparison.OrdinalIgnoreCase) &&
-            cmdLine.Contains("-nop", StringComparison.OrdinalIgnoreCase))
+            normalizedCmdLine.Contains("-w hidden", StringComparison.OrdinalIgnoreCase) &&
+            normalizedCmdLine.Contains("-nop", StringComparison.OrdinalIgnoreCase))
         {
             signals.Add(new Signal($"hidden_powershell:pid:{pid}", 60, 0.7));
         }

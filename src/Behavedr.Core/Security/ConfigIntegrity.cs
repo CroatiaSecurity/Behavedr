@@ -19,6 +19,79 @@ public static class ConfigIntegrity
     private const string HmacExtension = ".hmac";
 
     /// <summary>
+    /// Validate configuration values are within acceptable bounds before sealing.
+    /// Prevents first-run config injection attacks where an attacker pre-places
+    /// a malicious config that would then be sealed as "trusted."
+    /// </summary>
+    public static bool ValidateConfigBeforeSealing(string configPath, ILogger? logger = null)
+    {
+        logger ??= NullLogger.Instance;
+
+        try
+        {
+            var json = File.ReadAllText(configPath);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            // Validate Scoring section bounds
+            if (root.TryGetProperty("Scoring", out var scoring))
+            {
+                if (scoring.TryGetProperty("PresidentKillThreshold", out var pkt))
+                {
+                    var value = pkt.GetDouble();
+                    if (value is < 50.0 or > 100.0)
+                    {
+                        logger.LogCritical("Config validation FAILED: PresidentKillThreshold={Value} is outside [50, 100]", value);
+                        return false;
+                    }
+                }
+
+                if (scoring.TryGetProperty("UserTargetedMultiplier", out var utm))
+                {
+                    var value = utm.GetDouble();
+                    if (value is <= 0.0 or > 10.0)
+                    {
+                        logger.LogCritical("Config validation FAILED: UserTargetedMultiplier={Value} is outside (0, 10]", value);
+                        return false;
+                    }
+                }
+
+                if (scoring.TryGetProperty("HighScoreAlertThreshold", out var hsat))
+                {
+                    var value = hsat.GetDouble();
+                    if (value is < 10.0 or > 99.0)
+                    {
+                        logger.LogCritical("Config validation FAILED: HighScoreAlertThreshold={Value} is outside [10, 99]", value);
+                        return false;
+                    }
+                }
+            }
+
+            // Validate Agent section bounds
+            if (root.TryGetProperty("Agent", out var agent))
+            {
+                if (agent.TryGetProperty("MonitoringIntervalSeconds", out var mis))
+                {
+                    var value = mis.GetInt32();
+                    if (value is < 1 or > 60)
+                    {
+                        logger.LogCritical("Config validation FAILED: MonitoringIntervalSeconds={Value} is outside [1, 60]", value);
+                        return false;
+                    }
+                }
+            }
+
+            logger.LogInformation("Config pre-seal validation passed");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogCritical(ex, "Config validation failed — cannot parse config file");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Compute HMAC-SHA256 of a config file and store it in a sidecar file.
     /// Call this at install time or when the config is legitimately modified.
     /// </summary>

@@ -32,10 +32,13 @@ public sealed class MonitoringService : BackgroundService
     {
         _logger.LogInformation("Monitoring service started (interval: {Interval}s)", _interval.TotalSeconds);
 
-        // Register platform monitors
-        foreach (var monitor in PlatformMonitors.Supported())
+        // Register platform monitors (only if not already registered by DI/bootstrap)
+        if (_engine.RegisteredMonitors.Count == 0)
         {
-            _engine.RegisterMonitor(monitor);
+            foreach (var monitor in PlatformMonitors.Supported())
+            {
+                _engine.RegisterMonitor(monitor);
+            }
         }
 
         _logger.LogInformation("Registered {Count} platform monitor(s): {Names}",
@@ -66,6 +69,9 @@ public sealed class MonitoringService : BackgroundService
 
     private async Task RunDetectionCycleAsync(CancellationToken ct)
     {
+        // Update watchdog heartbeat
+        AgentWatchdog.LastMonitoringHeartbeat = DateTime.UtcNow;
+
         // Create a synthetic event representing the current monitoring cycle
         var evt = DetectionEvent.Create(
             processId: Environment.ProcessId.ToString(),
