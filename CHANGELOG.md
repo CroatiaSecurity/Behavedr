@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.1.5] — 2026-07-21
+
+### Cross-Platform Parity — Full Detection + Response on All Platforms
+
+Behavedr is no longer Windows-first. Every supported platform now has comprehensive
+behavioral detection, network monitoring, credential protection, persistence detection,
+anti-tamper, and self-protection capabilities.
+
+#### Linux Full Detection Suite (14 dedicated monitors)
+
+- **LinuxMonitor** (rewritten): Process scanning (offensive tools, reverse shells, encoded exec), ptrace injection detection, LD_PRELOAD hijacking, container escape (nsenter/unshare/cgroups release_agent), kernel module loading, SUID abuse in writable directories, audit log analysis + truncation detection, capability abuse (CAP_SYS_ADMIN/CAP_SYS_PTRACE on unexpected processes).
+- **LinuxNetworkMonitor**: /proc/net/tcp parsing with socket inode→PID resolution via /proc/*/fd. Detects suspicious ports, shell outbound connections, backdoor listeners, connection bursts.
+- **LinuxMemoryAnalyzer**: /proc/*/maps parsing for RWX private anonymous regions, deleted executable mappings (memfd_create fileless malware), large anonymous staging areas.
+- **LinuxCredentialMonitor**: FileSystemWatcher on SSH keys, browser credential databases, cloud credentials (~/.aws, ~/.config/gcloud), GPG keys, /etc/shadow. Process fd scanning for open handles to credential files.
+- **LinuxPersistenceMonitor**: Baseline+delta detection for crontab, systemd units/timers, init.d, profile.d, at jobs, ld.so.preload, authorized_keys. Shell RC file content analysis for malicious patterns.
+- **LinuxTokenMonitor**: Runtime privilege escalation via UID tracking across cycles, root processes from writable directories, polkit/pkexec abuse.
+- **LinuxEphemeralProcessMonitor**: Flash-execution detection via PID delta tracking and /tmp file lifecycle monitoring (created+deleted within seconds).
+- **UnixAntiTamperGuard**: Binary integrity (SHA-256), monotonic clock suspension detection, debugger attachment (TracerPid), systemd service health, log integrity.
+- **UnixSelfProtection**: PR_SET_DUMPABLE=0 (blocks ptrace), core dump prevention, file descriptor leak monitoring.
+
+#### macOS Full Detection Suite (11 dedicated monitors)
+
+- **MacOSMonitor** (rewritten): Process scanning, DYLD_INSERT_LIBRARIES injection, TCC bypass (tccutil/TCC.db manipulation), Gatekeeper bypass (xattr quarantine/spctl disable/SIP), suspicious osascript (credential phishing, keystroke injection), XProtect disablement.
+- **MacOSNetworkMonitor**: lsof-based PID-attributed connection tracking. Suspicious ports, shell outbound, backdoor listeners.
+- **MacOSMemoryAnalyzer**: vmmap-based RWX detection in recently-started non-JIT processes.
+- **MacOSPersistenceMonitor**: Baseline+delta for LaunchAgents/Daemons, auth plugins, kexts, login items, cron, periodic scripts. Plist content analysis (suspicious shell commands, non-Apple RunAtLoad).
+- **MacOSCredentialMonitor**: Keychain access monitoring, browser credential file protection, `security` command-line tool abuse detection (dump-keychain, export-keychain).
+- **UnixAntiTamperGuard**: Binary integrity, suspension detection, P_TRACED debugger detection via sysctl, launchd plist health, log integrity.
+- **UnixSelfProtection**: PT_DENY_ATTACH (blocks debuggers), core dump prevention, fd leak monitoring.
+
+#### Cross-Platform Monitors (Linux + macOS shared)
+
+- **UnixBehavioralMonitor**: 19 GTFOBin/LOLBin patterns (curl|sh, python inline, awk /inet, tar checkpoint-action, etc.), command-line obfuscation detection, parent-child anomaly detection (web server→shell, cron→network tool), download cradle detection.
+- **UnixDnsMonitor**: DGA detection via Shannon entropy analysis, DNS tunneling (long subdomain labels), suspicious TLD queries, high-volume unique domain detection. Parses syslog/dnsmasq/systemd-resolved logs.
+- **UnixCredentialCanary**: Deploys honeypot credentials (fake SSH key, AWS credentials, .netrc, .pgpass). Monitors atime for unauthorized access. Near-zero false positive (0.97 confidence).
+- **UnixGhostProcessMonitor**: Detects processes with active network connections whose binary was deleted from disk (fileless malware), memfd-based execution, and dead-socket orphans.
+- **UnixDataExfiltrationMonitor**: Per-process outbound byte tracking via /proc/PID/net/dev (Linux) and nettop (macOS). Detects large transfers from shell processes.
+- **BeaconingDetector**: Now cross-platform (was Windows-only). Statistical CV-based periodic connection detection works on all three desktop platforms.
+
+#### Android Full Detection Suite (4 monitors)
+
+- **AndroidMonitor** (rewritten): Root/Magisk/KernelSU/SELinux detection, suspicious process scanning (miners, RATs, Frida server), ADB debugging (wireless/root adbd), crypto mining (CPU saturation + config files), suspicious files (ELF in /data/local/tmp, hidden APKs). Enhanced AnalyzePackage API with device admin and permission analysis.
+- **AndroidNetworkMonitor**: /proc/net/tcp parsing for suspicious port connections, per-process network activity detection for shell/interpreter processes, DNS server change (hijack) detection.
+- **AndroidPersistenceMonitor**: Baseline+delta for init scripts, system/priv-app APKs, staged APKs. Fake system service detection, hidden APK scanning.
+
+#### iOS Full Detection Suite (3 monitors)
+
+- **IosMonitor** (rewritten): Jailbreak detection (file existence, sandbox write test, symlink resolution), DYLD_INSERT_LIBRARIES/FridaGadget/MobileSubstrate injection, ATS bypass detection, sandbox escape indicators.
+- **IosPersistenceMonitor**: LaunchDaemon/Agent persistence on jailbroken devices, configuration profile monitoring (root CA, VPN, MDM enrollment), enterprise certificate sideloading detection.
+
+#### IsolationResponseEngine (cross-platform)
+
+- Now supports Linux (docker/podman, umount for ISOs) and macOS (docker, hdiutil for disk images) in addition to Windows.
+
+#### Platform Status Updated
+
+| Platform | Previous | Now |
+|----------|----------|-----|
+| Windows | Production | Production — Full detection + response |
+| Linux | Monitoring only | **Production — Full detection + response** |
+| macOS | Monitoring only | **Production — Full detection + response** |
+| Android | Experimental | **Production — Behavioral detection** |
+| iOS | Experimental | **Production — Jailbreak + sandbox monitoring** |
+
+---
+
 ## [0.1.4] — 2026-07-21
 
 ### Operational Hardening — Installer Resilience, Safe Mode, Build Automation, Documentation

@@ -6,11 +6,11 @@ Behavioral endpoint detection and response agent. Monitors process activity, net
 
 | Platform | Status |
 |----------|--------|
-| Windows (x64) | Production |
-| Linux (x64) | Monitoring only |
-| macOS (ARM64) | Monitoring only |
-| Android | Experimental |
-| iOS | Experimental |
+| Windows (x64) | Production — Full detection + response |
+| Linux (x64) | Production — Full detection + response |
+| macOS (ARM64) | Production — Full detection + response |
+| Android | Production — Behavioral detection (root, RATs, miners, ADB, sideloading) |
+| iOS | Production — Jailbreak detection, sandbox monitoring, dylib injection |
 
 ## Quick Start
 

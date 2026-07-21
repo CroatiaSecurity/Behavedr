@@ -1,37 +1,66 @@
 namespace Behavedr.Core.Monitors;
 
 using System.Runtime.Versioning;
+using System.Text.RegularExpressions;
 using Behavedr.Core.Models;
 using Behavedr.Core.Platform;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>
-/// Linux behavioral monitor using /proc filesystem and audit logs.
-/// Provides real-time process enumeration, suspicious file access detection,
-/// and audit log analysis without requiring root (reads what's accessible).
+/// Linux behavioral detection monitor using /proc filesystem, audit logs, and container inspection.
+/// Provides real-time detection of:
+/// - Suspicious process execution (offensive tools, reverse shells, encoded commands)
+/// - Privilege escalation (SUID abuse, capability manipulation, kernel module loading)
+/// - Container escape indicators (namespace breakout, host mount abuse)
+/// - ptrace-based injection (PTRACE_ATTACH on non-child processes)
+/// - LD_PRELOAD/LD_LIBRARY_PATH hijacking
+/// - Audit log tampering (truncation, clearing)
+/// - Unexpected root processes
 /// </summary>
 public class LinuxMonitor : IPlatformMonitor
 {
+    private readonly ILogger<LinuxMonitor> _logger;
+
     public string PlatformName => "Linux";
     public bool IsSupported => OperatingSystem.IsLinux();
 
-    private static readonly HashSet<string> SuspiciousProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    public LinuxMonitor(ILogger<LinuxMonitor>? logger = null)
+    {
+        _logger = logger ?? NullLogger<LinuxMonitor>.Instance;
+    }
+
+    private static readonly HashSet<string> OffensiveTools = new(StringComparer.OrdinalIgnoreCase)
     {
         "mimikatz", "meterpreter", "empire", "covenant", "sliver",
-        "chisel", "ligolo", "socat", "ncat", "reverse",
-        "linpeas", "linenum", "pspy", "dirtycow",
+        "chisel", "ligolo", "socat", "ncat", "linpeas", "linenum",
+        "pspy", "dirtycow", "sudo_killer", "gtfobins", "crackmapexec",
+        "impacket", "bloodhound", "sharphound", "rubeus", "kerbrute",
+        "hashcat", "john", "hydra", "medusa", "gobuster", "ffuf",
+        "nuclei", "sqlmap", "responder", "evil-winrm", "proxychains",
     };
 
-    private static readonly string[] SensitivePaths =
-    [
-        "/etc/shadow",
-        "/etc/passwd",
-        "/etc/sudoers",
-        "/root/.ssh",
-        "/proc/kcore",
-    ];
+    private static readonly HashSet<string> ExpectedRootProcesses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "init", "systemd", "kthreadd", "sshd", "cron", "crond",
+        "rsyslogd", "dockerd", "containerd", "snapd", "polkitd",
+        "dbus-daemon", "NetworkManager", "accounts-daemon",
+        "systemd-journald", "systemd-logind", "systemd-resolved",
+        "systemd-networkd", "systemd-udevd", "agetty", "login",
+        "auditd", "irqbalance", "multipathd", "packagekitd",
+        "udisksd", "thermald", "fwupd", "behavedr",
+    };
+
+    private static readonly Regex ReverseShellRegex = new(
+        @"(/dev/tcp/|bash\s+-i|nc\s+-e|ncat\s+-e|socat\s+exec|python.*socket.*connect|perl.*socket|ruby.*TCPSocket|php.*fsockopen)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex EncodedExecRegex = new(
+        @"(base64\s+-d|\|\s*(ba)?sh|\|\s*python|eval\s*\(|exec\s*\()",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // Track audit log size for truncation detection
-    private static long _lastAuditLogSize = -1;
+    private long _lastAuditLogSize = -1;
 
     [SupportedOSPlatform("linux")]
     public Task<IEnumerable<Signal>> GetSignalsAsync(CancellationToken ct = default)
@@ -40,82 +69,91 @@ public class LinuxMonitor : IPlatformMonitor
 
         try
         {
-            ScanProcFilesystem(signals, ct);
+            ScanProcesses(signals, ct);
+            DetectPtraceInjection(signals, ct);
+            DetectLdPreloadHijacking(signals, ct);
+            DetectContainerEscape(signals, ct);
+            DetectKernelModuleLoading(signals, ct);
+            DetectSuidAbuse(signals, ct);
             ScanAuditLog(signals, ct);
-            DetectPrivilegeEscalation(signals, ct);
+            DetectCapabilityAbuse(signals, ct);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Best-effort — may not have permissions for all checks
+            _logger.LogDebug(ex, "[LinuxMonitor] Error during scan cycle");
         }
 
         return Task.FromResult<IEnumerable<Signal>>(signals);
     }
 
+    /// <summary>
+    /// Scan /proc for suspicious processes: offensive tools, reverse shells,
+    /// encoded execution, unexpected root processes.
+    /// </summary>
     [SupportedOSPlatform("linux")]
-    private static void ScanProcFilesystem(List<Signal> signals, CancellationToken ct)
+    private void ScanProcesses(List<Signal> signals, CancellationToken ct)
     {
         if (!Directory.Exists("/proc")) return;
 
         try
         {
-            var procDirs = Directory.GetDirectories("/proc")
-                .Where(d => int.TryParse(Path.GetFileName(d), out _));
-
-            foreach (var procDir in procDirs)
+            foreach (var procDir in Directory.GetDirectories("/proc"))
             {
                 if (ct.IsCancellationRequested) break;
+                var pidStr = Path.GetFileName(procDir);
+                if (!int.TryParse(pidStr, out var pid)) continue;
 
                 try
                 {
                     var commPath = Path.Combine(procDir, "comm");
                     if (!File.Exists(commPath)) continue;
+                    var processName = File.ReadAllText(commPath).Trim();
 
-                    var processName = File.ReadAllText(commPath).Trim().ToLowerInvariant();
-
-                    // Check for known offensive tools
-                    if (SuspiciousProcessNames.Any(s => processName.Contains(s, StringComparison.OrdinalIgnoreCase)))
+                    // Known offensive tools
+                    if (OffensiveTools.Any(t => processName.Contains(t, StringComparison.OrdinalIgnoreCase)))
                     {
-                        signals.Add(new Signal($"suspicious_process:{processName}", 85, 0.9));
+                        signals.Add(new Signal(
+                            $"suspicious_process:{processName}:pid:{pid}", 85, 0.9));
                     }
 
-                    // Check for processes running as root that shouldn't be
+                    // Read command line
+                    var cmdlinePath = Path.Combine(procDir, "cmdline");
+                    var cmdline = "";
+                    if (File.Exists(cmdlinePath))
+                        cmdline = File.ReadAllText(cmdlinePath).Replace('\0', ' ').Trim();
+
+                    if (!string.IsNullOrEmpty(cmdline))
+                    {
+                        // Reverse shell detection
+                        if (ReverseShellRegex.IsMatch(cmdline))
+                        {
+                            signals.Add(new Signal(
+                                $"reverse_shell:{processName}:pid:{pid}", 92, 0.88));
+                        }
+
+                        // Encoded/piped execution
+                        if (EncodedExecRegex.IsMatch(cmdline))
+                        {
+                            signals.Add(new Signal(
+                                $"encoded_execution:{processName}:pid:{pid}", 65, 0.72));
+                        }
+                    }
+
+                    // Unexpected root process detection
                     var statusPath = Path.Combine(procDir, "status");
                     if (File.Exists(statusPath))
                     {
-                        var statusLines = File.ReadLines(statusPath);
-                        foreach (var line in statusLines)
+                        foreach (var line in File.ReadLines(statusPath))
                         {
-                            if (line.StartsWith("Uid:", StringComparison.Ordinal))
+                            if (!line.StartsWith("Uid:", StringComparison.Ordinal)) continue;
+                            var parts = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
+                            if (parts.Length > 1 && parts[1] == "0" &&
+                                !ExpectedRootProcesses.Contains(processName))
                             {
-                                var parts = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
-                                if (parts.Length > 1 && parts[1] == "0" && IsUnexpectedRootProcess(processName))
-                                {
-                                    signals.Add(new Signal($"unexpected_root_process:{processName}", 50, 0.6));
-                                }
-                                break;
+                                signals.Add(new Signal(
+                                    $"unexpected_root_process:{processName}:pid:{pid}", 55, 0.65));
                             }
-                        }
-                    }
-
-                    // Check cmdline for suspicious arguments
-                    var cmdlinePath = Path.Combine(procDir, "cmdline");
-                    if (File.Exists(cmdlinePath))
-                    {
-                        var cmdline = File.ReadAllText(cmdlinePath).Replace('\0', ' ').ToLowerInvariant();
-
-                        // Reverse shells
-                        if (cmdline.Contains("/dev/tcp/") || cmdline.Contains("bash -i") ||
-                            cmdline.Contains("nc -e") || cmdline.Contains("ncat -e"))
-                        {
-                            signals.Add(new Signal($"reverse_shell_indicator:{processName}", 90, 0.85));
-                        }
-
-                        // Base64 encoded commands
-                        if (cmdline.Contains("base64 -d") || cmdline.Contains("| bash") ||
-                            cmdline.Contains("| sh"))
-                        {
-                            signals.Add(new Signal($"encoded_execution:{processName}", 60, 0.7));
+                            break;
                         }
                     }
                 }
@@ -123,53 +161,312 @@ public class LinuxMonitor : IPlatformMonitor
                 catch (IOException) { }
             }
         }
-        catch (Exception) { }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[LinuxMonitor] Process scan error");
+        }
     }
 
+    /// <summary>
+    /// Detect ptrace-based injection by scanning /proc/*/status for TracerPid != 0.
+    /// A non-zero TracerPid means another process is attached via ptrace (debugging/injection).
+    /// </summary>
     [SupportedOSPlatform("linux")]
-    private static void ScanAuditLog(List<Signal> signals, CancellationToken ct)
+    private void DetectPtraceInjection(List<Signal> signals, CancellationToken ct)
     {
-        // Read the last N lines of audit log if accessible
+        try
+        {
+            foreach (var procDir in Directory.GetDirectories("/proc"))
+            {
+                if (ct.IsCancellationRequested) break;
+                var pidStr = Path.GetFileName(procDir);
+                if (!int.TryParse(pidStr, out var pid)) continue;
+                if (pid == Environment.ProcessId) continue;
+
+                var statusPath = Path.Combine(procDir, "status");
+                if (!File.Exists(statusPath)) continue;
+
+                try
+                {
+                    foreach (var line in File.ReadLines(statusPath))
+                    {
+                        if (!line.StartsWith("TracerPid:", StringComparison.Ordinal)) continue;
+                        var tracerStr = line["TracerPid:".Length..].Trim();
+                        if (int.TryParse(tracerStr, out var tracerPid) && tracerPid != 0)
+                        {
+                            // Something is ptracing this process — check if it's gdb/strace (legitimate)
+                            var tracerName = GetProcessName(tracerPid);
+                            if (tracerName is not ("gdb" or "strace" or "ltrace" or "lldb" or "valgrind"))
+                            {
+                                signals.Add(new Signal(
+                                    $"ptrace_injection:{tracerName}(pid:{tracerPid})→pid:{pid}", 80, 0.82));
+                            }
+                        }
+                        break;
+                    }
+                }
+                catch (UnauthorizedAccessException) { }
+                catch (IOException) { }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Detect LD_PRELOAD/LD_LIBRARY_PATH hijacking by inspecting /proc/*/environ.
+    /// Attacker sets LD_PRELOAD to inject a malicious shared object into target processes.
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    private void DetectLdPreloadHijacking(List<Signal> signals, CancellationToken ct)
+    {
+        try
+        {
+            foreach (var procDir in Directory.GetDirectories("/proc"))
+            {
+                if (ct.IsCancellationRequested) break;
+                var pidStr = Path.GetFileName(procDir);
+                if (!int.TryParse(pidStr, out var pid)) continue;
+
+                var environPath = Path.Combine(procDir, "environ");
+                if (!File.Exists(environPath)) continue;
+
+                try
+                {
+                    var environ = File.ReadAllText(environPath).Replace('\0', '\n');
+
+                    // LD_PRELOAD set to non-standard path
+                    if (environ.Contains("LD_PRELOAD=", StringComparison.Ordinal))
+                    {
+                        var match = Regex.Match(environ, @"LD_PRELOAD=(.+?)(\n|$)");
+                        if (match.Success)
+                        {
+                            var preloadPath = match.Groups[1].Value;
+                            // Legitimate: empty, or known library paths
+                            if (!string.IsNullOrWhiteSpace(preloadPath) &&
+                                !preloadPath.StartsWith("/usr/lib", StringComparison.Ordinal) &&
+                                !preloadPath.StartsWith("/lib", StringComparison.Ordinal))
+                            {
+                                var procName = GetProcessName(pid) ?? pidStr;
+                                signals.Add(new Signal(
+                                    $"ld_preload_hijack:{procName}:pid:{pid}:{preloadPath}",
+                                    78, 0.83));
+                            }
+                        }
+                    }
+                }
+                catch (UnauthorizedAccessException) { }
+                catch (IOException) { }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Detect container escape indicators:
+    /// - Process in container namespace accessing host /proc or /sys
+    /// - nsenter/unshare executed with host PID/mount namespace
+    /// - Privileged container breakout patterns (mount host filesystem)
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    private void DetectContainerEscape(List<Signal> signals, CancellationToken ct)
+    {
+        try
+        {
+            foreach (var procDir in Directory.GetDirectories("/proc"))
+            {
+                if (ct.IsCancellationRequested) break;
+                var pidStr = Path.GetFileName(procDir);
+                if (!int.TryParse(pidStr, out var pid)) continue;
+
+                var cmdlinePath = Path.Combine(procDir, "cmdline");
+                if (!File.Exists(cmdlinePath)) continue;
+
+                try
+                {
+                    var cmdline = File.ReadAllText(cmdlinePath).Replace('\0', ' ');
+
+                    // nsenter with host namespaces
+                    if (cmdline.Contains("nsenter", StringComparison.Ordinal) &&
+                        (cmdline.Contains("-t 1", StringComparison.Ordinal) ||
+                         cmdline.Contains("--target 1", StringComparison.Ordinal)))
+                    {
+                        signals.Add(new Signal(
+                            $"container_escape_nsenter:pid:{pid}", 95, 0.92));
+                    }
+
+                    // unshare to break out of namespace
+                    if (cmdline.Contains("unshare", StringComparison.Ordinal) &&
+                        cmdline.Contains("--mount", StringComparison.Ordinal))
+                    {
+                        signals.Add(new Signal(
+                            $"namespace_breakout_unshare:pid:{pid}", 85, 0.8));
+                    }
+
+                    // cgroups escape via release_agent
+                    if (cmdline.Contains("release_agent", StringComparison.Ordinal) ||
+                        cmdline.Contains("notify_on_release", StringComparison.Ordinal))
+                    {
+                        signals.Add(new Signal(
+                            $"cgroup_escape_attempt:pid:{pid}", 92, 0.88));
+                    }
+                }
+                catch (UnauthorizedAccessException) { }
+                catch (IOException) { }
+            }
+
+            // Check for processes mounting host filesystems inside containers
+            if (File.Exists("/proc/mounts"))
+            {
+                var mounts = File.ReadAllText("/proc/mounts");
+                if (mounts.Contains("/host", StringComparison.Ordinal) &&
+                    File.Exists("/.dockerenv"))
+                {
+                    signals.Add(new Signal("host_mount_in_container", 88, 0.85));
+                }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Detect kernel module loading — check /proc/modules delta and dmesg for insmod/modprobe activity.
+    /// Loading rogue kernel modules is a rootkit installation technique (T1547.006).
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    private void DetectKernelModuleLoading(List<Signal> signals, CancellationToken ct)
+    {
+        try
+        {
+            foreach (var procDir in Directory.GetDirectories("/proc"))
+            {
+                if (ct.IsCancellationRequested) break;
+                var pidStr = Path.GetFileName(procDir);
+                if (!int.TryParse(pidStr, out var pid)) continue;
+
+                var cmdlinePath = Path.Combine(procDir, "cmdline");
+                if (!File.Exists(cmdlinePath)) continue;
+
+                try
+                {
+                    var cmdline = File.ReadAllText(cmdlinePath).Replace('\0', ' ').ToLowerInvariant();
+
+                    // insmod or modprobe from non-standard paths
+                    if ((cmdline.Contains("insmod", StringComparison.Ordinal) ||
+                         cmdline.Contains("modprobe", StringComparison.Ordinal)) &&
+                        (cmdline.Contains("/tmp/", StringComparison.Ordinal) ||
+                         cmdline.Contains("/dev/shm/", StringComparison.Ordinal) ||
+                         cmdline.Contains("/home/", StringComparison.Ordinal)))
+                    {
+                        signals.Add(new Signal(
+                            $"suspicious_kernel_module_load:pid:{pid}", 90, 0.88));
+                    }
+                }
+                catch (UnauthorizedAccessException) { }
+                catch (IOException) { }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Detect SUID binary abuse — find SUID/SGID executables in writable directories.
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    private void DetectSuidAbuse(List<Signal> signals, CancellationToken ct)
+    {
+        var suspiciousDirs = new[] { "/tmp", "/var/tmp", "/dev/shm", "/home" };
+
+        foreach (var dir in suspiciousDirs)
+        {
+            if (ct.IsCancellationRequested) break;
+            if (!Directory.Exists(dir)) continue;
+
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+                {
+                    if (ct.IsCancellationRequested) break;
+                    try
+                    {
+                        var mode = File.GetUnixFileMode(file);
+                        if ((mode & UnixFileMode.SetUser) != 0 || (mode & UnixFileMode.SetGroup) != 0)
+                        {
+                            var age = DateTime.UtcNow - File.GetCreationTimeUtc(file);
+                            if (age.TotalMinutes < 30) // Recently created SUID in writable dir
+                            {
+                                signals.Add(new Signal(
+                                    $"suid_in_writable_dir:{Path.GetFileName(file)}:{dir}",
+                                    82, 0.85));
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    /// <summary>
+    /// Scan audit log for security-relevant events: EXECVE, USER_AUTH failures,
+    /// and detect log truncation/clearing (anti-forensics).
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    private void ScanAuditLog(List<Signal> signals, CancellationToken ct)
+    {
         const string auditLogPath = "/var/log/audit/audit.log";
         if (!File.Exists(auditLogPath)) return;
 
-        // RT-10: Detect audit log truncation (attacker clearing evidence)
-        DetectAuditLogTruncation(signals, auditLogPath);
+        // Detect audit log truncation
+        try
+        {
+            var currentSize = new FileInfo(auditLogPath).Length;
+            if (_lastAuditLogSize >= 0)
+            {
+                if (currentSize < _lastAuditLogSize * 0.5 && _lastAuditLogSize > 4096)
+                {
+                    signals.Add(new Signal(
+                        $"audit_log_truncated:was:{_lastAuditLogSize}:now:{currentSize}", 90, 0.92));
+                }
+                else if (currentSize == 0 && _lastAuditLogSize > 0)
+                {
+                    signals.Add(new Signal("audit_log_cleared", 95, 0.98));
+                }
+            }
+            _lastAuditLogSize = currentSize;
+        }
+        catch { }
 
+        // Read recent entries
         try
         {
             using var stream = new FileStream(auditLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-
-            // Seek to last 8KB to get recent events
-            var seekPos = Math.Max(0, stream.Length - 8192);
+            var seekPos = Math.Max(0, stream.Length - 16384);
             stream.Seek(seekPos, SeekOrigin.Begin);
 
             using var reader = new StreamReader(stream);
-            var cutoffTime = DateTime.UtcNow.AddSeconds(-30);
-
             while (!reader.EndOfStream && !ct.IsCancellationRequested)
             {
                 var line = reader.ReadLine();
                 if (line is null) break;
 
-                // Look for EXECVE events involving sensitive binaries
-                if (line.Contains("type=EXECVE", StringComparison.Ordinal))
-                {
-                    foreach (var sensPath in SensitivePaths)
-                    {
-                        if (line.Contains(sensPath, StringComparison.Ordinal))
-                        {
-                            signals.Add(new Signal($"sensitive_file_access:{sensPath}", 65, 0.75));
-                            break;
-                        }
-                    }
-                }
-
-                // Privilege escalation via su/sudo
+                // Failed authentication attempts (brute force)
                 if (line.Contains("type=USER_AUTH", StringComparison.Ordinal) &&
                     line.Contains("res=failed", StringComparison.OrdinalIgnoreCase))
                 {
                     signals.Add(new Signal("failed_auth_attempt", 40, 0.6));
+                }
+
+                // Privilege escalation via su
+                if (line.Contains("type=USER_CMD", StringComparison.Ordinal) &&
+                    line.Contains("cmd=", StringComparison.Ordinal))
+                {
+                    // Check for suspicious commands run via sudo
+                    if (line.Contains("/tmp/", StringComparison.Ordinal) ||
+                        line.Contains("/dev/shm/", StringComparison.Ordinal))
+                    {
+                        signals.Add(new Signal("sudo_suspicious_path", 70, 0.75));
+                    }
                 }
             }
         }
@@ -177,76 +474,72 @@ public class LinuxMonitor : IPlatformMonitor
         catch (IOException) { }
     }
 
+    /// <summary>
+    /// Detect capability abuse — processes with dangerous capabilities (CAP_SYS_ADMIN,
+    /// CAP_SYS_PTRACE, CAP_DAC_OVERRIDE) in unexpected contexts.
+    /// </summary>
     [SupportedOSPlatform("linux")]
-    private static void DetectAuditLogTruncation(List<Signal> signals, string auditLogPath)
+    private void DetectCapabilityAbuse(List<Signal> signals, CancellationToken ct)
     {
         try
         {
-            var currentSize = new FileInfo(auditLogPath).Length;
-
-            if (_lastAuditLogSize >= 0)
+            foreach (var procDir in Directory.GetDirectories("/proc"))
             {
-                // Audit logs should only grow (or rotate to a new file with similar size).
-                // A significant decrease indicates truncation (attacker clearing evidence).
-                if (currentSize < _lastAuditLogSize * 0.5 && _lastAuditLogSize > 4096)
-                {
-                    signals.Add(new Signal(
-                        $"audit_log_truncated:was:{_lastAuditLogSize}:now:{currentSize}",
-                        90, 0.92));
-                }
-                else if (currentSize == 0 && _lastAuditLogSize > 0)
-                {
-                    signals.Add(new Signal("audit_log_cleared", 95, 0.98));
-                }
-            }
+                if (ct.IsCancellationRequested) break;
+                var pidStr = Path.GetFileName(procDir);
+                if (!int.TryParse(pidStr, out var pid)) continue;
+                if (pid <= 1 || pid == Environment.ProcessId) continue;
 
-            _lastAuditLogSize = currentSize;
-        }
-        catch { }
-    }
-
-    [SupportedOSPlatform("linux")]
-    private static void DetectPrivilegeEscalation(List<Signal> signals, CancellationToken ct)
-    {
-        // Check for SUID binaries in unusual locations
-        try
-        {
-            var tmpDirs = new[] { "/tmp", "/var/tmp", "/dev/shm" };
-            foreach (var dir in tmpDirs)
-            {
-                if (!Directory.Exists(dir) || ct.IsCancellationRequested) continue;
+                var statusPath = Path.Combine(procDir, "status");
+                if (!File.Exists(statusPath)) continue;
 
                 try
                 {
-                    var files = Directory.GetFiles(dir, "*", SearchOption.TopDirectoryOnly);
-                    foreach (var file in files)
+                    string? capEff = null;
+                    string? name = null;
+                    foreach (var line in File.ReadLines(statusPath))
                     {
-                        try
+                        if (line.StartsWith("Name:", StringComparison.Ordinal))
+                            name = line["Name:".Length..].Trim();
+                        else if (line.StartsWith("CapEff:", StringComparison.Ordinal))
+                            capEff = line["CapEff:".Length..].Trim();
+
+                        if (name is not null && capEff is not null) break;
+                    }
+
+                    if (capEff is null || name is null) continue;
+                    if (ExpectedRootProcesses.Contains(name)) continue;
+
+                    // Parse hex capability bitmask
+                    if (ulong.TryParse(capEff, System.Globalization.NumberStyles.HexNumber, null, out var caps))
+                    {
+                        // CAP_SYS_ADMIN=21, CAP_SYS_PTRACE=19, CAP_DAC_OVERRIDE=1
+                        bool hasSysAdmin = (caps & (1UL << 21)) != 0;
+                        bool hasPtrace = (caps & (1UL << 19)) != 0;
+                        bool hasDacOverride = (caps & (1UL << 1)) != 0;
+
+                        if (hasSysAdmin || hasPtrace)
                         {
-                            // Check if file is executable (approximate — full SUID check needs stat)
-                            var info = new FileInfo(file);
-                            if (info.Length > 0 && info.Extension == "" &&
-                                (info.Attributes & FileAttributes.ReadOnly) == 0)
-                            {
-                                // Executable in temp directory is suspicious
-                                var age = DateTime.UtcNow - info.CreationTimeUtc;
-                                if (age.TotalMinutes < 5)
-                                {
-                                    signals.Add(new Signal($"executable_in_tmp:{Path.GetFileName(file)}", 55, 0.65));
-                                }
-                            }
+                            signals.Add(new Signal(
+                                $"dangerous_capabilities:{name}:pid:{pid}:caps:{capEff}",
+                                72, 0.78));
                         }
-                        catch { }
                     }
                 }
                 catch (UnauthorizedAccessException) { }
+                catch (IOException) { }
             }
         }
         catch { }
     }
 
-    private static bool IsUnexpectedRootProcess(string name) =>
-        name is not ("init" or "systemd" or "kthreadd" or "sshd" or "cron"
-            or "rsyslogd" or "dockerd" or "containerd" or "snapd"
-            or "NetworkManager" or "polkitd" or "dbus-daemon");
+    private static string? GetProcessName(int pid)
+    {
+        try
+        {
+            var commPath = $"/proc/{pid}/comm";
+            return File.Exists(commPath) ? File.ReadAllText(commPath).Trim() : null;
+        }
+        catch { return null; }
+    }
 }

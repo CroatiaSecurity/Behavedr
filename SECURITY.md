@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.4   | Yes       |
-| < 0.1.4 | No        |
+| 0.1.5   | Yes       |
+| < 0.1.5 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
@@ -59,7 +59,7 @@ We will credit reporters in release notes unless anonymity is preferred. We do n
 
 ### Design Principles
 
-- **Userland operation.** No kernel driver requirement. Reduces attack surface and deployment complexity at the cost of kernel rootkit visibility.
+- **Userland operation.** No kernel driver requirement. Reduces attack surface and deployment complexity at the cost of kernel rootkit visibility. Full behavioral detection on Windows (ETW + P/Invoke), Linux (/proc + audit), and macOS (process enumeration + lsof/vmmap).
 - **Least privilege where possible.** SYSTEM context is required for ETW, process inspection, and response actions. File permissions are restricted to SYSTEM and Administrators.
 - **Defense in depth.** Multiple independent self-protection mechanisms. No single bypass disables all detection.
 - **Fail-closed communication.** TLS connections are rejected without a valid pinned CA certificate. No fallback to insecure transport.
@@ -110,7 +110,8 @@ We will credit reporters in release notes unless anonymity is preferred. We do n
 
 - No kernel-level visibility. Kernel rootkits can hide from all monitors.
 - Native ETW requires elevation (SYSTEM/admin). Falls back to WMI polling without it.
-- macOS and iOS monitors are stub implementations pending EndpointSecurity.framework integration.
+- macOS monitors use process enumeration and lsof/vmmap rather than EndpointSecurity.framework (planned for future release).
+- Linux monitors use /proc filesystem and audit logs rather than eBPF (planned for future release).
 - Single-process architecture. A successful SYSTEM-level kill terminates all protection until SCM restart (5s).
 - Auto-update rollback is not implemented. A corrupted update that passes signature verification could prevent startup.
 - DPAPI entropy fallback to fixed value when filesystem is unwritable (containers). Logged as CRITICAL.

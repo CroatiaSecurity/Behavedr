@@ -21,7 +21,7 @@ public class IsolationResponseEngine : IResponseAction
     }
 
     public string Name => "IsolationResponse";
-    public bool IsSupported => OperatingSystem.IsWindows();
+    public bool IsSupported => OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS();
 
     /// <summary>
     /// IResponseAction implementation: inspects signals for isolation-related threats
@@ -51,6 +51,7 @@ public class IsolationResponseEngine : IResponseAction
 
     /// <summary>
     /// Kill process, dismount the ISO, and delete the .iso file.
+    /// Cross-platform: uses PowerShell on Windows, umount/losetup on Linux, hdiutil on macOS.
     /// </summary>
     public async Task HandleIsoThreatAsync(int processId, string isoPath)
     {
@@ -65,19 +66,45 @@ public class IsolationResponseEngine : IResponseAction
         }
         catch { }
 
-        // 2. Dismount ISO via PowerShell (EncodedCommand for injection safety)
+        // 2. Dismount ISO (platform-specific)
         try
         {
-            var script = $"Dismount-DiskImage -ImagePath '{isoPath.Replace("'", "''")}' -ErrorAction Stop";
-            var encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
-            using var ps = Process.Start(new ProcessStartInfo
+            if (OperatingSystem.IsWindows())
             {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -NonInteractive -EncodedCommand {encoded}",
-                UseShellExecute = false, CreateNoWindow = true,
-                RedirectStandardOutput = true, RedirectStandardError = true,
-            });
-            if (ps != null) await ps.WaitForExitAsync();
+                var script = $"Dismount-DiskImage -ImagePath '{isoPath.Replace("'", "''")}' -ErrorAction Stop";
+                var encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
+                using var ps = Process.Start(new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $"-NoProfile -NonInteractive -EncodedCommand {encoded}",
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                });
+                if (ps != null) await ps.WaitForExitAsync();
+            }
+            else if (OperatingSystem.IsLinux())
+            {
+                // Find and unmount loop device associated with this ISO
+                using var umount = Process.Start(new ProcessStartInfo
+                {
+                    FileName = "/bin/umount",
+                    Arguments = isoPath,
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                });
+                if (umount != null) await umount.WaitForExitAsync();
+            }
+            else if (OperatingSystem.IsMacOS())
+            {
+                using var hdiutil = Process.Start(new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/hdiutil",
+                    Arguments = $"detach \"{isoPath}\" -force",
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                });
+                if (hdiutil != null) await hdiutil.WaitForExitAsync();
+            }
             _logger.LogWarning("[IsolationResponse] Dismounted ISO {Path}", isoPath);
         }
         catch (Exception ex) { _logger.LogDebug(ex, "[IsolationResponse] Dismount failed"); }
@@ -123,9 +150,13 @@ public class IsolationResponseEngine : IResponseAction
     {
         try
         {
+            // Use platform-appropriate docker/podman binary
+            var dockerBin = FindDockerBinary();
+            if (dockerBin is null) return;
+
             using var proc = Process.Start(new ProcessStartInfo
             {
-                FileName = "docker.exe",
+                FileName = dockerBin,
                 Arguments = $"{command} {args}",
                 UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true,
@@ -133,6 +164,23 @@ public class IsolationResponseEngine : IResponseAction
             if (proc != null) await proc.WaitForExitAsync();
         }
         catch { }
+    }
+
+    private static string? FindDockerBinary()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (File.Exists(@"C:\Program Files\Docker\Docker\resources\bin\docker.exe"))
+                return @"C:\Program Files\Docker\Docker\resources\bin\docker.exe";
+            return "docker.exe";
+        }
+
+        // Linux/macOS: check for docker or podman
+        foreach (var binary in new[] { "/usr/bin/docker", "/usr/bin/podman", "/usr/local/bin/docker" })
+        {
+            if (File.Exists(binary)) return binary;
+        }
+        return "docker"; // Fall back to PATH lookup
     }
 
     private static bool IsValidDockerId(string id)

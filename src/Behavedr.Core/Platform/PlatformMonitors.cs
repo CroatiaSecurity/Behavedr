@@ -39,6 +39,14 @@ public static class PlatformMonitors
             new ConnectivityCanaryMonitor(),
         };
 
+        // Cross-platform monitors (beaconing works everywhere now)
+        monitors.Add(new BeaconingDetector());
+        monitors.Add(new UnixDataExfiltrationMonitor());
+        monitors.Add(new UnixBehavioralMonitor());
+        monitors.Add(new UnixDnsMonitor());
+        monitors.Add(new UnixCredentialCanary());
+        monitors.Add(new UnixGhostProcessMonitor());
+
         // v0.0.7+: Windows-only behavioral detection & anti-tamper monitors
         if (OperatingSystem.IsWindows())
         {
@@ -52,7 +60,6 @@ public static class PlatformMonitors
             monitors.Add(new AntiTamperGuard());
             monitors.Add(new NetworkConnectionMonitor());
             monitors.Add(new MemoryAnalyzer());
-            monitors.Add(new BeaconingDetector());
             monitors.Add(new CredentialGuardMonitor());
             monitors.Add(new CredentialCanaryMonitor());
             monitors.Add(new RegistryPersistenceMonitor());
@@ -79,6 +86,43 @@ public static class PlatformMonitors
 
             // v0.1.2: Scheduled task and WMI persistence monitoring (RT-10)
             monitors.Add(new ScheduledTaskMonitor());
+        }
+
+        // v0.1.5: Linux full detection suite (cross-platform parity)
+        if (OperatingSystem.IsLinux())
+        {
+            monitors.Add(new LinuxNetworkMonitor());
+            monitors.Add(new LinuxMemoryAnalyzer());
+            monitors.Add(new LinuxCredentialMonitor());
+            monitors.Add(new LinuxPersistenceMonitor());
+            monitors.Add(new LinuxTokenMonitor());
+            monitors.Add(new LinuxEphemeralProcessMonitor());
+            monitors.Add(new UnixAntiTamperGuard());
+            monitors.Add(new UnixSelfProtection());
+        }
+
+        // v0.1.5: macOS full detection suite (cross-platform parity)
+        if (OperatingSystem.IsMacOS())
+        {
+            monitors.Add(new MacOSNetworkMonitor());
+            monitors.Add(new MacOSMemoryAnalyzer());
+            monitors.Add(new MacOSPersistenceMonitor());
+            monitors.Add(new MacOSCredentialMonitor());
+            monitors.Add(new UnixAntiTamperGuard());
+            monitors.Add(new UnixSelfProtection());
+        }
+
+        // v0.1.5: Android full detection suite
+        if (OperatingSystem.IsAndroid())
+        {
+            monitors.Add(new AndroidNetworkMonitor());
+            monitors.Add(new AndroidPersistenceMonitor());
+        }
+
+        // v0.1.5: iOS full detection suite
+        if (OperatingSystem.IsIOS() || OperatingSystem.IsMacCatalyst())
+        {
+            monitors.Add(new IosPersistenceMonitor());
         }
 
         return monitors;

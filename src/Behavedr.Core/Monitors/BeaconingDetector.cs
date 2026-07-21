@@ -1,6 +1,5 @@
 namespace Behavedr.Core.Monitors;
 
-using System.Runtime.Versioning;
 using Behavedr.Core.Models;
 using Behavedr.Core.Platform;
 using Microsoft.Extensions.Logging;
@@ -14,8 +13,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 ///
 /// CV = stddev / mean. Regular beacons have low CV (high regularity).
 /// Human browsing has high CV (irregular timing).
+///
+/// Cross-platform: works on Windows, Linux, and macOS.
 /// </summary>
-[SupportedOSPlatform("windows")]
 public class BeaconingDetector : IPlatformMonitor
 {
     private readonly ILogger<BeaconingDetector> _logger;
@@ -26,7 +26,7 @@ public class BeaconingDetector : IPlatformMonitor
     private const int MaxTrackedConnections = 5000;
 
     public string PlatformName => "BeaconingDetector";
-    public bool IsSupported => OperatingSystem.IsWindows();
+    public bool IsSupported => OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS();
 
     public BeaconingDetector(ILogger<BeaconingDetector>? logger = null)
     {
