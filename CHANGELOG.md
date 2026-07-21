@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.2.0] — 2026-07-21
+
+### Major Detection Expansion — 15 Audit Findings Addressed + Sentinel Cross-Reference
+
+Implements all findings from the v0.1.0 red/blue team security audit. Cross-references
+Sentinel EDR (Windows-only, 60+ monitors) to close 15 detection gaps while preserving
+Behavedr's superior cryptographic and communication architecture.
+
+#### P0 — Critical New Detections
+
+- **LSASS Dump Monitor** (`LsassDumpMonitor.cs`): Detects credential dumping (T1003.001) via Sysmon Event ID 10 (ProcessAccess), Security Event ID 4656 (handle request), and Defender ASR Event ID 1121. Path+signature verified trust — never name-only.
+- **Parent PID Spoof Detector** (`ParentPidSpoofDetector.cs`): Detects PPID spoofing (T1134.004) by comparing kernel-reported InheritedFromUniqueProcessId (NtQueryInformationProcess) against ETW-recorded parent in ProcessAncestryCache. Closes bypass of all parent-child behavioral analysis.
+- **DLL Sideload Detector** (`DllSideloadDetector.cs`): Detects DLL sideloading (T1574.001) by enumerating Process.Modules and flagging known system DLLs (version.dll, dbghelp.dll, etc.) loaded from non-Windows directories.
+
+#### P1 — High Priority New Detections
+
+- **Ghost Process Monitor** (`GhostProcessMonitor.cs`): Detects PIDs with active outbound TCP connections that cannot be resolved to running processes. Catches process hollowing (T1055.012) and orphaned RAT sockets.
+- **Token Integrity Monitor** (`TokenIntegrityMonitor.cs`): Detects elevated processes running from user-writable paths (Temp, Downloads, AppData). Catches UAC bypass (T1548).
+- **Ephemeral Process Monitor** (`EphemeralProcessMonitor.cs`): Watches Windows Prefetch directory for new .pf files indicating sub-second process executions that ETW may miss.
+- **Network Share Monitor** (`NetworkShareMonitor.cs`): Detects unauthorized local share creation and new network drive mappings at runtime. Catches SMB lateral movement staging (T1021.002).
+- **Raw Disk Access Monitor** (`RawDiskAccessMonitor.cs`): Detects processes accessing raw disk devices (\\.\PhysicalDrive0, etc.) via command-line heuristics. Catches bootkits and forensic wiping (T1006).
+
+#### P2 — Medium Priority New Detections
+
+- **Thread Start Address Scanner** (`ThreadStartAddressScanner.cs`): Scans thread start addresses against loaded module ranges. Unmapped start addresses indicate reflective injection, shellcode, or direct syscall execution (T1055).
+- **WSL Monitor** (`WslMonitor.cs`): Monitors WSL process spawns for suspicious commands (reverse shells, credential access) and runtime distribution installation (T1202).
+- **Signer Trust Service** (`SignerTrustService.cs`): Authenticode signature verification with write-time cache invalidation. Hardens allowlist decisions beyond name-only matching (T1036.005 defense).
+- **Isolation Response Engine** (`IsolationResponseEngine.cs`): Handles ISO mount threats (kill + dismount + delete), Docker container threats, and VM termination (T1553.005).
+- **Chain Tracer** (`ChainTracer.cs`): Traces full attack chains via ProcessAncestryCache, kills non-system ancestor processes.
+
+#### Security Hardening
+
+- **ProcessKillAction path verification**: Protected process allowlist now verifies the binary is actually from a system path. Attacker naming malware "explorer.exe" in Temp is no longer protected from kill.
+
+#### Monitor Count
+
+- Windows: 15 → 26 active monitors (+11 new)
+- Total MITRE ATT&CK coverage: T1003, T1006, T1021, T1027, T1036, T1041, T1055, T1059, T1134, T1202, T1486, T1547, T1548, T1553, T1555, T1562, T1574
+
+---
+
 ## [0.1.0] — 2026-07-21
 
 ### Security Audit Remediation — All P0/P1/P2 Findings Fixed

@@ -21,6 +21,11 @@ public class ProcessKillAction : IResponseAction
         "kernel_task", "loginwindow", "behavedr",
     };
 
+    // SECURITY: Protected process check is path-verified. An attacker naming malware
+    // "explorer.exe" in a temp directory will NOT be protected from kill.
+    private static readonly string WinDir =
+        Environment.GetFolderPath(Environment.SpecialFolder.Windows).TrimEnd('\\') + "\\";
+
     public ProcessKillAction(ILogger<ProcessKillAction>? logger = null)
     {
         _logger = logger ?? NullLogger<ProcessKillAction>.Instance;
@@ -34,11 +39,36 @@ public class ProcessKillAction : IResponseAction
         var processName = result.Event.ProcessName;
         var processId = result.Event.ProcessId;
 
-        // Safety check: never kill protected system processes
+        // Safety check: never kill protected system processes (path-verified)
         if (ProtectedProcesses.Contains(processName))
         {
-            _logger.LogWarning("Refusing to kill protected process: {Process}", processName);
-            return Task.FromResult(ResponseOutcome.Skipped(Name, $"Protected process: {processName}"));
+            // HARDENING: Only protect if the binary is actually from a system path.
+            // An attacker naming malware "explorer.exe" in Temp will NOT be protected.
+            bool isLegitimateSystemProcess = false;
+            if (int.TryParse(processId, out var checkPid))
+            {
+                try
+                {
+                    using var checkProc = Process.GetProcessById(checkPid);
+                    var imagePath = checkProc.MainModule?.FileName;
+                    isLegitimateSystemProcess = imagePath != null &&
+                        (imagePath.StartsWith(WinDir, StringComparison.OrdinalIgnoreCase) ||
+                         imagePath.Contains("Behavedr", StringComparison.OrdinalIgnoreCase));
+                }
+                catch { isLegitimateSystemProcess = true; } // Can't verify — err on safety
+            }
+            else
+            {
+                isLegitimateSystemProcess = true;
+            }
+
+            if (isLegitimateSystemProcess)
+            {
+                _logger.LogWarning("Refusing to kill protected process: {Process}", processName);
+                return Task.FromResult(ResponseOutcome.Skipped(Name, $"Protected process: {processName}"));
+            }
+            // Not from system path — fall through to kill
+            _logger.LogWarning("Process '{Process}' matches protected name but is NOT from system path — allowing kill", processName);
         }
 
         // Safety check: never kill our own process
