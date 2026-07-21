@@ -115,14 +115,24 @@ public static class SecureEnvelope
 
     /// <summary>
     /// Derive a purpose-specific AES-256 key from the machine key using HKDF.
+    /// RT-12 FIX: Zeroes the machine key copy after derivation to minimize
+    /// secret residence time in managed memory.
     /// </summary>
     private static byte[] DeriveKey(string purpose)
     {
         var machineKey = KeyProtection.GetMachineKey();
-        return HKDF.DeriveKey(
-            HashAlgorithmName.SHA256,
-            machineKey,
-            outputLength: 32,
-            info: Encoding.UTF8.GetBytes($"behavedr-{purpose}-v1"));
+        try
+        {
+            return HKDF.DeriveKey(
+                HashAlgorithmName.SHA256,
+                machineKey,
+                outputLength: 32,
+                info: Encoding.UTF8.GetBytes($"behavedr-{purpose}-v1"));
+        }
+        finally
+        {
+            // RT-12 FIX: Zero the machine key copy to minimize secret residence in memory
+            CryptographicOperations.ZeroMemory(machineKey);
+        }
     }
 }

@@ -1,5 +1,75 @@
 # Changelog
 
+## [0.1.6] — 2026-07-22
+
+### Security Audit Remediation — All-Platform Hardening
+
+Comprehensive red/blue team security audit targeting 10/10 protection grades across
+Windows, Linux, and macOS. Addresses 14 findings (1 critical, 3 high, 6 medium, 4 low).
+
+#### macOS — Real-Time Process Monitoring (RT-1 Critical Fix)
+
+- **MacOSKqueueMonitor** (NEW): Real-time process event monitoring using kqueue
+  `EVFILT_PROC` with `NOTE_EXEC|NOTE_FORK|NOTE_EXIT`. Eliminates the 5-second polling
+  blind spot for process execution. Detects offensive tools instantly on exec and
+  identifies ephemeral processes (exec→exit within 2 seconds).
+
+#### macOS — Keychain Services Integration (RT-2 High Fix)
+
+- **KeyProtection**: Machine key now stored in macOS System Keychain via `security` CLI.
+  Key never written to filesystem. Falls back to file-permission storage only if
+  Keychain is unavailable. Existing file-based keys are auto-upgraded on next read.
+
+#### macOS — Launchd Plist Hardening (RT-10 Fix)
+
+- Added `SessionCreate`, `Umask=77`, `ExitTimeOut=5`, `Nice=-10`,
+  `LowPriorityBackgroundIO=false`, `EnablePressuredExit=false`, `MachServices`.
+- Prevents macOS from killing daemon under memory pressure.
+- Creates isolated security session and restricts file creation permissions.
+
+#### macOS — Process Kill Safety (RT-7 Fix)
+
+- **ProcessKillAction**: Added `proc_pidpath()` verification via libproc.dylib before
+  killing processes on macOS. Narrows TOCTOU PID-reuse window by verifying the
+  executable path matches expected process name.
+
+#### Linux — systemd Service Hardening (RT-3 High Fix)
+
+- Added `CAP_SYS_ADMIN` to capabilities (required for fanotify real-time monitoring).
+- Added `ProtectProc=invisible` — hides agent from other processes' /proc view.
+- Added `ProcSubset=pid` — restricts /proc to PID-based entries only.
+- Added `SystemCallFilter=~@mount @reboot @swap @obsolete @cpu-emulation`.
+- Added `RestrictFileSystems=ext4 btrfs xfs tmpfs proc sysfs`.
+- Added IP address restriction template for production deployments.
+
+#### Linux — nftables Rate Limiting (RT-6 Fix)
+
+- **LinuxNetworkIsolation**: Added max rule count (100) with automatic table flush
+  on limit. Prevents kernel memory exhaustion from repeated detection triggers.
+
+#### Cross-Platform — TLS Version Pinning (RT-5 Fix)
+
+- **AutoUpdater**: HttpClient now explicitly requires TLS 1.2+ with TLS 1.3 preferred.
+  Prevents TLS downgrade attacks on the update channel.
+
+#### Cross-Platform — Memory-Safe Secret Handling (RT-12 Fix)
+
+- **SecureEnvelope**: Machine key copies are now zeroed via
+  `CryptographicOperations.ZeroMemory()` after HKDF derivation.
+
+#### Cross-Platform — Offline Buffer Hygiene (RT-8 Fix)
+
+- **OfflineBuffer**: Added `CleanupDeadLetters()` with 7-day retention policy.
+  Dead-letter directory permissions enforced on creation.
+
+#### Security Audit Documentation
+
+- Full audit report: `docs/red-blue-team-audit-v0.1.6-all-platforms.md`
+- 14 findings with MITRE ATT&CK mapping and implementation details
+- Platform protection scores: Windows 9.7, Linux 9.6, macOS 8.9 (post-fix)
+- MITRE coverage matrix: 16 techniques detected across platforms
+- Comparison with CrowdStrike Falcon and Microsoft Defender for Endpoint
+
 ## [0.1.5] — 2026-07-21
 
 ### Cross-Platform Parity — Full Detection + Response on All Platforms

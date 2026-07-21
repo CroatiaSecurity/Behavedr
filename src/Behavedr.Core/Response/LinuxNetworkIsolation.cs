@@ -29,6 +29,12 @@ public class LinuxNetworkIsolation : IResponseAction
     private readonly ILogger<LinuxNetworkIsolation> _logger;
     private bool _tableCreated;
 
+    // RT-6 FIX: Rate-limit nftables rules to prevent rule exhaustion attacks.
+    // An attacker triggering many detections could exhaust kernel memory via unbounded rules.
+    private int _activeRuleCount;
+    private const int MaxRules = 100;
+    private readonly object _ruleLock = new();
+
     public string Name => "LinuxNetworkIsolation";
     public bool IsSupported => OperatingSystem.IsLinux();
 
@@ -41,6 +47,22 @@ public class LinuxNetworkIsolation : IResponseAction
     {
         if (!OperatingSystem.IsLinux())
             return ResponseOutcome.Skipped(Name, "Not Linux");
+
+        // RT-6 FIX: Enforce max rule count to prevent kernel memory exhaustion
+        lock (_ruleLock)
+        {
+            if (_activeRuleCount >= MaxRules)
+            {
+                _logger.LogWarning(
+                    "[NetworkIsolation] Rule limit reached ({Max}) — flushing and rebuilding to prevent exhaustion",
+                    MaxRules);
+                // Schedule async cleanup (non-blocking)
+                _ = ReleaseAllIsolation(CancellationToken.None);
+                _activeRuleCount = 0;
+                return ResponseOutcome.Skipped(Name,
+                    $"Rule limit ({MaxRules}) reached — isolation table reset");
+            }
+        }
 
         var processId = result.Event.ProcessId;
         if (!int.TryParse(processId, out var pid) || pid <= 4)
@@ -75,6 +97,7 @@ public class LinuxNetworkIsolation : IResponseAction
 
         if (success)
         {
+            lock (_ruleLock) { _activeRuleCount++; }
             _logger.LogWarning(
                 "[NetworkIsolation] Isolated UID {Uid} (process: {Process}, PID {Pid}) — all outbound traffic dropped",
                 uid, processName, pid);
@@ -105,7 +128,10 @@ public class LinuxNetworkIsolation : IResponseAction
         {
             var rule = $"add rule inet behavedr_isolation output ip daddr {ip} counter drop comment \"behavedr:c2block:pid:{pid}\"";
             if (await RunNft(rule, ct))
+            {
                 blocked++;
+                lock (_ruleLock) { _activeRuleCount++; }
+            }
         }
 
         if (blocked > 0)
@@ -136,6 +162,7 @@ public class LinuxNetworkIsolation : IResponseAction
     {
         await RunNft("delete table inet behavedr_isolation", ct);
         _tableCreated = false;
+        lock (_ruleLock) { _activeRuleCount = 0; }
         _logger.LogInformation("[NetworkIsolation] All isolation rules released");
     }
 

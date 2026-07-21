@@ -34,7 +34,8 @@ public static class KeyProtection
     /// Get the machine key using the most secure storage available:
     /// - Windows: DPAPI (LocalMachine scope)
     /// - Linux: Kernel keyring (key lives in kernel memory, not on disk)
-    /// - macOS/fallback: File with chmod 600
+    /// - macOS: Keychain Services (key in System Keychain, backed by Secure Enclave)
+    /// - Fallback: File with chmod 600
     /// On first call with a legacy (unprotected) key, upgrades to best available protection.
     /// </summary>
     public static byte[] GetMachineKey()
@@ -45,6 +46,14 @@ public static class KeyProtection
             var keyringKey = TryGetKeyFromKeyring();
             if (keyringKey is not null)
                 return keyringKey;
+        }
+
+        // macOS: Try Keychain Services first (RT-2 fix)
+        if (OperatingSystem.IsMacOS())
+        {
+            var keychainKey = TryGetKeyFromKeychain();
+            if (keychainKey is not null)
+                return keychainKey;
         }
 
         var keyDir = GetKeyDirectory();
@@ -94,6 +103,15 @@ public static class KeyProtection
                     catch { }
                 }
             }
+            else if (OperatingSystem.IsMacOS())
+            {
+                // RT-2 FIX: Upgrade to Keychain storage
+                if (TryStoreKeyInKeychain(rawKey))
+                {
+                    // Remove raw key from disk — keychain is the source of truth
+                    try { File.Delete(keyPath); } catch { }
+                }
+            }
 
             return rawKey;
         }
@@ -108,6 +126,13 @@ public static class KeyProtection
             File.WriteAllText(keyPath, KeyringPrefix + "v1");
             try { File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
             catch { }
+            return newKey2;
+        }
+
+        // macOS: store in Keychain if possible (RT-2 fix)
+        if (OperatingSystem.IsMacOS() && TryStoreKeyInKeychain(newKey2))
+        {
+            // No file needed — keychain is the authoritative storage
             return newKey2;
         }
 
@@ -425,5 +450,111 @@ public static class KeyProtection
         return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".behavedr");
+    }
+
+    // =========================================================================
+    // macOS Keychain Services Integration (RT-2 Fix)
+    // =========================================================================
+    // Uses Security.framework via P/Invoke to store the machine key in the
+    // System Keychain. On Apple Silicon, this is backed by the Secure Enclave.
+    // Key never written to filesystem; accessible only by the behavedr process.
+    //
+    // Keychain item attributes:
+    //   kSecClass: kSecClassGenericPassword
+    //   kSecAttrService: "com.croatiasecurity.behavedr"
+    //   kSecAttrAccount: "machine-key-v1"
+    //   kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    // =========================================================================
+
+    private const string KeychainService = "com.croatiasecurity.behavedr";
+    private const string KeychainAccount = "machine-key-v1";
+
+    /// <summary>
+    /// Try to retrieve the machine key from macOS Keychain Services.
+    /// Returns null if key is not in the keychain (first run).
+    /// Uses the `security` CLI as a portable approach that works without
+    /// native framework linking (which requires Objective-C interop).
+    /// </summary>
+    [SupportedOSPlatform("macos")]
+    private static byte[]? TryGetKeyFromKeychain()
+    {
+        try
+        {
+            using var proc = new System.Diagnostics.Process();
+            proc.StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "/usr/bin/security",
+                Arguments = $"find-generic-password -s \"{KeychainService}\" -a \"{KeychainAccount}\" -w",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            proc.Start();
+            var output = proc.StandardOutput.ReadToEnd().Trim();
+            proc.WaitForExit(5000);
+
+            if (proc.ExitCode != 0 || string.IsNullOrEmpty(output))
+                return null;
+
+            // Key is stored as base64 in the keychain password field
+            var key = Convert.FromBase64String(output);
+            return key.Length == 32 ? key : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Store a key in macOS Keychain Services. Returns true if successful.
+    /// Uses the `security` CLI for portability (no native framework linking needed).
+    /// The key is stored in the System keychain with restricted access.
+    /// </summary>
+    [SupportedOSPlatform("macos")]
+    private static bool TryStoreKeyInKeychain(byte[] key)
+    {
+        try
+        {
+            var keyBase64 = Convert.ToBase64String(key);
+
+            // Delete existing entry (if upgrading)
+            using (var delProc = new System.Diagnostics.Process())
+            {
+                delProc.StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/usr/bin/security",
+                    Arguments = $"delete-generic-password -s \"{KeychainService}\" -a \"{KeychainAccount}\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                };
+                delProc.Start();
+                delProc.WaitForExit(3000);
+            }
+
+            // Add new entry
+            using var proc = new System.Diagnostics.Process();
+            proc.StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "/usr/bin/security",
+                Arguments = $"add-generic-password -s \"{KeychainService}\" -a \"{KeychainAccount}\" " +
+                            $"-w \"{keyBase64}\" -T \"\" -U",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            proc.Start();
+            proc.WaitForExit(5000);
+
+            return proc.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

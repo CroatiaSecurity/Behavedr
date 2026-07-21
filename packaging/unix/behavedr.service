@@ -19,13 +19,14 @@ User=behavedr
 Group=behavedr
 
 # Grant only the capabilities needed for EDR monitoring (userland mode)
-CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ
-AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ
+# CAP_SYS_ADMIN required for fanotify real-time file execution monitoring (RT-4 fix)
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ CAP_SYS_ADMIN
+AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ CAP_SYS_ADMIN
 
 # Hardening directives
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/behavedr/logs /opt/behavedr/quarantine /var/lib/behavedr
+ReadWritePaths=/opt/behavedr/logs /opt/behavedr/quarantine /var/lib/behavedr /opt/behavedr/buffer /opt/behavedr/run
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true
@@ -38,6 +39,21 @@ RestrictRealtime=true
 SystemCallArchitectures=native
 MemoryDenyWriteExecute=false
 PrivateDevices=false
+
+# v0.1.6 audit fixes (RT-3): Advanced hardening directives (systemd 247+)
+# Hide agent from other processes' /proc view
+ProtectProc=invisible
+ProcSubset=pid
+
+# Deny dangerous syscall groups (seccomp-bpf via systemd)
+SystemCallFilter=~@mount @reboot @swap @obsolete @cpu-emulation
+
+# Restrict filesystem types the agent can access
+RestrictFileSystems=ext4 btrfs xfs tmpfs proc sysfs
+
+# Network restriction — uncomment and set server IP for production deployments
+# IPAddressDeny=any
+# IPAddressAllow=<server_ip>/32 127.0.0.0/8 ::1/128
 
 # Logging
 StandardOutput=journal

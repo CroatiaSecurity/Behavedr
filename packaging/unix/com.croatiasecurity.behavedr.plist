@@ -48,5 +48,38 @@
         <key>DOTNET_ENVIRONMENT</key>
         <string>Production</string>
     </dict>
+
+    <!-- v0.1.6 audit fixes (RT-10): Hardening keys -->
+
+    <!-- Create isolated security session for the daemon -->
+    <key>SessionCreate</key>
+    <true/>
+
+    <!-- Restrictive file creation mask (owner-only) -->
+    <key>Umask</key>
+    <integer>77</integer>
+
+    <!-- Fast exit timeout for rapid re-launch on unload -->
+    <key>ExitTimeOut</key>
+    <integer>5</integer>
+
+    <!-- Higher scheduling priority for security-critical monitoring -->
+    <key>Nice</key>
+    <integer>-10</integer>
+
+    <!-- Do not deprioritize I/O — detection must be responsive -->
+    <key>LowPriorityBackgroundIO</key>
+    <false/>
+
+    <!-- Prevent macOS from killing daemon under memory pressure -->
+    <key>EnablePressuredExit</key>
+    <false/>
+
+    <!-- Register Mach service for IPC (future: admin CLI communication) -->
+    <key>MachServices</key>
+    <dict>
+        <key>com.croatiasecurity.behavedr</key>
+        <true/>
+    </dict>
 </dict>
 </plist>

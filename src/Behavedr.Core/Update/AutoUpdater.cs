@@ -1,7 +1,9 @@
 namespace Behavedr.Core.Update;
 
 using System.IO.Compression;
+using System.Net.Security;
 using System.Reflection;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -32,7 +34,13 @@ public class AutoUpdater
             ?.GetName().Version?.ToString(3) ?? "0.0.0";
         _platform = GetPlatformRid();
 
-        _http = new HttpClient();
+        // RT-5 FIX: Pin TLS to 1.2+ and prefer 1.3 for update downloads.
+        // Prevents TLS downgrade attacks on the update channel.
+        var handler = new HttpClientHandler
+        {
+            SslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12,
+        };
+        _http = new HttpClient(handler);
         _http.DefaultRequestHeaders.UserAgent.ParseAdd(
             $"Behavedr/{_currentVersion}");
     }

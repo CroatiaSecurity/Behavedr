@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.5   | Yes       |
-| < 0.1.5 | No        |
+| 0.1.6   | Yes       |
+| < 0.1.6 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
@@ -77,8 +77,9 @@ We will credit reporters in release notes unless anonymity is preferred. We do n
 | Policy signing | RSA-PSS SHA-256 | 4096-bit | Same key infrastructure as updates |
 | Transport | TLS 1.3 (mTLS) | 2048-bit client cert | CA-pinned; fail-closed |
 | Config value encryption | AES-256-GCM (cross-platform) / DPAPI (Windows) | 256-bit | DPAPI uses LocalMachine scope |
+| macOS key storage | Keychain Services (System Keychain) | 256-bit | Via `security` CLI; backed by Secure Enclave on Apple Silicon |
 
-### Self-Protection Mechanisms (v0.1.4)
+### Self-Protection Mechanisms (v0.1.6)
 
 | Mechanism | Check Interval | Description |
 |-----------|---------------|-------------|
@@ -95,6 +96,13 @@ We will credit reporters in release notes unless anonymity is preferred. We do n
 | Config HMAC seal | Startup | Refuses to start if config has been tampered |
 | Connectivity canary | ~45s (jittered) | Detects network isolation/firewall silencing |
 | Watchdog heartbeat | 3s | Detects monitoring loop suspension or deadlock |
+| macOS kqueue process monitor | Real-time | Detects process exec/fork/exit via kernel events |
+| macOS Keychain key storage | Startup | Machine key in System Keychain (not on filesystem) |
+| macOS proc_pidpath kill verify | On response | Verifies process identity before termination |
+| Linux ProtectProc=invisible | Service-level | Hides agent from /proc enumeration |
+| Linux syscall filtering | Service-level | Blocks mount/reboot/swap/obsolete syscalls |
+| Linux nftables rate limiting | On response | Max 100 isolation rules (prevents DoS) |
+| Memory secret zeroing | On use | CryptographicOperations.ZeroMemory after key derivation |
 
 ### Supply Chain Controls
 

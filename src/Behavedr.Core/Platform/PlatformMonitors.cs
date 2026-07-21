@@ -114,6 +114,9 @@ public static class PlatformMonitors
             monitors.Add(new MacOSCredentialMonitor());
             monitors.Add(new UnixAntiTamperGuard());
             monitors.Add(new UnixSelfProtection());
+
+            // v0.1.6: Real-time process event monitoring via kqueue (RT-1 fix)
+            monitors.Add(new MacOSKqueueMonitor());
         }
 
         // v0.1.5: Android full detection suite

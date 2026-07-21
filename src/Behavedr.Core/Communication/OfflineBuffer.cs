@@ -153,6 +153,47 @@ public class OfflineBuffer
         catch { }
     }
 
+    /// <summary>
+    /// RT-8 FIX: Clean up dead-letter files older than the retention period.
+    /// Prevents unbounded disk usage from tampered/corrupted reports accumulating.
+    /// Also enforces restrictive permissions on the dead-letter directory.
+    /// </summary>
+    public void CleanupDeadLetters(TimeSpan? maxAge = null)
+    {
+        var retention = maxAge ?? TimeSpan.FromDays(7);
+        var deadLetterDir = Path.Combine(_bufferPath, "dead-letter");
+
+        if (!Directory.Exists(deadLetterDir)) return;
+
+        // Enforce restrictive permissions on dead-letter directory
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(deadLetterDir,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+        }
+        catch { }
+
+        try
+        {
+            var cutoff = DateTime.UtcNow - retention;
+            foreach (var file in Directory.GetFiles(deadLetterDir))
+            {
+                try
+                {
+                    if (File.GetCreationTimeUtc(file) < cutoff)
+                    {
+                        File.Delete(file);
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+    }
+
     private static readonly JsonSerializerOptions BufferJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,

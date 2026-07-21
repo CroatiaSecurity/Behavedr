@@ -138,6 +138,14 @@ public class ProcessKillAction : IResponseAction
                 // pidfd unavailable — fall through to standard kill
             }
 
+            // macOS: Verify process path before kill to narrow TOCTOU window (RT-7 fix)
+            if (OperatingSystem.IsMacOS())
+            {
+                var verifyResult = VerifyMacOSProcessBeforeKill(pid, processName);
+                if (verifyResult is not null)
+                    return Task.FromResult(verifyResult);
+            }
+
             _logger.LogWarning("KILLING process: {Process} (PID {Pid}) — score={Score:F1}",
                 processName, pid, result.Score);
 
@@ -263,4 +271,54 @@ public class ProcessKillAction : IResponseAction
 
     [DllImport("libc", EntryPoint = "close")]
     private static extern int libc_close(int fd);
+
+    /// <summary>
+    /// RT-7 FIX: Verify process identity on macOS using proc_pidpath before kill.
+    /// macOS lacks pidfd, so we use proc_pidpath() from libproc.dylib to verify
+    /// the executable path matches expected process name. This narrows the TOCTOU
+    /// window to microseconds and adds a second verification dimension.
+    /// Returns a skip/fail outcome if verification fails, null to proceed with kill.
+    /// </summary>
+    [SupportedOSPlatform("macos")]
+    private ResponseOutcome? VerifyMacOSProcessBeforeKill(int pid, string processName)
+    {
+        try
+        {
+            var pathBuf = new byte[4096]; // PROC_PIDPATHINFO_MAXSIZE
+            var pathLen = proc_pidpath(pid, pathBuf, (uint)pathBuf.Length);
+            if (pathLen <= 0)
+            {
+                // Cannot verify — log warning but allow kill (fail-open for defense)
+                _logger.LogDebug("[macOS] Cannot verify process path for PID {Pid} via proc_pidpath", pid);
+                return null;
+            }
+
+            var processPath = System.Text.Encoding.UTF8.GetString(pathBuf, 0, pathLen);
+            var exeName = Path.GetFileNameWithoutExtension(processPath);
+
+            // Verify the executable name matches what we expect
+            if (!exeName.Contains(processName, StringComparison.OrdinalIgnoreCase) &&
+                !processName.Contains(exeName, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(
+                    "[macOS] PID {Pid} path={Path} doesn't match expected {Expected} — aborting kill (PID reuse?)",
+                    pid, processPath, processName);
+                return ResponseOutcome.Skipped(Name,
+                    $"PID reuse detected via proc_pidpath: expected {processName}, got {processPath}");
+            }
+
+            return null; // Verification passed — proceed with kill
+        }
+        catch
+        {
+            return null; // Cannot verify — proceed with kill (fail-open)
+        }
+    }
+
+    /// <summary>
+    /// macOS libproc: proc_pidpath returns the full path of the executable for a PID.
+    /// Returns the number of bytes written to buffer, or 0 on failure.
+    /// </summary>
+    [DllImport("libproc.dylib", EntryPoint = "proc_pidpath")]
+    private static extern int proc_pidpath(int pid, byte[] buffer, uint buffersize);
 }
