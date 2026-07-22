@@ -12,8 +12,8 @@
 
     <ApplicationTitle>Behavedr</ApplicationTitle>
     <ApplicationId>com.croatiasecurity.behavedr</ApplicationId>
-    <ApplicationDisplayVersion>0.0.7</ApplicationDisplayVersion>
-    <ApplicationVersion>7</ApplicationVersion>
+    <ApplicationDisplayVersion>0.2.1</ApplicationDisplayVersion>
+    <ApplicationVersion>8</ApplicationVersion>
 
     <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">android-arm64;android-x64</RuntimeIdentifiers>
     <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">iossimulator-arm64;ios-arm64</RuntimeIdentifiers>
@@ -30,6 +30,12 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.0" />
+  </ItemGroup>
+
+  <!-- Android-specific XML resources (network security config, device admin policies) -->
+  <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+    <AndroidResource Include="Platforms\Android\Resources\xml\network_security_config.xml" />
+    <AndroidResource Include="Platforms\Android\Resources\xml\device_admin_policies.xml" />
   </ItemGroup>
 
   <ItemGroup>

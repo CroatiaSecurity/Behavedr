@@ -2,11 +2,11 @@
 ; Copyright (c) 2026 CroatiaSecurity. All rights reserved.
 ;
 ; Build:
-;   iscc packaging\windows\behavedr.iss /DMyAppVersion=0.1.4 /DPublishDir=...\publish\agent-win-x64
+;   iscc packaging\windows\behavedr.iss /DMyAppVersion=0.2.1 /DPublishDir=...\publish\agent-win-x64
 ;   Or use: installer\build.ps1 (recommended — handles version stamping automatically)
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.4"
+  #define MyAppVersion "0.2.1"
 #endif
 #ifndef PublishDir
   #define PublishDir "..\..\publish\agent-win-x64"

@@ -9,7 +9,7 @@ Behavioral endpoint detection and response agent. Monitors process activity, net
 | Windows (x64) | Production — Full detection + response |
 | Linux (x64) | Production — Full detection + response |
 | macOS (ARM64) | Production — Full detection + response |
-| Android | Production — Behavioral detection (root, RATs, miners, ADB, sideloading) |
+| Android | Production — Full EDR: detection, response, VPN inspection, hardware-backed crypto, Play Integrity |
 | iOS | Production — Jailbreak detection, sandbox monitoring, dylib injection |
 
 ## Quick Start

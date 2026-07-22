@@ -656,7 +656,10 @@ public static class KeyProtection
     ///
     /// If these are not registered, Android falls back to file-based key storage.
     /// </summary>
-    internal static class AndroidKeystoreBridge
+    /// <summary>
+    /// Bridge to Android Keystore operations. Public so MAUI Android layer can register callbacks.
+    /// </summary>
+    public static class AndroidKeystoreBridge
     {
         /// <summary>Encrypt plaintext with hardware-backed AES key. Set by MAUI Android layer.</summary>
         public static Func<byte[], byte[]?>? EncryptFunc { get; set; }
