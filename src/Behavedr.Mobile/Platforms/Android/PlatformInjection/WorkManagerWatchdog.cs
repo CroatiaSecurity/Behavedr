@@ -1,9 +1,12 @@
 using Android.App;
 using Android.Content;
+using Android.Content.PM;
 using Android.OS;
 using Android.Runtime;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+
+using Environment = System.Environment;
 
 namespace Behavedr.Mobile.PlatformInjection;
 
@@ -68,13 +71,13 @@ public static class WorkManagerWatchdog
 
             var componentName = new ComponentName(context, Java.Lang.Class.FromType(typeof(WatchdogJobService)));
 
-            var jobInfo = new Android.App.Job.JobInfo.Builder(WatchdogJobId, componentName)
+            var jobInfo = new Android.App.Job.JobInfo.Builder(WatchdogJobId, componentName!)
                 .SetPeriodic(IntervalMs) // Every 15 minutes
                 .SetPersisted(true) // Survive reboots
                 .SetRequiredNetworkType(Android.App.Job.NetworkType.None) // No network needed
                 .Build();
 
-            var result = jobScheduler.Schedule(jobInfo);
+            var result = jobScheduler.Schedule(jobInfo!);
             if (result == Android.App.Job.JobScheduler.ResultSuccess)
             {
                 _logger?.LogInformation("[WorkManagerWatchdog] Periodic watchdog job scheduled (15min interval, persisted)");
@@ -116,7 +119,7 @@ public static class WorkManagerWatchdog
     Exported = true)]
 public class WatchdogJobService : Android.App.Job.JobService
 {
-    public override bool OnStartJob(Android.App.Job.JobParameters @params)
+    public override bool OnStartJob(Android.App.Job.JobParameters? @params)
     {
         // Check if foreground service is running
         if (!IsServiceRunning(typeof(BehavedrForegroundService)))
@@ -151,7 +154,7 @@ public class WatchdogJobService : Android.App.Job.JobService
         return false;
     }
 
-    public override bool OnStopJob(Android.App.Job.JobParameters @params)
+    public override bool OnStopJob(Android.App.Job.JobParameters? @params)
     {
         // Return true to reschedule if stopped prematurely
         return true;
@@ -170,7 +173,6 @@ public class WatchdogJobService : Android.App.Job.JobService
 
             if (services is null) return false;
 
-            var serviceName = Java.Lang.Class.FromType(serviceType).Name;
             return services.Any(s =>
                 s?.Service?.ClassName?.Contains("BehavedrForegroundService", StringComparison.OrdinalIgnoreCase) == true);
         }
@@ -184,11 +186,10 @@ public class WatchdogJobService : Android.App.Job.JobService
 
     private static bool IsProcessRunningFromProc()
     {
-        // Alternative check: our own process should have the service thread
         try
         {
             var statusPath = "/proc/self/status";
-            return File.Exists(statusPath); // If we're running, the process exists
+            return File.Exists(statusPath);
         }
         catch
         {
@@ -204,13 +205,13 @@ public class WatchdogJobService : Android.App.Job.JobService
             if (pm is null) return;
 
             var receiver = new ComponentName(this, Java.Lang.Class.FromType(typeof(BootReceiver)));
-            var state = pm.GetComponentEnabledSetting(receiver);
+            var state = pm.GetComponentEnabledSetting(receiver!);
 
             if (state == ComponentEnabledState.Disabled)
             {
                 // Re-enable boot receiver (someone disabled it)
                 pm.SetComponentEnabledSetting(
-                    receiver,
+                    receiver!,
                     ComponentEnabledState.Enabled,
                     ComponentEnableOption.DontKillApp);
 
@@ -225,11 +226,11 @@ public class WatchdogJobService : Android.App.Job.JobService
         try
         {
             var logDir = Path.Combine(
-                Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "logs");
             Directory.CreateDirectory(logDir);
             var logPath = Path.Combine(logDir, "watchdog-forensic.log");
-            var entry = $"[{DateTime.UtcNow:O}] PID={System.Environment.ProcessId} {message}{System.Environment.NewLine}";
+            var entry = $"[{DateTime.UtcNow:O}] PID={Environment.ProcessId} {message}{Environment.NewLine}";
             File.AppendAllText(logPath, entry);
         }
         catch { }
