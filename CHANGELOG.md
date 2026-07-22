@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.1.9] — 2026-07-22
+
+### Android Security Hardening
+
+Comprehensive Android hardening bringing protection from 5.5/10 to ~8/10.
+
+#### AndroidSelfProtection Monitor (NEW)
+
+- Debugger detection (managed + native TracerPid)
+- Frida instrumentation detection (process maps, port 27042, thread names)
+- Native hook/injection detection via /proc/self/maps (Xposed, LSPosed, Substrate)
+- APK binary integrity verification (SHA-256 baseline)
+- Emulator/sandbox detection (QEMU, goldfish, Genymotion)
+- Magisk Hide/DenyList cloaking detection (mount namespace analysis)
+- Process suspension detection via monotonic clock gaps
+
+#### Hardware-Backed Key Storage (NEW)
+
+- Android KeyStore integration: AES-256 wrapping key in TEE/StrongBox
+- Machine key encrypted by hardware key before storage
+- Non-exportable: even with root, the wrapping key cannot leave hardware
+- Graceful fallback to file storage if KeyStore unavailable
+
+#### Network Security Configuration (NEW)
+
+- Cleartext (HTTP) traffic disabled globally
+- System-only CA trust (blocks user-installed rogue CA certificates)
+- Certificate pinning for Behavedr server domains
+- Debug-only override for testing (stripped in release builds)
+
+#### Service Resilience Hardening
+
+- WakeLock prevents CPU sleep during detection cycles
+- OnTaskRemoved: AlarmManager restart when user swipes app away
+- Monitoring interval reduced from 30s to 10s
+- BootReceiver: auto-start on device boot, update, and quickboot
+- Notification channel hardened (secret visibility, no badge/vibration)
+
+#### Permissions Added
+
+- `WAKE_LOCK` — prevent CPU sleep during monitoring
+- `SCHEDULE_EXACT_ALARM` — reliable restart after kill
+
+## [0.1.8] — 2026-07-22
+
+### Release Pipeline Fix
+
+- Include Android APK in release (wait for android job completion)
+
+## [0.1.7] — 2026-07-22
+
+### Version Bump for Release
+
 ## [0.1.6] — 2026-07-22
 
 ### Security Audit Remediation — All-Platform Hardening

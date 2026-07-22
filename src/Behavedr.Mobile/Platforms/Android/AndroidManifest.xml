@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-  <application android:allowBackup="false" android:supportsRtl="true" android:label="Behavedr" />
+  <application android:allowBackup="false" android:supportsRtl="true" android:label="Behavedr"
+               android:networkSecurityConfig="@xml/network_security_config" />
 
   <!-- Basic connectivity for telemetry/updates -->
   <uses-permission android:name="android.permission.INTERNET" />
@@ -27,4 +28,10 @@
 
   <!-- Notifications for the foreground service (Android 13+) -->
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+  <!-- WakeLock: prevent CPU sleep during detection cycles (v0.1.8 hardening) -->
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+  <!-- Exact alarms: restart service after user swipe (v0.1.8 hardening) -->
+  <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 </manifest>

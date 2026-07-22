@@ -124,6 +124,9 @@ public static class PlatformMonitors
         {
             monitors.Add(new AndroidNetworkMonitor());
             monitors.Add(new AndroidPersistenceMonitor());
+
+            // v0.1.8: Android self-protection (anti-debug, Frida, repackaging, emulator)
+            monitors.Add(new AndroidSelfProtection());
         }
 
         // v0.1.5: iOS full detection suite
