@@ -351,7 +351,8 @@ public sealed class DeviceOwnerManager
 /// </summary>
 [BroadcastReceiver(
     Name = "com.croatiasecurity.behavedr.BehavedrDeviceAdminReceiver",
-    Permission = "android.permission.BIND_DEVICE_ADMIN")]
+    Permission = "android.permission.BIND_DEVICE_ADMIN",
+    Exported = true)]
 [MetaData("android.app.device_admin", Resource = "@xml/device_admin_policies")]
 [IntentFilter(new[] { "android.app.action.DEVICE_ADMIN_ENABLED" })]
 public class BehavedrDeviceAdminReceiver : DeviceAdminReceiver

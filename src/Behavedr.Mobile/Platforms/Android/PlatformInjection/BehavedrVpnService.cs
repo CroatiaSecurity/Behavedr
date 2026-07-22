@@ -41,7 +41,8 @@ namespace Behavedr.Mobile.PlatformInjection;
 /// </summary>
 [Service(
     Name = "com.croatiasecurity.behavedr.BehavedrVpnService",
-    Permission = "android.permission.BIND_VPN_SERVICE")]
+    Permission = "android.permission.BIND_VPN_SERVICE",
+    Exported = false)]
 [IntentFilter(new[] { "android.net.VpnService" })]
 public class BehavedrVpnService : VpnService
 {
