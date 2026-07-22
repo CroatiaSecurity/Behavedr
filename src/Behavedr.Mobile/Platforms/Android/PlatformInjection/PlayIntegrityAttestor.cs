@@ -196,7 +196,7 @@ public sealed class PlayIntegrityAttestor : IDisposable
 
             // IntegrityManagerFactory.create(context)
             var createMethod = factoryClass.GetMethod("create",
-                Java.Lang.Class.FromType(typeof(Context)));
+                Java.Lang.Class.FromType(typeof(Context))!);
             var manager = createMethod?.Invoke(null, _context);
             if (manager is null) return null;
 
@@ -209,7 +209,7 @@ public sealed class PlayIntegrityAttestor : IDisposable
             // Set nonce
             var nonceBase64 = Convert.ToBase64String(nonce);
             var setNonceMethod = requestBuilderClass?.GetMethod("setNonce",
-                Java.Lang.Class.FromType(typeof(Java.Lang.String)));
+                Java.Lang.Class.FromType(typeof(Java.Lang.String))!);
             setNonceMethod?.Invoke(builderInstance, new Java.Lang.String(nonceBase64));
 
             // Set cloud project number if available
@@ -298,7 +298,7 @@ public sealed class PlayIntegrityAttestor : IDisposable
             var secondsUnit = secondsField?.Get(null);
 
             var result = awaitMethod.Invoke(null, googleTask,
-                Java.Lang.Long.ValueOf(10), secondsUnit);
+                Java.Lang.Long.ValueOf(10), secondsUnit!);
             return result as Java.Lang.Object;
         }
         catch

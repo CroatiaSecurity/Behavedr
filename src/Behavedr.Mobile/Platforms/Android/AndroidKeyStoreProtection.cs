@@ -1,4 +1,5 @@
 using Android.Security;
+using Android.Security.Keystore;
 using Java.Security;
 using Javax.Crypto;
 using Javax.Crypto.Spec;

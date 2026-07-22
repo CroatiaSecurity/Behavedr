@@ -1,4 +1,5 @@
 using Behavedr.Core.Security;
+using Android.Security.Keystore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -165,13 +166,13 @@ public static class KeystoreBridgeRegistration
     private static void CreateKeystoreKey(string keyAlias)
     {
         var keyGenerator = Javax.Crypto.KeyGenerator.GetInstance(
-            Android.Security.KeyProperties.KeyAlgorithmAes, "AndroidKeyStore");
+            KeyProperties.KeyAlgorithmAes, "AndroidKeyStore");
 
-        var specBuilder = new Android.Security.KeyGenParameterSpec.Builder(
+        var specBuilder = new KeyGenParameterSpec.Builder(
                 keyAlias,
-                Android.Security.KeyStorePurpose.Encrypt | Android.Security.KeyStorePurpose.Decrypt)
-            .SetBlockModes(Android.Security.KeyProperties.BlockModeGcm)
-            .SetEncryptionPaddings(Android.Security.KeyProperties.EncryptionPaddingNone)
+                KeyStorePurpose.Encrypt | KeyStorePurpose.Decrypt)
+            .SetBlockModes(KeyProperties.BlockModeGcm)
+            .SetEncryptionPaddings(KeyProperties.EncryptionPaddingNone)
             .SetKeySize(256)
             .SetRandomizedEncryptionRequired(true);
 
@@ -186,14 +187,14 @@ public static class KeystoreBridgeRegistration
                 _logger?.LogInformation("[KeystoreBridge] Created StrongBox-backed AES-256 key");
                 return;
             }
-            catch (Java.Security.StrongBoxUnavailableException)
+            catch (Java.Security.GeneralSecurityException)
             {
                 // StrongBox not available — fall back to TEE
-                specBuilder = new Android.Security.KeyGenParameterSpec.Builder(
+                specBuilder = new KeyGenParameterSpec.Builder(
                         keyAlias,
-                        Android.Security.KeyStorePurpose.Encrypt | Android.Security.KeyStorePurpose.Decrypt)
-                    .SetBlockModes(Android.Security.KeyProperties.BlockModeGcm)
-                    .SetEncryptionPaddings(Android.Security.KeyProperties.EncryptionPaddingNone)
+                        KeyStorePurpose.Encrypt | KeyStorePurpose.Decrypt)
+                    .SetBlockModes(KeyProperties.BlockModeGcm)
+                    .SetEncryptionPaddings(KeyProperties.EncryptionPaddingNone)
                     .SetKeySize(256)
                     .SetRandomizedEncryptionRequired(true);
             }

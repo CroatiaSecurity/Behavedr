@@ -190,7 +190,7 @@ public class BehavedrVpnService : VpnService
             {
                 Name = "BehavedrVPN-Packet",
                 IsBackground = true,
-                Priority = ThreadPriority.AboveNormal,
+                Priority = System.Threading.ThreadPriority.AboveNormal,
             };
             _packetThread.Start();
 

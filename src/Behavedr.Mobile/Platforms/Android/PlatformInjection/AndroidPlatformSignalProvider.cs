@@ -318,7 +318,9 @@ public sealed class AndroidPlatformSignalProvider : IDisposable
             // Install from unknown sources (pre-Oreo global, post-Oreo per-app)
             if (Build.VERSION.SdkInt < BuildVersionCodes.O)
             {
+#pragma warning disable CA1422
                 var unknownSources = Settings.Secure.GetInt(cr, Settings.Secure.InstallNonMarketApps, 0);
+#pragma warning restore CA1422
                 if (unknownSources == 1)
                 {
                     signals.Add(new Signal("unknown_sources_enabled", 45, 0.7));
@@ -422,14 +424,16 @@ public sealed class AndroidPlatformSignalProvider : IDisposable
         {
             if (Build.VERSION.SdkInt >= BuildVersionCodes.R)
             {
+#pragma warning disable CA1416
                 var installSource = pm.GetInstallSourceInfo(packageName);
                 return installSource?.InstallingPackageName;
+#pragma warning restore CA1416
             }
             else
             {
-#pragma warning disable CS0618 // Deprecated API for pre-R
+#pragma warning disable CS0618, CA1422
                 return pm.GetInstallerPackageName(packageName);
-#pragma warning restore CS0618
+#pragma warning restore CS0618, CA1422
             }
         }
         catch { return null; }

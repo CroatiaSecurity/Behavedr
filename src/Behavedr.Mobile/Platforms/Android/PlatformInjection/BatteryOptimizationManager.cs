@@ -73,7 +73,7 @@ public sealed class BatteryOptimizationManager
         try
         {
             var intent = new Intent(Settings.ActionRequestIgnoreBatteryOptimizations);
-            intent.SetData(Uri.Parse($"package:{_context.PackageName}"));
+            intent.SetData(Android.Net.Uri.Parse($"package:{_context.PackageName}"));
             intent.AddFlags(ActivityFlags.NewTask);
 
             if (activity is not null)

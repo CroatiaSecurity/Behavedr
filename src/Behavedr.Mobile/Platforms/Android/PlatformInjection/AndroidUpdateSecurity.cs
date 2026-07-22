@@ -135,7 +135,7 @@ public sealed class AndroidUpdateSecurity
             if (pm is null) return UpdateVerificationResult.Failed("PackageManager unavailable");
 
             var archiveInfo = pm.GetPackageArchiveInfo(apkPath,
-                PackageInfoFlags.Of(PackageManager.GetSigningCertificates));
+                (PackageInfoFlags)((long)PackageInfoFlags.SigningCertificates));
 
             if (archiveInfo is null)
                 return UpdateVerificationResult.Failed("Cannot parse APK archive");
@@ -177,13 +177,15 @@ public sealed class AndroidUpdateSecurity
             long updateVersionCode;
             if (Build.VERSION.SdkInt >= BuildVersionCodes.P)
             {
+#pragma warning disable CA1416
                 updateVersionCode = archiveInfo.LongVersionCode;
+#pragma warning restore CA1416
             }
             else
             {
-#pragma warning disable CS0618
+#pragma warning disable CS0618, CA1422
                 updateVersionCode = archiveInfo.VersionCode;
-#pragma warning restore CS0618
+#pragma warning restore CS0618, CA1422
             }
 
             var currentVersion = GetCurrentVersionCode();
@@ -310,10 +312,14 @@ public sealed class AndroidUpdateSecurity
             if (pkgInfo is null) return 0;
 
             if (Build.VERSION.SdkInt >= BuildVersionCodes.P)
+            {
+#pragma warning disable CA1416
                 return pkgInfo.LongVersionCode;
-#pragma warning disable CS0618
+#pragma warning restore CA1416
+            }
+#pragma warning disable CS0618, CA1422
             return pkgInfo.VersionCode;
-#pragma warning restore CS0618
+#pragma warning restore CS0618, CA1422
         }
         catch { return 0; }
     }
