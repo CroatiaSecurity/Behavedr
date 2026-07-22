@@ -7,6 +7,8 @@ using Behavedr.Core.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
+using Signal = Behavedr.Core.Models.Signal;
+
 namespace Behavedr.Mobile.PlatformInjection;
 
 /// <summary>

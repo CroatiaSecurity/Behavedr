@@ -7,6 +7,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
+using Signal = Behavedr.Core.Models.Signal;
+
 namespace Behavedr.Mobile.PlatformInjection;
 
 /// <summary>

@@ -12,6 +12,7 @@ permissions:
 jobs:
   desktop:
     name: Desktop (${{ matrix.rid }})
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

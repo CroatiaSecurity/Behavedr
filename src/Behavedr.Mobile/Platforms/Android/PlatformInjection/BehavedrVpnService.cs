@@ -9,6 +9,8 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 
+using Signal = Behavedr.Core.Models.Signal;
+
 namespace Behavedr.Mobile.PlatformInjection;
 
 /// <summary>

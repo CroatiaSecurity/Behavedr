@@ -9,6 +9,9 @@ using Behavedr.Core.Monitors;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
+using Application = Android.App.Application;
+using Signal = Behavedr.Core.Models.Signal;
+
 namespace Behavedr.Mobile.PlatformInjection;
 
 /// <summary>
