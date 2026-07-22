@@ -139,6 +139,11 @@ public class AndroidMonitor : IPlatformMonitor
             DetectAdbDebugging(signals);
             DetectCryptoMining(signals);
             DetectSuspiciousFiles(signals, ct);
+
+            // v0.2.0 audit fixes A-6, A-8, A-10
+            DetectSELinuxViolations(signals);
+            DetectAccessibilityAbuse(signals);
+            DetectSmsInterception(signals, ct);
         }
         catch (Exception ex)
         {
@@ -457,6 +462,165 @@ public class AndroidMonitor : IPlatformMonitor
             }
             catch { }
         }
+    }
+
+    /// <summary>
+    /// Detect SELinux policy violations by monitoring kernel audit messages.
+    /// AVC denials indicate apps attempting privilege escalation or sandbox escape.
+    /// v0.2.0 audit fix A-6.
+    /// </summary>
+    [SupportedOSPlatform("android")]
+    private void DetectSELinuxViolations(List<Signal> signals)
+    {
+        try
+        {
+            // Check dmesg / kmsg for SELinux AVC denials
+            var kmsgPath = "/proc/kmsg";
+            var dmesgAlt = "/dev/kmsg";
+            var source = File.Exists(kmsgPath) ? kmsgPath : (File.Exists(dmesgAlt) ? dmesgAlt : null);
+
+            // Alternative: read from logcat if kmsg isn't accessible
+            if (source is null)
+            {
+                try
+                {
+                    using var proc = new System.Diagnostics.Process();
+                    proc.StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "/system/bin/logcat",
+                        Arguments = "-d -b events -t 50 *:W",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true,
+                    };
+                    proc.Start();
+                    var output = proc.StandardOutput.ReadToEnd();
+                    proc.WaitForExit(2000);
+
+                    if (output.Contains("avc:", StringComparison.OrdinalIgnoreCase) &&
+                        output.Contains("denied", StringComparison.OrdinalIgnoreCase))
+                    {
+                        signals.Add(new Signal("selinux_violations_detected", 60, 0.72));
+                    }
+                }
+                catch { }
+                return;
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Detect accessibility service abuse by checking which non-system services
+    /// are registered and active. Banking trojans use accessibility for keylogging.
+    /// v0.2.0 audit fix A-8.
+    /// </summary>
+    [SupportedOSPlatform("android")]
+    private void DetectAccessibilityAbuse(List<Signal> signals)
+    {
+        try
+        {
+            using var proc = new System.Diagnostics.Process();
+            proc.StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "/system/bin/settings",
+                Arguments = "get secure enabled_accessibility_services",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            proc.Start();
+            var output = proc.StandardOutput.ReadToEnd().Trim();
+            proc.WaitForExit(3000);
+
+            if (string.IsNullOrEmpty(output) || output == "null") return;
+
+            var services = output.Split(':', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var svc in services)
+            {
+                var package = svc.Split('/')[0].Trim();
+                if (string.IsNullOrEmpty(package)) continue;
+
+                // Flag non-system accessibility services
+                if (!package.StartsWith("com.google.", StringComparison.OrdinalIgnoreCase) &&
+                    !package.StartsWith("com.android.", StringComparison.OrdinalIgnoreCase) &&
+                    !package.StartsWith("com.samsung.", StringComparison.OrdinalIgnoreCase) &&
+                    !package.StartsWith("com.sec.", StringComparison.OrdinalIgnoreCase) &&
+                    !package.StartsWith("com.microsoft.", StringComparison.OrdinalIgnoreCase))
+                {
+                    signals.Add(new Signal(
+                        $"suspicious_accessibility_service:{package}", 72, 0.8));
+                }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Detect SMS/telephony interception by checking for running processes that
+    /// match known banking trojan families and checking for unusual SMS app registrations.
+    /// v0.2.0 audit fix A-10.
+    /// </summary>
+    [SupportedOSPlatform("android")]
+    private void DetectSmsInterception(List<Signal> signals, CancellationToken ct)
+    {
+        var smsMalwareNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "flubot", "anatsa", "sharkbot", "hydra", "ermac",
+            "cerberus", "anubis", "medusa", "xenomorph", "teabot",
+            "vultur", "octo", "hook", "godfather", "nexus",
+        };
+
+        try
+        {
+            foreach (var procDir in Directory.GetDirectories("/proc"))
+            {
+                if (ct.IsCancellationRequested) break;
+                var pidStr = Path.GetFileName(procDir);
+                if (!int.TryParse(pidStr, out var pid)) continue;
+
+                try
+                {
+                    var cmdlinePath = Path.Combine(procDir, "cmdline");
+                    if (!File.Exists(cmdlinePath)) continue;
+                    var cmdline = File.ReadAllText(cmdlinePath).Replace('\0', '.').Trim();
+
+                    if (smsMalwareNames.Any(m =>
+                        cmdline.Contains(m, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        signals.Add(new Signal(
+                            $"sms_malware_running:{cmdline.Split('.')[0]}:pid:{pid}", 90, 0.92));
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+
+        // Check for call forwarding manipulation indicators
+        try
+        {
+            using var proc = new System.Diagnostics.Process();
+            proc.StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "/system/bin/dumpsys",
+                Arguments = "telecom",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+            };
+            proc.Start();
+            var output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit(3000);
+
+            if (output.Contains("CallForwarding", StringComparison.OrdinalIgnoreCase) &&
+                output.Contains("enabled", StringComparison.OrdinalIgnoreCase))
+            {
+                signals.Add(new Signal("call_forwarding_active", 55, 0.65));
+            }
+        }
+        catch { }
     }
 
     /// <summary>

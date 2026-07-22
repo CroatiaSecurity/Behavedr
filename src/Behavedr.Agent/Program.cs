@@ -93,6 +93,12 @@ try
     {
         builder.Services.AddSingleton<LinuxNetworkIsolation>();
     }
+
+    // v0.2.0: Android response engine (kill/isolate/force-stop)
+    if (OperatingSystem.IsAndroid())
+    {
+        builder.Services.AddSingleton<AndroidResponseEngine>();
+    }
     builder.Services.AddSingleton<ChainTracer>(sp =>
         new ChainTracer(PlatformMonitors.SharedAncestryCache,
             sp.GetService<ILogger<ChainTracer>>()));
@@ -148,6 +154,12 @@ try
     if (OperatingSystem.IsLinux())
     {
         responseEngine.RegisterAction(host.Services.GetRequiredService<LinuxNetworkIsolation>());
+    }
+
+    // v0.2.0: Register Android response engine
+    if (OperatingSystem.IsAndroid())
+    {
+        responseEngine.RegisterAction(host.Services.GetRequiredService<AndroidResponseEngine>());
     }
 
     await host.RunAsync();

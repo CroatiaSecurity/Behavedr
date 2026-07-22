@@ -35,11 +35,21 @@ public static class KeyProtection
     /// - Windows: DPAPI (LocalMachine scope)
     /// - Linux: Kernel keyring (key lives in kernel memory, not on disk)
     /// - macOS: Keychain Services (key in System Keychain, backed by Secure Enclave)
+    /// - Android: Android Keystore (hardware-backed TEE/StrongBox)
     /// - Fallback: File with chmod 600
     /// On first call with a legacy (unprotected) key, upgrades to best available protection.
     /// </summary>
     public static byte[] GetMachineKey()
     {
+        // Android: Try Android Keystore first (hardware-backed, key never leaves TEE)
+        // v0.2.0 audit fix A-3
+        if (OperatingSystem.IsAndroid())
+        {
+            var keystoreKey = TryGetKeyFromAndroidKeystore();
+            if (keystoreKey is not null)
+                return keystoreKey;
+        }
+
         // Linux: Try kernel keyring first (key never touches disk)
         if (OperatingSystem.IsLinux())
         {
@@ -556,5 +566,105 @@ public static class KeyProtection
         {
             return false;
         }
+    }
+
+    // =========================================================================
+    // Android Keystore Integration (v0.2.0 Audit Fix A-3)
+    // =========================================================================
+    // Uses Android Keystore System for hardware-backed key storage via TEE/StrongBox.
+    // The key wrapping approach:
+    //   1. A hardware-backed AES key is created in Android Keystore (never extractable)
+    //   2. Our 32-byte machine key is encrypted with the hardware key
+    //   3. The ciphertext is stored on disk (useless without the hardware key)
+    //   4. On load: decrypt ciphertext with hardware key to recover machine key
+    //
+    // This requires the MAUI Android platform layer to register bridge callbacks
+    // that invoke java.security.KeyStore APIs. If the bridge is not registered
+    // (e.g., running on non-MAUI Android or test environment), falls back to
+    // file-based storage with chmod 600.
+    // =========================================================================
+
+    private const string AndroidKeystorePrefix = "ANDROID_KS:";
+    private const string AndroidWrappedKeyFile = ".behavedr-key-wrapped";
+
+    /// <summary>
+    /// Try to retrieve the machine key using Android Keystore hardware-backed encryption.
+    /// The actual key material is encrypted by a TEE-bound key and stored on disk.
+    /// Returns null if Android Keystore bridge is not available or key doesn't exist.
+    /// </summary>
+    [SupportedOSPlatform("android")]
+    private static byte[]? TryGetKeyFromAndroidKeystore()
+    {
+        // Check if the platform bridge is registered
+        if (AndroidKeystoreBridge.DecryptFunc is null || AndroidKeystoreBridge.EncryptFunc is null)
+            return null;
+
+        try
+        {
+            var keyDir = GetKeyDirectory();
+            var wrappedKeyPath = Path.Combine(keyDir, AndroidWrappedKeyFile);
+
+            if (File.Exists(wrappedKeyPath))
+            {
+                var content = File.ReadAllText(wrappedKeyPath).Trim();
+                if (content.StartsWith(AndroidKeystorePrefix, StringComparison.Ordinal))
+                {
+                    var ciphertext = Convert.FromBase64String(
+                        content[AndroidKeystorePrefix.Length..]);
+                    var plaintext = AndroidKeystoreBridge.Decrypt(ciphertext);
+                    if (plaintext is not null && plaintext.Length == 32)
+                        return plaintext;
+                }
+            }
+
+            // Generate new key and wrap with hardware keystore
+            var newKey = RandomNumberGenerator.GetBytes(32);
+            var encrypted = AndroidKeystoreBridge.Encrypt(newKey);
+            if (encrypted is not null)
+            {
+                Directory.CreateDirectory(keyDir);
+                var tempPath = wrappedKeyPath + ".tmp." + Guid.NewGuid().ToString("N")[..8];
+                try
+                {
+                    File.WriteAllText(tempPath, AndroidKeystorePrefix + Convert.ToBase64String(encrypted));
+                    File.SetUnixFileMode(tempPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                    File.Move(tempPath, wrappedKeyPath, overwrite: true);
+                }
+                catch
+                {
+                    File.WriteAllText(wrappedKeyPath, AndroidKeystorePrefix + Convert.ToBase64String(encrypted));
+                    try { File.SetUnixFileMode(wrappedKeyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { }
+                }
+                finally
+                {
+                    try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                }
+                return newKey;
+            }
+        }
+        catch { }
+
+        return null; // Fall back to file-based storage
+    }
+
+    /// <summary>
+    /// Bridge to Android Keystore operations (registered by MAUI platform layer at startup).
+    /// The MAUI Android project registers implementations that call:
+    /// - KeyStore.getInstance("AndroidKeyStore")
+    /// - KeyGenerator with KeyGenParameterSpec (AES/GCM, StrongBox-backed if available)
+    /// - Cipher.getInstance("AES/GCM/NoPadding") for encrypt/decrypt
+    ///
+    /// If these are not registered, Android falls back to file-based key storage.
+    /// </summary>
+    internal static class AndroidKeystoreBridge
+    {
+        /// <summary>Encrypt plaintext with hardware-backed AES key. Set by MAUI Android layer.</summary>
+        public static Func<byte[], byte[]?>? EncryptFunc { get; set; }
+
+        /// <summary>Decrypt ciphertext with hardware-backed AES key. Set by MAUI Android layer.</summary>
+        public static Func<byte[], byte[]?>? DecryptFunc { get; set; }
+
+        public static byte[]? Encrypt(byte[] data) => EncryptFunc?.Invoke(data);
+        public static byte[]? Decrypt(byte[] data) => DecryptFunc?.Invoke(data);
     }
 }

@@ -127,6 +127,12 @@ public static class PlatformMonitors
 
             // v0.1.8: Android self-protection (anti-debug, Frida, repackaging, emulator)
             monitors.Add(new AndroidSelfProtection());
+
+            // v0.2.0: Android audit fixes — real-time events, memory, credentials, anti-tamper
+            monitors.Add(new AndroidProcessConnector());
+            monitors.Add(new AndroidMemoryAnalyzer());
+            monitors.Add(new AndroidCredentialMonitor());
+            monitors.Add(new AndroidAntiTamperGuard());
         }
 
         // v0.1.5: iOS full detection suite

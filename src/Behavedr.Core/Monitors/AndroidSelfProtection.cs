@@ -73,6 +73,9 @@ public class AndroidSelfProtection : IPlatformMonitor
         // 7. Magisk Hide targeting our process
         DetectRootCloaking(signals);
 
+        // 8. v0.2.0: Advanced instrumentation detection (timing-based)
+        DetectInstrumentationAdvanced(signals);
+
         return Task.FromResult<IEnumerable<Signal>>(signals);
     }
 
@@ -262,6 +265,97 @@ public class AndroidSelfProtection : IPlatformMonitor
                     signals.Add(new Signal("xposed_framework_detected", 85, 0.9));
                     break;
                 }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Advanced instrumentation detection using timing-based analysis.
+    /// Frida 16+ can bypass string-based detection by renaming libraries/threads.
+    /// Timing-based detection measures syscall overhead — Frida hooks add 50-200us latency.
+    /// v0.2.0 audit fix A-12.
+    /// </summary>
+    [SupportedOSPlatform("android")]
+    private void DetectInstrumentationAdvanced(List<Signal> signals)
+    {
+        // Timing-based hook detection: measure syscall overhead
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < 1000; i++)
+            {
+                _ = File.Exists("/proc/self/status");
+            }
+            sw.Stop();
+            var avgUs = sw.Elapsed.TotalMicroseconds / 1000;
+
+            // Normal: 1-10us per call. Frida-hooked: 50-200us per call.
+            if (avgUs > 50)
+            {
+                signals.Add(new Signal(
+                    $"instrumentation_timing_anomaly:{avgUs:F0}us_per_syscall", 80, 0.85));
+                _logger.LogCritical(
+                    "[AndroidSelfProtection] Timing anomaly detected ({Avg:F0}us/call) — possible instrumentation",
+                    avgUs);
+            }
+        }
+        catch { }
+
+        // Check for unexpected writable+executable memory regions (Frida JIT)
+        try
+        {
+            var mapsPath = "/proc/self/maps";
+            if (!File.Exists(mapsPath)) return;
+
+            int rwxCount = 0;
+            foreach (var line in File.ReadLines(mapsPath))
+            {
+                // Frida's V8/QuickJS JIT creates rwx regions
+                if (line.Contains("rwxp", StringComparison.Ordinal))
+                {
+                    // Filter out known-good (ART JIT)
+                    if (!line.Contains("jit-code-cache", StringComparison.OrdinalIgnoreCase) &&
+                        !line.Contains("[anon:dalvik-", StringComparison.OrdinalIgnoreCase))
+                    {
+                        rwxCount++;
+                    }
+                }
+            }
+
+            if (rwxCount > 2)
+            {
+                signals.Add(new Signal(
+                    $"suspicious_rwx_regions:{rwxCount}", 78, 0.83));
+            }
+        }
+        catch { }
+
+        // Check /proc/self/fd for unexpected network sockets (Frida server comms)
+        try
+        {
+            var fdDir = "/proc/self/fd";
+            if (!Directory.Exists(fdDir)) return;
+
+            int socketCount = 0;
+            foreach (var fd in Directory.GetFiles(fdDir))
+            {
+                try
+                {
+                    var target = File.ResolveLinkTarget(fd, returnFinalTarget: false)?.ToString();
+                    if (target is not null && target.StartsWith("socket:", StringComparison.Ordinal))
+                    {
+                        socketCount++;
+                    }
+                }
+                catch { }
+            }
+
+            // Normal app: 2-5 sockets. Frida-instrumented: 8+
+            if (socketCount > 8)
+            {
+                signals.Add(new Signal(
+                    $"excessive_sockets:{socketCount}", 60, 0.7));
             }
         }
         catch { }

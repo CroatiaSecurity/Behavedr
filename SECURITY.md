@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.7   | Yes       |
-| < 0.1.7 | No        |
+| 0.2.0   | Yes       |
+| < 0.2.0 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
@@ -103,6 +103,24 @@ We will credit reporters in release notes unless anonymity is preferred. We do n
 | Linux syscall filtering | Service-level | Blocks mount/reboot/swap/obsolete syscalls |
 | Linux nftables rate limiting | On response | Max 100 isolation rules (prevents DoS) |
 | Memory secret zeroing | On use | CryptographicOperations.ZeroMemory after key derivation |
+
+### Android Self-Protection Mechanisms (v0.2.0)
+
+| Mechanism | Check Interval | Description |
+|-----------|---------------|-------------|
+| Debugger detection | Each cycle | TracerPid + managed Debugger.IsAttached |
+| Frida/instrumentation | Each cycle | Maps scanning, port check, thread names, timing analysis |
+| APK integrity | Each cycle | SHA-256 baseline comparison |
+| Emulator detection | Each cycle | Build.prop, QEMU files, cpuinfo analysis |
+| Root cloaking bypass | Each cycle | Magisk Hide/DenyList detection |
+| Native hook detection | Each cycle | /proc/self/maps suspicious .so analysis |
+| Suspension detection | Each cycle | Monotonic clock gap (TickCount64) |
+| Process connector | Real-time | inotify /proc for immediate process spawn detection |
+| Memory analysis | 10s | RWX regions, memfd, suspicious library loading |
+| Credential monitoring | 10s | Accessibility abuse, banking trojans, clipboard |
+| Anti-tamper guard | 10s | OOM adj, binary integrity, data directory health |
+| Response engine | On detection | kill -9 (root), iptables isolation, force-stop |
+| Key protection | Startup | Android Keystore TEE/StrongBox hardware-backed encryption |
 
 ### Supply Chain Controls
 

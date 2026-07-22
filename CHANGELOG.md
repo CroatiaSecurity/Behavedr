@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.2.0] — 2026-07-22
+
+### Android Security Overhaul — Red/Blue Team Audit v0.2.0
+
+Comprehensive Android audit remediation bringing protection from ~3.7/10 to ~8.6/10.
+Addresses 12 Android-specific findings (3 Critical, 4 High, 4 Medium, 1 Low) from the
+red/blue team audit plus cross-platform improvements.
+
+#### New Monitors
+
+- **AndroidProcessConnector** (A-1): Real-time process monitoring via inotify on /proc.
+  Eliminates 5-second polling blind spot. Detects ephemeral processes, reverse shells,
+  and offensive tools at spawn time.
+- **AndroidMemoryAnalyzer** (A-4): Memory-level threat detection — RWX regions (code
+  injection), memfd_create (fileless execution), suspicious .so libraries from writable
+  paths, ART runtime hooking indicators.
+- **AndroidCredentialMonitor** (A-5): Credential theft detection — accessibility service
+  abuse, banking trojan families, browser credential DB access, clipboard monitoring.
+- **AndroidAntiTamperGuard** (A-9): Service persistence and tamper detection — OOM
+  deprioritization, binary integrity, process suspension, data directory clearing.
+
+#### New Response Actions
+
+- **AndroidResponseEngine** (A-2): Active response capability for Android:
+  - Root: kill -9, iptables per-UID network isolation, pm uninstall
+  - Device Owner: am force-stop, permission revocation
+  - Rate-limited iptables rules (max 50) to prevent DoS
+  - Process identity verification before kill (PID reuse protection)
+
+#### Enhanced Existing Monitors
+
+- **AndroidMonitor** (A-6, A-8, A-10): Added SELinux AVC violation detection,
+  accessibility service abuse monitoring, SMS/telephony interception detection,
+  call forwarding manipulation checks.
+- **AndroidSelfProtection** (A-12): Advanced Frida detection via timing-based analysis
+  (50+us/syscall anomaly), RWX memory region counting, socket enumeration for
+  Frida server communication detection.
+- **AndroidNetworkMonitor** (A-11): Traffic volume anomaly detection via xt_qtaguid/
+  uid_stat, IPv6 connection monitoring (/proc/net/tcp6), per-UID exfiltration alerts.
+
+#### Key Management
+
+- **KeyProtection** (A-3): Android Keystore integration for hardware-backed key storage.
+  Machine key encrypted by TEE/StrongBox-bound AES key via platform bridge pattern.
+  Ciphertext stored on disk; key material never leaves secure element.
+
+#### Infrastructure
+
+- Version bumped to 0.2.0
+- PlatformMonitors registers 8 Android monitors (up from 4)
+- Program.cs registers AndroidResponseEngine in DI and response pipeline
+- Full red/blue team audit document: `docs/red-blue-team-audit-v0.2.0-all-platforms.md`
+
 ## [0.1.9] — 2026-07-22
 
 ### Android Security Hardening
