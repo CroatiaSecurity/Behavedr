@@ -183,7 +183,7 @@ public sealed class DeviceOwnerManager
                 // API 30+: setPermissionGrantState
                 var result = _dpm!.SetPermissionGrantState(
                     _adminReceiver, packageName, permission,
-                    2); // DevicePolicyManager.PERMISSION_GRANT_STATE_DENIED = 2
+                    Android.App.Admin.PermissionGrantState.Denied);
 
                 if (result)
                 {
