@@ -34,8 +34,15 @@ jobs:
       shell: bash
       run: |
         TAG="${GITHUB_REF_NAME}"
+        if [[ "$TAG" == v* ]]; then
+          VERSION="${TAG#v}"
+        else
+          # workflow_dispatch on a branch — read version from Directory.Build.props
+          VERSION=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props | head -1)
+          TAG="v${VERSION}"
+        fi
         echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-        echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+        echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
     - name: Setup .NET
       uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9  # v4.3.1
@@ -158,8 +165,15 @@ jobs:
       shell: bash
       run: |
         TAG="${GITHUB_REF_NAME}"
+        if [[ "$TAG" == v* ]]; then
+          VERSION="${TAG#v}"
+        else
+          # workflow_dispatch on a branch — read version from Directory.Build.props
+          VERSION=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props | head -1)
+          TAG="v${VERSION}"
+        fi
         echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-        echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+        echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
     - name: Setup .NET
       uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9  # v4.3.1
