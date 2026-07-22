@@ -183,7 +183,7 @@ public sealed class DeviceOwnerManager
                 // API 30+: setPermissionGrantState
                 var result = _dpm!.SetPermissionGrantState(
                     _adminReceiver, packageName, permission,
-                    DevicePolicyManager.PermissionGrantStateDenied);
+                    (int)Android.App.Admin.DevicePolicyManager.PermissionGrantState.Denied);
 
                 if (result)
                 {
@@ -261,10 +261,10 @@ public sealed class DeviceOwnerManager
         try
         {
             var flags = workProfileOnly
-                ? DevicePolicyManager.WipeExternalStorage
-                : DevicePolicyManager.WipeExternalStorage | DevicePolicyManager.WipeResetProtectionData;
+                ? WipeDataFlags.WipeExternalStorage
+                : WipeDataFlags.WipeExternalStorage | WipeDataFlags.WipeResetProtectionData;
 
-            _dpm!.WipeData((WipeDataFlags)flags);
+            _dpm!.WipeData(flags);
             return ResponseResult.Ok("Wipe initiated");
         }
         catch (Exception ex)
@@ -384,7 +384,7 @@ public class BehavedrDeviceAdminReceiver : DeviceAdminReceiver
         try
         {
             var logDir = Path.Combine(
-                Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
                 "logs");
             Directory.CreateDirectory(logDir);
             var logPath = Path.Combine(logDir, "dpm-forensic.log");

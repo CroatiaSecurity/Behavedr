@@ -4,6 +4,8 @@ using Android.Content.PM;
 using Android.OS;
 using Behavedr.Mobile.PlatformInjection;
 
+using Environment = System.Environment;
+
 namespace Behavedr.Mobile;
 
 /// <summary>
