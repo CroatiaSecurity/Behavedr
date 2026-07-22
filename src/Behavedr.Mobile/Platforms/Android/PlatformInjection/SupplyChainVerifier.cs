@@ -126,20 +126,21 @@ public sealed class SupplyChainVerifier
 #pragma warning disable CA1416
                 pkgInfo = pm.GetPackageInfo(_context.PackageName!,
                     (PackageInfoFlags)((long)PackageInfoFlags.SigningCertificates));
-#pragma warning restore CA1416
 
                 var signingInfo = pkgInfo?.SigningInfo;
                 if (signingInfo is null)
                 {
                     signals.Add(new Signal("supply_chain:no_signing_info", 90, 0.95));
+#pragma warning restore CA1416
                     return;
                 }
 
                 var signers = signingInfo.HasMultipleSigners
-                    ? signingInfo.GetApkContentsSigners()
-                    : signingInfo.GetSigningCertificateHistory();
+                    ? signingInfo.GetApkContentsSigners()?.ToArray()
+                    : signingInfo.GetSigningCertificateHistory()?.ToArray();
+#pragma warning restore CA1416
 
-                if (signers is null || signers.Count == 0)
+                if (signers is null || signers.Length == 0)
                 {
                     signals.Add(new Signal("supply_chain:no_signers", 90, 0.95));
                     return;
@@ -169,7 +170,7 @@ public sealed class SupplyChainVerifier
             else
             {
                 // Pre-P: Use deprecated GET_SIGNATURES
-#pragma warning disable CS0618
+#pragma warning disable CS0618, CA1422
                 pkgInfo = pm.GetPackageInfo(_context.PackageName!,
                     PackageInfoFlags.Signatures);
 
@@ -199,7 +200,7 @@ public sealed class SupplyChainVerifier
                 {
                     signals.Add(new Signal("supply_chain:untrusted_signer", 95, 0.98));
                 }
-#pragma warning restore CS0618
+#pragma warning restore CS0618, CA1422
             }
         }
         catch (Exception ex)
@@ -377,19 +378,19 @@ public sealed class SupplyChainVerifier
 #pragma warning disable CA1416
                 pkgInfo = pm.GetPackageInfo(_context.PackageName!,
                     (PackageInfoFlags)((long)PackageInfoFlags.SigningCertificates));
-#pragma warning restore CA1416
                 var signingInfo = pkgInfo?.SigningInfo;
                 sigs = signingInfo?.HasMultipleSigners == true
                     ? signingInfo.GetApkContentsSigners()?.ToArray()
                     : signingInfo?.GetSigningCertificateHistory()?.ToArray();
+#pragma warning restore CA1416
             }
             else
             {
-#pragma warning disable CS0618
+#pragma warning disable CS0618, CA1422
                 pkgInfo = pm.GetPackageInfo(_context.PackageName!,
                     PackageInfoFlags.Signatures);
                 sigs = pkgInfo?.Signatures?.ToArray();
-#pragma warning restore CS0618
+#pragma warning restore CS0618, CA1422
             }
 
             if (sigs is null) return;

@@ -69,12 +69,12 @@ public static class WorkManagerWatchdog
                 return true;
             }
 
-            var componentName = new ComponentName(context, Java.Lang.Class.FromType(typeof(WatchdogJobService))!);
+            var componentName = new ComponentName(context, Java.Lang.Class.FromType(typeof(WatchdogJobService))!)!;
 
             var jobInfo = new Android.App.Job.JobInfo.Builder(WatchdogJobId, componentName)
-                .SetPeriodic(IntervalMs) // Every 15 minutes
-                .SetPersisted(true) // Survive reboots
-                .SetRequiredNetworkType(Android.App.Job.NetworkType.None) // No network needed
+                .SetPeriodic(IntervalMs)! // Every 15 minutes
+                .SetPersisted(true)! // Survive reboots
+                .SetRequiredNetworkType(Android.App.Job.NetworkType.None)! // No network needed
                 .Build();
 
             var result = jobScheduler.Schedule(jobInfo!);

@@ -134,6 +134,7 @@ public sealed class AndroidUpdateSecurity
             var pm = _context.PackageManager;
             if (pm is null) return UpdateVerificationResult.Failed("PackageManager unavailable");
 
+#pragma warning disable CA1416
             var archiveInfo = pm.GetPackageArchiveInfo(apkPath,
                 (PackageInfoFlags)((long)PackageInfoFlags.SigningCertificates));
 
@@ -146,8 +147,9 @@ public sealed class AndroidUpdateSecurity
                 return UpdateVerificationResult.Failed("No signing info in APK");
 
             var signers = signingInfo.HasMultipleSigners
-                ? signingInfo.GetApkContentsSigners()
-                : signingInfo.GetSigningCertificateHistory();
+                ? signingInfo.GetApkContentsSigners()?.ToArray()
+                : signingInfo.GetSigningCertificateHistory()?.ToArray();
+#pragma warning restore CA1416
 
             if (signers is null || signers.Length == 0)
                 return UpdateVerificationResult.Failed("No signers in APK");

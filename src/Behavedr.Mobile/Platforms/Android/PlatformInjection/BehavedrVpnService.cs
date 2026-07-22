@@ -167,7 +167,9 @@ public class BehavedrVpnService : VpnService
             // On API 29+, set metered to avoid affecting user data warnings
             if (Build.VERSION.SdkInt >= BuildVersionCodes.Q)
             {
+#pragma warning disable CA1416
                 builder.SetMetered(false);
+#pragma warning restore CA1416
             }
 
             // Exclude ourselves from VPN to prevent routing loops

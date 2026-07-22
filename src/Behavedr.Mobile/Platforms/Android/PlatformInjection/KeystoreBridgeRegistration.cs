@@ -1,4 +1,4 @@
-using Behavedr.Core.Security;
+using CoreKeyProtection = Behavedr.Core.Security.KeyProtection;
 using Android.Security.Keystore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -45,7 +45,7 @@ public static class KeystoreBridgeRegistration
             }
 
             // Register the encrypt callback
-            KeyProtection.AndroidKeystoreBridge.EncryptFunc = (plaintext) =>
+            CoreKeyProtection.AndroidKeystoreBridge.EncryptFunc = (plaintext) =>
             {
                 try
                 {
@@ -59,7 +59,7 @@ public static class KeystoreBridgeRegistration
             };
 
             // Register the decrypt callback
-            KeyProtection.AndroidKeystoreBridge.DecryptFunc = (ciphertext) =>
+            CoreKeyProtection.AndroidKeystoreBridge.DecryptFunc = (ciphertext) =>
             {
                 try
                 {
@@ -181,7 +181,9 @@ public static class KeystoreBridgeRegistration
         {
             try
             {
+#pragma warning disable CA1416
                 specBuilder.SetIsStrongBoxBacked(true);
+#pragma warning restore CA1416
                 keyGenerator!.Init(specBuilder.Build());
                 keyGenerator.GenerateKey();
                 _logger?.LogInformation("[KeystoreBridge] Created StrongBox-backed AES-256 key");

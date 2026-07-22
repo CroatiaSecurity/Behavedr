@@ -216,7 +216,7 @@ public sealed class PlayIntegrityAttestor : IDisposable
             if (_cloudProjectNumber > 0)
             {
                 var setProjectMethod = requestBuilderClass?.GetMethod("setCloudProjectNumber",
-                    Java.Lang.Long.Type);
+                    Java.Lang.Long.Type!);
                 setProjectMethod?.Invoke(builderInstance,
                     Java.Lang.Long.ValueOf(_cloudProjectNumber));
             }
@@ -270,9 +270,9 @@ public sealed class PlayIntegrityAttestor : IDisposable
             // Use Tasks.await() with timeout
             var tasksClass = Java.Lang.Class.ForName("com.google.android.gms.tasks.Tasks");
             var awaitMethod = tasksClass?.GetMethod("await",
-                Java.Lang.Class.ForName("com.google.android.gms.tasks.Task"),
-                Java.Lang.Long.Type,
-                Java.Lang.Class.ForName("java.util.concurrent.TimeUnit"));
+                Java.Lang.Class.ForName("com.google.android.gms.tasks.Task")!,
+                Java.Lang.Long.Type!,
+                Java.Lang.Class.ForName("java.util.concurrent.TimeUnit")!);
 
             if (awaitMethod is null)
             {
