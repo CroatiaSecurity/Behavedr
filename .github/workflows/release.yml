@@ -38,7 +38,7 @@ jobs:
           VERSION="${TAG#v}"
         else
           # workflow_dispatch on a branch — read version from Directory.Build.props
-          VERSION=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props | head -1)
+          VERSION=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -1)
           TAG="v${VERSION}"
         fi
         echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -169,7 +169,7 @@ jobs:
           VERSION="${TAG#v}"
         else
           # workflow_dispatch on a branch — read version from Directory.Build.props
-          VERSION=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props | head -1)
+          VERSION=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -1)
           TAG="v${VERSION}"
         fi
         echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
