@@ -34,17 +34,54 @@ public sealed class SupplyChainVerifier
     private readonly Context _context;
     private readonly ILogger _logger;
 
-    // Expected signing certificate SHA-256 fingerprints.
-    // In production, these are the SPKI hashes of your release signing key.
-    // Generate with: keytool -list -v -keystore your.keystore | grep SHA256
-    // Or: apksigner verify --print-certs app.apk
-    private static readonly HashSet<string> TrustedCertFingerprints = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>
+    /// Expected signing certificate SHA-256 fingerprints (hex, no colons).
+    /// Configure via <c>BEHAVEDR_ANDROID_CERT_SHA256</c> (comma-separated) and/or
+    /// compile-time embeds below. Empty set = pin not configured (fail-closed signal).
+    /// Generate: <c>apksigner verify --print-certs app.apk</c> then strip colons.
+    /// </summary>
+    private static readonly HashSet<string> TrustedCertFingerprints = LoadTrustedFingerprints();
+
+    private static HashSet<string> LoadTrustedFingerprints()
     {
-        // Release key fingerprint (replace with actual production key hash)
-        "PLACEHOLDER_RELEASE_KEY_SHA256_FINGERPRINT_HERE",
-        // Upload key fingerprint (if using Google Play App Signing)
-        "PLACEHOLDER_UPLOAD_KEY_SHA256_FINGERPRINT_HERE",
-    };
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Optional compile-time pins (leave empty until you have real release certs).
+        // Do NOT put PLACEHOLDER strings here — they would look like trust and are rejected.
+        foreach (var builtIn in new[]
+        {
+            // "YOUR_RELEASE_CERT_SHA256_HEX",
+            // "YOUR_PLAY_UPLOAD_CERT_SHA256_HEX",
+        })
+        {
+            AddFingerprint(set, builtIn);
+        }
+
+        var env = Environment.GetEnvironmentVariable("BEHAVEDR_ANDROID_CERT_SHA256");
+        if (!string.IsNullOrWhiteSpace(env))
+        {
+            foreach (var part in env.Split([',', ';', ' ', '\n', '\r', '\t'],
+                         StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                AddFingerprint(set, part);
+        }
+        return set;
+    }
+
+    private static void AddFingerprint(HashSet<string> set, string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return;
+        if (raw.Contains("PLACEHOLDER", StringComparison.OrdinalIgnoreCase)) return;
+        var n = NormalizeFingerprint(raw);
+        if (n.Length >= 32) // SHA-256 hex is 64; allow shorter only if operator error but skip junk
+            set.Add(n);
+    }
+
+    private static string NormalizeFingerprint(string raw) =>
+        raw.Replace(":", "", StringComparison.Ordinal)
+           .Replace(" ", "", StringComparison.Ordinal)
+           .Trim()
+           .ToUpperInvariant();
+
+    public static bool IsSignerPinConfigured => TrustedCertFingerprints.Count > 0;
 
     // Trusted installer packages (sources allowed to install Behavedr)
     private static readonly HashSet<string> TrustedInstallers = new(StringComparer.OrdinalIgnoreCase)
@@ -146,26 +183,7 @@ public sealed class SupplyChainVerifier
                     return;
                 }
 
-                bool foundTrusted = false;
-                foreach (var sig in signers)
-                {
-                    var certBytes = sig?.ToByteArray();
-                    if (certBytes is null) continue;
-
-                    var fingerprint = Convert.ToHexString(SHA256.HashData(certBytes));
-                    if (TrustedCertFingerprints.Contains(fingerprint) ||
-                        TrustedCertFingerprints.Contains("PLACEHOLDER_RELEASE_KEY_SHA256_FINGERPRINT_HERE"))
-                    {
-                        foundTrusted = true;
-                        break;
-                    }
-                }
-
-                if (!foundTrusted && !TrustedCertFingerprints.Any(f => f.StartsWith("PLACEHOLDER")))
-                {
-                    signals.Add(new Signal("supply_chain:untrusted_signer", 95, 0.98));
-                    _logger.LogCritical("[SupplyChain] APK signed with UNTRUSTED certificate — possible repackaging!");
-                }
+                EvaluateSignerTrust(signers, signals, isDebuggable: IsDebuggableApp());
             }
             else
             {
@@ -181,25 +199,7 @@ public sealed class SupplyChainVerifier
                     return;
                 }
 
-                bool foundTrusted = false;
-                foreach (var sig in sigs)
-                {
-                    var certBytes = sig?.ToByteArray();
-                    if (certBytes is null) continue;
-
-                    var fingerprint = Convert.ToHexString(SHA256.HashData(certBytes));
-                    if (TrustedCertFingerprints.Contains(fingerprint) ||
-                        TrustedCertFingerprints.Contains("PLACEHOLDER_RELEASE_KEY_SHA256_FINGERPRINT_HERE"))
-                    {
-                        foundTrusted = true;
-                        break;
-                    }
-                }
-
-                if (!foundTrusted && !TrustedCertFingerprints.Any(f => f.StartsWith("PLACEHOLDER")))
-                {
-                    signals.Add(new Signal("supply_chain:untrusted_signer", 95, 0.98));
-                }
+                EvaluateSignerTrust(sigs.ToArray(), signals, isDebuggable: IsDebuggableApp());
 #pragma warning restore CS0618, CA1422
             }
         }
@@ -208,6 +208,61 @@ public sealed class SupplyChainVerifier
             _logger.LogWarning(ex, "[SupplyChain] Certificate verification error");
             signals.Add(new Signal("supply_chain:cert_verify_error", 50, 0.6));
         }
+    }
+
+    /// <summary>
+    /// Fail-closed cert pin: PLACEHOLDER strings never count as trusted.
+    /// Unconfigured pin is a high-severity ops signal on non-debug builds.
+    /// </summary>
+    private void EvaluateSignerTrust(Android.Content.PM.Signature[]? signers, List<Signal> signals, bool isDebuggable)
+    {
+        if (signers is null || signers.Length == 0)
+        {
+            signals.Add(new Signal("supply_chain:no_signers", 90, 0.95));
+            return;
+        }
+
+        if (!IsSignerPinConfigured)
+        {
+            // Never pretend trust. Debug builds: warning only. Release: high weight.
+            var weight = isDebuggable ? 40 : 88;
+            signals.Add(new Signal(
+                "supply_chain:signer_pin_not_configured:set_BEHAVEDR_ANDROID_CERT_SHA256",
+                weight, isDebuggable ? 0.55 : 0.92));
+            _logger.LogWarning(
+                "[SupplyChain] No trusted cert fingerprints configured. " +
+                "Set BEHAVEDR_ANDROID_CERT_SHA256 or embed release pins. Pin not configured ≠ trusted.");
+            return;
+        }
+
+        bool foundTrusted = false;
+        foreach (var sig in signers)
+        {
+            var certBytes = sig?.ToByteArray();
+            if (certBytes is null) continue;
+            var fingerprint = NormalizeFingerprint(Convert.ToHexString(SHA256.HashData(certBytes)));
+            if (TrustedCertFingerprints.Contains(fingerprint))
+            {
+                foundTrusted = true;
+                break;
+            }
+        }
+
+        if (!foundTrusted)
+        {
+            signals.Add(new Signal("supply_chain:untrusted_signer", 95, 0.98));
+            _logger.LogCritical("[SupplyChain] APK signed with UNTRUSTED certificate — possible repackaging!");
+        }
+    }
+
+    private bool IsDebuggableApp()
+    {
+        try
+        {
+            var appInfo = _context.PackageManager?.GetApplicationInfo(_context.PackageName!, 0);
+            return appInfo is not null && (appInfo.Flags & ApplicationInfoFlags.Debuggable) != 0;
+        }
+        catch { return false; }
     }
 
     /// <summary>

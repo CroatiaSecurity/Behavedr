@@ -9,10 +9,17 @@ Without the dylib + entitlement, **kqueue** remains the real-time path.
 
 | Piece | Path |
 |-------|------|
-| Managed monitor | `MacOSEndpointSecurityMonitor` (poll ABI) |
+| Managed monitor | `MacOSEndpointSecurityMonitor` (poll ABI + JSONL fallback) |
 | Native bridge | `native/macos/es_bridge/behavedr_es_bridge.c` |
-| System Extension host | `native/macos/SystemExtension/` |
+| ES host binary | `native/macos/SystemExtension/` |
 | Install dylib | `/opt/behavedr/libbehavedr_es.dylib` |
+| Host JSONL | `/var/run/behavedr/es.events` (override `BEHAVEDR_ES_EVENTS_PATH`) |
+
+### Activation order (agent)
+
+1. **In-process dylib** if `libbehavedr_es.dylib` loads and `es_new_client` succeeds  
+2. Else **JSONL host fallback** if the ES host is writing events  
+3. Else soft-fail → **kqueue** remains primary
 
 ## Build bridge
 

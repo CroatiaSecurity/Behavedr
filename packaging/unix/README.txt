@@ -31,13 +31,20 @@ macOS (launchd) — production
   Grant Full Disk Access to /opt/behavedr/Behavedr in System Settings → Privacy.
   Prefer a Developer ID signed + notarized build for Gatekeeper.
 
-v0.3.0 platform coverage
+v0.3.5 platform coverage
 -------------------------
   Linux: cn_proc, fanotify (+ optional PERM), eBPF suite, Landlock (opt-in),
-         nftables, hardened systemd, deb/rpm scripts (build-deb.sh / build-rpm.sh).
-  macOS: kqueue, EndpointSecurity bridge (opt), VNODE, codesign, pf/route.
-  Optional artifacts in portable zip when CI produces them:
+         nftables, hardened systemd (bpffs pin path), deb/rpm with optional
+         behavedr_exec.bpf.o + Recommends: bpftool.
+  macOS: kqueue, EndpointSecurity bridge (opt), JSONL host fallback,
+         VNODE, codesign, pf/route.
+  Optional artifacts when CI produces them:
     behavedr_exec.bpf.o, libbehavedr_es.dylib, pf-behavedr-block.conf
+
+  eBPF field notes:
+    - Package installs object to /opt/behavedr/ when present at build time.
+    - Runtime needs bpftool + CAP_BPF (unit already grants).
+    - Rebuild object on target kernel major when BTF differs.
 
   Native soft-build: native/build-native.sh
 

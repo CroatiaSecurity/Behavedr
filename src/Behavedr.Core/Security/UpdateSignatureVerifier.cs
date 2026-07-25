@@ -115,4 +115,33 @@ public static class UpdateSignatureVerifier
     /// </summary>
     public static string? GetPublicKeyPem() =>
         IsProductionKeyConfigured() ? PublicKeyPem : null;
+
+    /// <summary>
+    /// Verify an RSA-PSS SHA-256 signature over an arbitrary payload (e.g. Android update metadata).
+    /// Signature is raw bytes (typically Base64-decoded by the caller).
+    /// </summary>
+    public static bool VerifyPayload(ReadOnlySpan<byte> payload, ReadOnlySpan<byte> signature, ILogger? logger = null)
+    {
+        logger ??= NullLogger.Instance;
+        if (!IsProductionKeyConfigured() || payload.IsEmpty || signature.IsEmpty)
+            return false;
+        try
+        {
+            using var rsa = RSA.Create();
+            rsa.ImportFromPem(PublicKeyPem);
+            var ok = rsa.VerifyData(payload, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pss);
+            if (!ok)
+            {
+                logger.LogCritical("SECURITY: payload signature verification FAILED");
+                Telemetry.SecurityTelemetry.ReportSignatureFailure();
+            }
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "payload signature verification error");
+            Telemetry.SecurityTelemetry.ReportSignatureFailure();
+            return false;
+        }
+    }
 }

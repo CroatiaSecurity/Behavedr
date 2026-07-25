@@ -217,10 +217,10 @@ jobs:
         fi
         # Optional Linux packages (soft-fail)
         if [ "${{ runner.os }}" = "Linux" ]; then
-          ./packaging/unix/build-deb.sh "${{ steps.ver.outputs.version }}" "publish/agent-${{ matrix.rid }}" \
+          ./packaging/unix/build-deb.sh "${{ steps.ver.outputs.version }}" "publish/agent-${{ matrix.rid }}" "dist/native" \
             && mv -v behavedr_*.deb dist/ 2>/dev/null || echo "deb build skipped/failed"
           command -v rpmbuild >/dev/null && \
-            ./packaging/unix/build-rpm.sh "${{ steps.ver.outputs.version }}" "publish/agent-${{ matrix.rid }}" \
+            ./packaging/unix/build-rpm.sh "${{ steps.ver.outputs.version }}" "publish/agent-${{ matrix.rid }}" "dist/native" \
             && mv -v *.rpm dist/ 2>/dev/null || echo "rpm build skipped/failed"
         fi
         exit 0

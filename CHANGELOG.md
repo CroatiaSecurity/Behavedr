@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.5] — 2026-07-25
+
+### Field packaging + integrity honesty
+
+#### Linux packaging
+- deb/rpm install optional `behavedr_exec.bpf.o` when present at build time
+- `Recommends: bpftool`; postinst creates bpffs pin dir + `/opt/behavedr/ebpf`
+- CI passes `dist/native` into package scripts
+
+#### macOS ES
+- Agent **JSONL host fallback**: if dylib/`es_new_client` fails but
+  `/var/run/behavedr/es.events` exists, consume host events (no orphan SE telemetry)
+
+#### Android supply chain (embarrassing PLACEHOLDER hole closed)
+- PLACEHOLDER strings **never** count as trusted certificates
+- Unconfigured pin → explicit `signer_pin_not_configured` signal (high on release builds)
+- Configure via `BEHAVEDR_ANDROID_CERT_SHA256` (comma-separated hex)
+- Update APK verify **refuses install** without a real pin
+
+#### Housekeeping
+- `exec_trace.bpf.c` hard-errors if compiled (legacy / incompatible with loader)
+- Docs updated for packaging + JSONL path
+
 ## [0.3.4] — 2026-07-25
 
 ### Audit hardening (no corners)

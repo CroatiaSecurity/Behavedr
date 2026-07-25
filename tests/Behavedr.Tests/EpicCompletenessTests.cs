@@ -50,9 +50,10 @@ public class EpicCompletenessTests
         var root = FindRepoRoot();
         Assert.True(File.Exists(Path.Combine(root, "docs", "EPICS_STATUS.md")));
         var doc = File.ReadAllText(Path.Combine(root, "docs", "EPICS_STATUS.md"));
-        Assert.Contains("0.3.4", doc, StringComparison.Ordinal);
+        Assert.Contains("0.3.5", doc, StringComparison.Ordinal);
         Assert.Contains("System Extension *product*", doc, StringComparison.Ordinal);
         Assert.Contains("Partial", doc, StringComparison.Ordinal);
+        Assert.Contains("JSONL", doc, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -157,6 +158,50 @@ public class EpicCompletenessTests
         Assert.Contains("__sync_fetch_and_add", c, StringComparison.Ordinal);
         Assert.Contains("path_is_interesting_open", c, StringComparison.Ordinal);
         Assert.Contains("AF_INET", c, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LegacyExecTrace_IsHardErrorNotBuildable()
+    {
+        var root = FindRepoRoot();
+        var c = File.ReadAllText(Path.Combine(root, "native", "linux", "ebpf", "exec_trace.bpf.c"));
+        Assert.Contains("#error", c, StringComparison.Ordinal);
+        Assert.Contains("LEGACY", c, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DebPackageScript_ShipsOptionalEbpfObject()
+    {
+        var root = FindRepoRoot();
+        var sh = File.ReadAllText(Path.Combine(root, "packaging", "unix", "build-deb.sh"));
+        Assert.Contains("behavedr_exec.bpf.o", sh, StringComparison.Ordinal);
+        Assert.Contains("Recommends: bpftool", sh, StringComparison.Ordinal);
+        Assert.Contains("/sys/fs/bpf/behavedr", sh, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ManagedEsMonitor_HasJsonlFallback()
+    {
+        var root = FindRepoRoot();
+        var src = File.ReadAllText(Path.Combine(root, "src", "Behavedr.Core", "Monitors", "MacOSEndpointSecurityMonitor.cs"));
+        Assert.Contains("jsonl-host", src, StringComparison.Ordinal);
+        Assert.Contains("es.events", src, StringComparison.Ordinal);
+        Assert.Contains("TryStartJsonlFallback", src, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidSupplyChain_DoesNotTrustPlaceholder()
+    {
+        var root = FindRepoRoot();
+        var src = File.ReadAllText(Path.Combine(root,
+            "src", "Behavedr.Mobile", "Platforms", "Android", "PlatformInjection", "SupplyChainVerifier.cs"));
+        Assert.DoesNotContain("PLACEHOLDER_RELEASE_KEY", src, StringComparison.Ordinal);
+        Assert.Contains("signer_pin_not_configured", src, StringComparison.Ordinal);
+        Assert.Contains("BEHAVEDR_ANDROID_CERT_SHA256", src, StringComparison.Ordinal);
+        // Must never treat placeholder string as trusted match
+        Assert.DoesNotContain(
+            "Contains(\"PLACEHOLDER_RELEASE_KEY_SHA256_FINGERPRINT_HERE\")",
+            src, StringComparison.Ordinal);
     }
 
     [Fact]

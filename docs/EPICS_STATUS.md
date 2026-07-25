@@ -1,4 +1,4 @@
-# Platform epics — honest status (0.3.4)
+# Platform epics — honest status (0.3.5)
 
 Source of truth for **production code** vs **field activation**. No marketing.
 
@@ -8,13 +8,20 @@ Source of truth for **production code** vs **field activation**. No marketing.
 |------|-----------------|------------------------|------------------|
 | Windows isolation | **Yes** — Firewall COM + WFP + netsh | **Yes** (SYSTEM) | Elevation (service) |
 | Linux eBPF suite | **Yes** — filtered suite + pin/map loader | **No** | `.o` + bpftool + CAP_BPF + unit allows bpffs |
-| macOS EndpointSecurity (in-process) | **Yes** — dylib poll ABI + framework subscribe | **No** | dylib + ES entitlement |
-| macOS ES host binary | **Yes** — real ES client + JSONL | **No** | entitlement + run elevated |
+| macOS EndpointSecurity (in-process) | **Yes** — dylib poll + framework subscribe | **No** | dylib + ES entitlement |
+| macOS ES host → agent | **Yes** — JSONL fallback reader in agent | **No** | host publishing events |
 | macOS System Extension *product* | **Partial** — host binary + bundle shell | **No** | Apple SE capability, OSSystemExtensionRequest, notarize, user approve |
+| Android cert pin | **Yes** — fail-closed when unconfigured | Soft | `BEHAVEDR_ANDROID_CERT_SHA256` |
 | Android Play Integrity | **Yes** — reflection + fail-closed + opt-in NuGet | Soft | Cloud project / package |
 | iOS full EDR | **No** (Apple policy) | Companion only | MDM + NE product SKU |
 | Kernel callout / rootkit win | **No** | N/A | Out of scope (userland EDR) |
 | OS Authenticode/notarize | Hooks only | No | Paid certs |
+
+## What 0.3.5 added
+
+- deb/rpm can ship eBPF object; Recommends bpftool  
+- Agent consumes SE host JSONL when in-process ES fails  
+- Android no longer treats PLACEHOLDER fingerprints as trusted  
 
 ## What 0.3.4 fixed (audit)
 

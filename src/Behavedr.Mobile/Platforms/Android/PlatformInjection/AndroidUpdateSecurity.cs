@@ -47,17 +47,34 @@ public sealed class AndroidUpdateSecurity
 
     public AndroidUpdateSecurity(
         Context context,
-        string trustedKeyFingerprint = "PLACEHOLDER_RELEASE_KEY_SHA256_FINGERPRINT_HERE",
+        string? trustedKeyFingerprint = null,
         string primaryUpdateUrl = "https://api.croatiasecurity.com/updates/android",
-        string fallbackUpdateUrl = "https://github.com/AdrianVas1/Behavedr/releases",
+        string fallbackUpdateUrl = "https://github.com/CroatiaSecurity/Behavedr/releases",
         ILogger? logger = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
-        _trustedSigningKeyFingerprint = trustedKeyFingerprint;
+        // Prefer explicit arg, then env. Never treat PLACEHOLDER as a real pin.
+        var pin = trustedKeyFingerprint
+                  ?? Environment.GetEnvironmentVariable("BEHAVEDR_ANDROID_CERT_SHA256")
+                  ?? "";
+        if (pin.Contains("PLACEHOLDER", StringComparison.OrdinalIgnoreCase))
+            pin = "";
+        // If env has a list, take first entry for update APK pin
+        if (pin.Contains(','))
+            pin = pin.Split(',')[0].Trim();
+        _trustedSigningKeyFingerprint = pin.Replace(":", "", StringComparison.Ordinal)
+            .Replace(" ", "", StringComparison.Ordinal)
+            .Trim();
         _primaryUpdateUrl = primaryUpdateUrl;
         _fallbackUpdateUrl = fallbackUpdateUrl;
         _logger = logger ?? NullLogger.Instance;
+        if (string.IsNullOrEmpty(_trustedSigningKeyFingerprint))
+            _logger.LogWarning("[UpdateSecurity] No APK cert pin configured — update installs will be rejected");
     }
+
+    public bool IsSignerPinConfigured =>
+        !string.IsNullOrEmpty(_trustedSigningKeyFingerprint) &&
+        !_trustedSigningKeyFingerprint.Contains("PLACEHOLDER", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Check for updates securely. Returns update info if available.
@@ -154,6 +171,12 @@ public sealed class AndroidUpdateSecurity
             if (signers is null || signers.Length == 0)
                 return UpdateVerificationResult.Failed("No signers in APK");
 
+            if (!IsSignerPinConfigured)
+            {
+                return UpdateVerificationResult.Failed(
+                    "Signer pin not configured (set BEHAVEDR_ANDROID_CERT_SHA256) — refusing update install");
+            }
+
             bool foundTrusted = false;
             foreach (var sig in signers)
             {
@@ -162,15 +185,14 @@ public sealed class AndroidUpdateSecurity
                 var fingerprint = Convert.ToHexString(SHA256.HashData(certBytes));
 
                 if (string.Equals(fingerprint, _trustedSigningKeyFingerprint,
-                    StringComparison.OrdinalIgnoreCase) ||
-                    _trustedSigningKeyFingerprint.StartsWith("PLACEHOLDER"))
+                    StringComparison.OrdinalIgnoreCase))
                 {
                     foundTrusted = true;
                     break;
                 }
             }
 
-            if (!foundTrusted && !_trustedSigningKeyFingerprint.StartsWith("PLACEHOLDER"))
+            if (!foundTrusted)
             {
                 return UpdateVerificationResult.Failed("APK signed with untrusted key");
             }
@@ -299,10 +321,21 @@ public sealed class AndroidUpdateSecurity
         if (string.IsNullOrEmpty(metadata.Signature))
             return false;
 
-        // In production, verify the metadata JSON was signed by our server key.
-        // The signature covers: versionCode + versionName + downloadUrl + sha256Hash
-        // For now, accept if signature field is present (placeholder)
-        return !string.IsNullOrEmpty(metadata.Signature);
+        // Canonical payload signed by release RSA-PSS key (same family as desktop updates).
+        // Operators: sign UTF-8 of this string with UPDATE_SIGNING_KEY, base64 the .sig.
+        var payload =
+            $"{metadata.VersionCode}|{metadata.VersionName}|{metadata.DownloadUrl}|{metadata.Sha256Hash}";
+        try
+        {
+            var sig = Convert.FromBase64String(metadata.Signature);
+            return Behavedr.Core.Security.UpdateSignatureVerifier.VerifyPayload(
+                System.Text.Encoding.UTF8.GetBytes(payload), sig, _logger);
+        }
+        catch (FormatException)
+        {
+            _logger.LogCritical("[UpdateSecurity] Metadata signature is not valid Base64");
+            return false;
+        }
     }
 
     private long GetCurrentVersionCode()

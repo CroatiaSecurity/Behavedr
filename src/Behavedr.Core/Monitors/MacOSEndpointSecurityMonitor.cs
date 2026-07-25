@@ -3,16 +3,18 @@ namespace Behavedr.Core.Monitors;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
+using System.Text.Json;
 using Behavedr.Core.Models;
 using Behavedr.Core.Platform;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>
-/// macOS EndpointSecurity client (production, 0.3.3).
-/// Uses libbehavedr_es.dylib which owns the ES callback thread and a ring buffer.
-/// Managed code polls via <c>behavedr_es_poll</c> (no GC-sensitive callbacks from ES).
-/// Soft-fails without entitlement/dylib; <see cref="MacOSKqueueMonitor"/> remains primary.
+/// macOS EndpointSecurity client (production, 0.3.5).
+/// Primary: libbehavedr_es.dylib poll ABI (in-process, needs ES entitlement).
+/// Secondary: JSONL from ES host binary at /var/run/behavedr/es.events
+/// (when agent is not entitled but host extension/daemon is publishing).
+/// Soft-fails to <see cref="MacOSKqueueMonitor"/> when neither path works.
 /// </summary>
 [SupportedOSPlatform("macos")]
 public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
@@ -28,6 +30,12 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
     private bool _initialized;
     private Thread? _pollThread;
     private volatile bool _stop;
+    private string _mode = "inactive";
+
+    // JSONL fallback state
+    private string? _jsonlPath;
+    private long _jsonlOffset;
+    private DateTime _jsonlLastRotateCheck = DateTime.MinValue;
 
     private BehavedrEsCreate? _create;
     private BehavedrEsSubscribeDefault? _subscribeDefault;
@@ -35,7 +43,11 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
     private BehavedrEsPoll? _poll;
     private BehavedrEsDelete? _delete;
     private BehavedrEsSetAuth? _setAuth;
-    public string ActiveMode => _active ? "poll-ring-bridge" : "inactive";
+
+    public string ActiveMode => _mode;
+    public string PlatformName => "MacOSEndpointSecurity";
+    public bool IsSupported => OperatingSystem.IsMacOS();
+    public bool IsActive => _active;
 
     private static readonly HashSet<string> OffensiveTools = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -43,10 +55,6 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
         "chisel", "ligolo", "socat", "ncat", "linpeas",
         "swiftbelt", "bifrost",
     };
-
-    public string PlatformName => "MacOSEndpointSecurity";
-    public bool IsSupported => OperatingSystem.IsMacOS();
-    public bool IsActive => _active;
 
     public MacOSEndpointSecurityMonitor(ILogger<MacOSEndpointSecurityMonitor>? logger = null)
     {
@@ -61,78 +69,124 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
 
         try
         {
-            if (!TryBindLibrary(out var err))
-            {
-                Telemetry.SecurityTelemetry.ReportPlatformSoftFail("endpointsecurity");
-                _logger.LogWarning("[ES] {Err}. kqueue remains primary. See packaging/unix/macos-endpointsecurity.md", err);
-                return false;
-            }
+            if (TryStartInProcess())
+                return true;
 
-            int rc = _create!(out _client);
-            if (rc != 0 || _client == IntPtr.Zero)
-            {
-                Telemetry.SecurityTelemetry.ReportPlatformSoftFail("endpointsecurity");
-                _logger.LogWarning(
-                    "[ES] es_new_client failed rc={Rc}. Need root + ES client entitlement.", rc);
-                return false;
-            }
+            if (TryStartJsonlFallback())
+                return true;
 
-            var authMode = string.Equals(
-                Environment.GetEnvironmentVariable("BEHAVEDR_ES_AUTH"), "1", StringComparison.Ordinal);
-            _setAuth?.Invoke(authMode ? 1 : 0);
-
-            // Prefer native subscribe_default so event IDs come from framework headers
-            // (hardcoded managed enums previously mismatched AUTH_EXEC=0 vs 8).
-            if (_subscribeDefault is not null)
-            {
-                rc = _subscribeDefault(_client, authMode ? 1 : 0);
-                if (rc < 0)
-                {
-                    _logger.LogWarning("[ES] behavedr_es_subscribe_default failed rc={Rc}", rc);
-                    _delete!(_client);
-                    _client = IntPtr.Zero;
-                    return false;
-                }
-                if (authMode)
-                    _logger.LogWarning("[ES] AUTH_EXEC denylist enabled (tmp droppers / known tools)");
-            }
-            else if (_subscribeLegacy is not null)
-            {
-                // Fallback: Apple 10.15+ enum order (AUTH_EXEC=0 … NOTIFY_EXEC=9 …)
-                var events = BuildDefaultEventIds(authMode);
-                rc = _subscribeLegacy(_client, events, events.Length);
-                if (rc != 0)
-                {
-                    _logger.LogWarning("[ES] es_subscribe failed rc={Rc}", rc);
-                    _delete!(_client);
-                    _client = IntPtr.Zero;
-                    return false;
-                }
-            }
-            else
-            {
-                _logger.LogWarning("[ES] No subscribe symbol in dylib");
-                _delete!(_client);
-                _client = IntPtr.Zero;
-                return false;
-            }
-
-            _active = true;
-            _stop = false;
-            _pollThread = new Thread(PollLoop)
-            {
-                IsBackground = true,
-                Name = "Behavedr-ES-poll",
-            };
-            _pollThread.Start();
-            _logger.LogInformation("[ES] Active — poll mode, auth={Auth}, via={Via}",
-                authMode, _subscribeDefault is not null ? "subscribe_default" : "legacy-ids");
-            return true;
+            Telemetry.SecurityTelemetry.ReportPlatformSoftFail("endpointsecurity");
+            _logger.LogWarning(
+                "[ES] Inactive — no dylib/entitlement and no host JSONL. kqueue remains primary. " +
+                "See packaging/unix/macos-endpointsecurity.md");
+            return false;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[ES] Connect failed");
             Telemetry.SecurityTelemetry.ReportPlatformSoftFail("endpointsecurity");
+            return false;
+        }
+    }
+
+    private bool TryStartInProcess()
+    {
+        if (!TryBindLibrary(out var err))
+        {
+            _logger.LogDebug("[ES] dylib path unavailable: {Err}", err);
+            return false;
+        }
+
+        int rc = _create!(out _client);
+        if (rc != 0 || _client == IntPtr.Zero)
+        {
+            _logger.LogDebug("[ES] es_new_client failed rc={Rc} (need entitlement)", rc);
+            return false;
+        }
+
+        var authMode = string.Equals(
+            Environment.GetEnvironmentVariable("BEHAVEDR_ES_AUTH"), "1", StringComparison.Ordinal);
+        _setAuth?.Invoke(authMode ? 1 : 0);
+
+        if (_subscribeDefault is not null)
+        {
+            rc = _subscribeDefault(_client, authMode ? 1 : 0);
+            if (rc < 0)
+            {
+                _logger.LogWarning("[ES] subscribe_default failed rc={Rc}", rc);
+                _delete!(_client);
+                _client = IntPtr.Zero;
+                return false;
+            }
+            if (authMode)
+                _logger.LogWarning("[ES] AUTH_EXEC denylist enabled");
+        }
+        else if (_subscribeLegacy is not null)
+        {
+            var events = BuildDefaultEventIds(authMode);
+            rc = _subscribeLegacy(_client, events, events.Length);
+            if (rc != 0)
+            {
+                _delete!(_client);
+                _client = IntPtr.Zero;
+                return false;
+            }
+        }
+        else
+        {
+            _delete!(_client);
+            _client = IntPtr.Zero;
+            return false;
+        }
+
+        _mode = "poll-ring-bridge";
+        _active = true;
+        _stop = false;
+        _pollThread = new Thread(PollLoopDylib)
+        {
+            IsBackground = true,
+            Name = "Behavedr-ES-poll",
+        };
+        _pollThread.Start();
+        _logger.LogInformation("[ES] Active — in-process poll bridge, auth={Auth}", authMode);
+        return true;
+    }
+
+    private bool TryStartJsonlFallback()
+    {
+        var path = Environment.GetEnvironmentVariable("BEHAVEDR_ES_EVENTS_PATH");
+        if (string.IsNullOrWhiteSpace(path))
+            path = "/var/run/behavedr/es.events";
+
+        if (!File.Exists(path))
+        {
+            _logger.LogDebug("[ES] JSONL host file not present at {Path}", path);
+            return false;
+        }
+
+        try
+        {
+            // Start at end so we only consume new events (avoid flood on restart)
+            var fi = new FileInfo(path);
+            _jsonlOffset = fi.Length;
+            _jsonlPath = path;
+            _mode = "jsonl-host";
+            _active = true;
+            _stop = false;
+            _pollThread = new Thread(PollLoopJsonl)
+            {
+                IsBackground = true,
+                Name = "Behavedr-ES-jsonl",
+            };
+            _pollThread.Start();
+            _logger.LogInformation(
+                "[ES] Active — JSONL host fallback ({Path}). In-process dylib preferred when entitled.",
+                path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[ES] JSONL fallback open failed");
             return false;
         }
     }
@@ -144,10 +198,7 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
 
         var signals = new List<Signal>();
         if (!_active)
-        {
-            signals.Add(new Signal("endpointsecurity_inactive:using_kqueue_fallback", 15, 0.4));
-            return Task.FromResult<IEnumerable<Signal>>(signals);
-        }
+            return Task.FromResult<IEnumerable<Signal>>(signals); // kqueue primary; no per-cycle noise
 
         List<EsEvent> batch;
         lock (_lock)
@@ -158,10 +209,10 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
 
         foreach (var e in batch)
         {
+            var baseWeight = e.Kind is "exec" or "auth_exec" or "auth_denied" ? 40 : 22;
             signals.Add(new Signal(
                 $"es_{e.Kind}:{e.ProcessName}:pid:{e.Pid}:{Truncate(e.Path, 80)}",
-                e.Kind is "exec" or "auth_exec" or "auth_denied" ? 45 : 30,
-                0.88));
+                baseWeight, 0.88));
 
             if (e.Kind is "exec" or "auth_exec" &&
                 OffensiveTools.Any(t => e.ProcessName.Contains(t, StringComparison.OrdinalIgnoreCase) ||
@@ -174,25 +225,23 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
                 signals.Add(new Signal($"es_auth_denied:{e.ProcessName}:pid:{e.Pid}:{Truncate(e.Path, 64)}", 90, 0.95));
         }
 
-        if (batch.Count > 0)
-            signals.Add(new Signal($"es_batch:{batch.Count}", 12, 0.5));
-
         return Task.FromResult<IEnumerable<Signal>>(signals);
     }
 
     public void Dispose()
     {
         _stop = true;
-        try { _pollThread?.Join(1000); } catch { }
+        try { _pollThread?.Join(1000); } catch { /* ignore */ }
         if (_client != IntPtr.Zero && _delete is not null)
         {
-            try { _delete(_client); } catch { }
+            try { _delete(_client); } catch { /* ignore */ }
             _client = IntPtr.Zero;
         }
         _active = false;
+        _mode = "inactive";
     }
 
-    private void PollLoop()
+    private void PollLoopDylib()
     {
         var kind = new byte[32];
         var name = new byte[64];
@@ -206,24 +255,96 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
                 {
                     int rc = _poll(kind, kind.Length, out int pid, name, name.Length, path, path.Length);
                     if (rc <= 0) break;
-                    var ev = new EsEvent(
-                        CString(kind),
-                        pid,
-                        CString(name),
-                        CString(path));
-                    lock (_lock)
-                    {
-                        _events.Enqueue(ev);
-                        while (_events.Count > MaxEvents)
-                            _events.Dequeue();
-                    }
+                    Enqueue(new EsEvent(CString(kind), pid, CString(name), CString(path)));
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "[ES] poll error");
+                _logger.LogDebug(ex, "[ES] dylib poll error");
             }
             Thread.Sleep(25);
+        }
+    }
+
+    private void PollLoopJsonl()
+    {
+        while (!_stop)
+        {
+            try
+            {
+                DrainJsonl();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[ES] jsonl poll error");
+            }
+            Thread.Sleep(100);
+        }
+    }
+
+    private void DrainJsonl()
+    {
+        if (_jsonlPath is null) return;
+
+        // Detect truncate/rotate
+        if ((DateTime.UtcNow - _jsonlLastRotateCheck).TotalSeconds > 2)
+        {
+            _jsonlLastRotateCheck = DateTime.UtcNow;
+            try
+            {
+                var len = new FileInfo(_jsonlPath).Length;
+                if (len < _jsonlOffset)
+                    _jsonlOffset = 0;
+            }
+            catch { return; }
+        }
+
+        using var fs = new FileStream(
+            _jsonlPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        if (fs.Length <= _jsonlOffset)
+            return;
+        fs.Seek(_jsonlOffset, SeekOrigin.Begin);
+        using var reader = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
+        string? line;
+        int read = 0;
+        while ((line = reader.ReadLine()) is not null && read < 500)
+        {
+            read++;
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            if (TryParseJsonl(line, out var ev))
+                Enqueue(ev);
+        }
+        _jsonlOffset = fs.Position;
+    }
+
+    private static bool TryParseJsonl(string line, out EsEvent ev)
+    {
+        ev = default;
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            var kind = root.TryGetProperty("kind", out var k) ? k.GetString() ?? "event" : "event";
+            var pid = root.TryGetProperty("pid", out var p) ? p.GetInt32() : 0;
+            var name = root.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+            var path = root.TryGetProperty("path", out var pa) ? pa.GetString() ?? "" : "";
+            if (pid <= 0 && string.IsNullOrEmpty(kind)) return false;
+            ev = new EsEvent(kind, pid, name, path);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void Enqueue(EsEvent ev)
+    {
+        lock (_lock)
+        {
+            _events.Enqueue(ev);
+            while (_events.Count > MaxEvents)
+                _events.Dequeue();
         }
     }
 
@@ -246,15 +367,15 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
             if (_create is null || _poll is null || _delete is null ||
                 (_subscribeDefault is null && _subscribeLegacy is null))
             {
-                error = $"incomplete ABI in {path} (need create/poll/delete + subscribe*)";
+                error = $"incomplete ABI in {path}";
                 continue;
             }
             _logger.LogInformation(
-                "[ES] Bound library {Path} (subscribe_default={Def}, set_auth={Auth})",
-                path, _subscribeDefault is not null, _setAuth is not null);
+                "[ES] Bound library {Path} (subscribe_default={Def})",
+                path, _subscribeDefault is not null);
             return true;
         }
-        error = "libbehavedr_es.dylib not found or incomplete (build native/macos/es_bridge)";
+        error = "libbehavedr_es.dylib not found or incomplete";
         return false;
     }
 
@@ -284,25 +405,10 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
     private static string Truncate(string s, int n) =>
         string.IsNullOrEmpty(s) ? "" : s.Length <= n ? s : s[..n];
 
-    /// <summary>
-    /// Apple ESTypes.h order from macOS 10.15 (only used if dylib lacks subscribe_default).
-    /// AUTH_EXEC=0, AUTH_OPEN=1, … AUTH_UNLINK=8, NOTIFY_EXEC=9, NOTIFY_OPEN=10,
-    /// NOTIFY_FORK=11, NOTIFY_CLOSE=12, NOTIFY_CREATE=13, NOTIFY_EXCHANGEDATA=14,
-    /// NOTIFY_EXIT=15. WRITE/RENAME appear later in the enum — prefer subscribe_default.
-    /// </summary>
     private static uint[] BuildDefaultEventIds(bool authMode)
     {
-        // Minimal correct set without WRITE/RENAME (those numbers vary by SDK generation).
-        var list = new List<uint>
-        {
-            9,  // NOTIFY_EXEC
-            11, // NOTIFY_FORK
-            15, // NOTIFY_EXIT
-            10, // NOTIFY_OPEN
-            13, // NOTIFY_CREATE
-        };
-        if (authMode)
-            list.Add(0); // AUTH_EXEC only
+        var list = new List<uint> { 9, 11, 15, 10, 13 };
+        if (authMode) list.Add(0);
         return list.ToArray();
     }
 
