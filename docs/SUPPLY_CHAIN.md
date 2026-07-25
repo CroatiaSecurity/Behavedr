@@ -94,7 +94,49 @@ Rotation procedure is section 6.
 
 ---
 
-## 4. OS / store trust signing (optional secrets)
+## 4. “I have no certs” — what that actually means
+
+Two different trust layers. Do not conflate them.
+
+| Layer | What it is | Cost | Required for Behavedr to work? |
+|-------|------------|------|--------------------------------|
+| **Update `.sig` (RSA-4096 PSS)** | Free self-generated keypair. Agent verifies with baked-in public key. | $0 | **Yes for auto-update.** Manual install of zips still works without signatures. |
+| **OS / store certs** | Authenticode (Windows), Apple Developer ID, Android Play/keystore | Paid / enrollment | **No.** Optional. Affects SmartScreen, Gatekeeper, Play trust only. |
+
+### If you have no commercial certificates
+
+That is fine for engineering and for many self-hosted deployments:
+
+- Ship portable zips + installer **unsigned by Microsoft/Apple**.
+- Still publish **RSA-PSS `.sig`** using a free key so agents can auto-update safely.
+- Operators verify `SHA256SUMS` + `.sig` before install (section 7).
+- Do **not** claim “signed by CroatiaSecurity as a Windows publisher” or “notarized for macOS.”
+
+### If you also have no update private key
+
+Generate one (no CA involved):
+
+```powershell
+dotnet run --project tools
+# writes update-signing-key.pem (private, gitignored)
+# writes update-signing-key.pub.pem (public, commit this)
+```
+
+Then:
+
+1. Bake the public PEM into `UpdateSignatureVerifier` (and policy verifier if dual-use).
+2. Put the **entire** private PEM into GitHub Actions secret **`UPDATE_SIGNING_KEY`**.
+3. Re-run a release. CI will produce `.sig` files automatically via `tools/sign-release.sh`.
+
+Local sign without CI:
+
+```powershell
+.\tools\sign-release.ps1 -AssetsDir .\release-assets -PrivateKeyPath .\update-signing-key.pem
+```
+
+---
+
+## 5. OS / store trust signing (optional secrets)
 
 Behavedr’s **agent-enforced** trust is RSA-PSS on release assets. **OS trust** (SmartScreen, Gatekeeper, Play Protect confidence) requires platform code-signing certificates that are **not** stored in this repository.
 
@@ -127,7 +169,7 @@ The release workflow implements conditional signing. When secrets are absent, th
 
 ---
 
-## 5. Release hard gates (0.2.4)
+## 6. Release hard gates (0.2.4+)
 
 The `release.yml` workflow:
 
@@ -142,7 +184,7 @@ PR/main CI (`build.yml`) still treats Android/iOS as best-effort so desktop deve
 
 ---
 
-## 6. Key ceremony (update and policy)
+## 7. Key ceremony (update and policy)
 
 ### 6.1 Generate update signing key
 
@@ -167,7 +209,7 @@ dotnet run --project tools
 
 ---
 
-## 7. Operator verification checklist
+## 8. Operator verification checklist
 
 Before deploying a release asset:
 
@@ -189,7 +231,7 @@ openssl dgst -sha256 \
 
 ---
 
-## 8. What this project still does not claim
+## 9. What this project still does not claim
 
 - **SLSA Level 3+ provenance** for every artifact (SBOM is best-effort; provenance attestation not yet mandated).
 - **Notarization staple** for macOS (codesign step exists; notarize/staple is a follow-on when Apple ID secrets exist).
@@ -199,7 +241,7 @@ openssl dgst -sha256 \
 
 ---
 
-## 9. Related documents
+## 10. Related documents
 
 | Document | Role |
 |----------|------|

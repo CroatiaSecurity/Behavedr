@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.2.5] — 2026-07-25
+
+### Update signing key material (no commercial certificates required)
+
+Clarifies and fixes a practical gap: **Behavedr does not need paid Authenticode/Apple/Play certificates to produce agent-verified release signatures.** Those OS certs remain optional. What was missing was a **private RSA key** matching the public key baked into the agent.
+
+#### Changes
+
+- Generated a new **RSA-4096** update-signing keypair (free, self-managed).
+- Baked the new **public** key into `UpdateSignatureVerifier` and `PolicySignatureVerifier`.
+- Committed `update-signing-key.pub.pem` for operator verification.
+- Private key lives only as local `update-signing-key.pem` (gitignored) and should be stored as GitHub secret **`UPDATE_SIGNING_KEY`**.
+- Documented the distinction in `docs/SUPPLY_CHAIN.md` §4 (“I have no certs”).
+- Improved `tools` key generator to write both public and private PEM and print next steps.
+
+#### Operator action required (one-time)
+
+1. Copy the full contents of `update-signing-key.pem` into GitHub → Settings → Secrets → Actions → **`UPDATE_SIGNING_KEY`**.
+2. Keep an offline backup of that PEM. Losing it means another key rotation (this process again).
+3. You still do **not** need Windows/Apple/Android commercial certs unless you want OS SmartScreen/Gatekeeper/Play trust.
+
+#### Explicit non-goals of this patch
+
+- No Authenticode / Developer ID / Play App Signing (still optional secrets).
+- No claim of “Microsoft-signed” or “Apple-notarized” distribution.
+
 ## [0.2.4] — 2026-07-25
 
 ### Supply chain trust, release hard gates, and update recovery

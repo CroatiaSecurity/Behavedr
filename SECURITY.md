@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.2.4   | Yes       |
-| < 0.2.4 | No        |
+| 0.2.5   | Yes       |
+| < 0.2.5 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
@@ -164,7 +164,7 @@ These are current, intentional, or residual limits — not a backlog disguised a
 - **OS code-signing is optional** and depends on repository secrets. Releases without Authenticode/codesign/keystore must not be described as OS-trusted. Agent-enforced RSA-PSS is independent of OS trust.
 - **Policy and update keys may still be dual-use** until a second key is provisioned (`PolicySignatureVerifier.IsUsingSharedUpdateKey()`).
 - **Play Integrity** may degrade if the official dependency / cloud project number is not fully wired for a given build; treat attestation quality as deployment-specific.
-- **iOS is deferred / preview.** Not a production EDR platform in this product line at 0.2.4.
+- **iOS is deferred / preview.** Not a production EDR platform in this product line at 0.2.5.
 - **Default response mode is AlertOnly.** Active kill/isolate is an operator decision with legal and operational consequences.
 
 ## Further Reading
