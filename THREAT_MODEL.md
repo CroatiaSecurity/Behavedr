@@ -1,6 +1,6 @@
 # Behavedr — Threat Model
 
-Version: 0.2.6
+Version: 0.2.7
 Last updated: 2026-07-25
 Classification: Public
 
@@ -211,8 +211,10 @@ Behavedr is a userland behavioral endpoint detection and response (EDR) agent. I
 - Protected Process Light (PPL) for anti-tamper hardening
 - Out-of-process watchdog for mutual monitoring
 - Hardware attestation (TPM-based integrity measurement)
-- Linux eBPF integration for real-time syscall monitoring
-- macOS EndpointSecurity.framework integration
+- Linux eBPF exec monitor (0.2.7; object/CAP_BPF gated)
+- macOS EndpointSecurity client (0.2.7; entitlement gated)
+- EndpointSecurity AUTH blocking / System Extension packaging
+- eBPF CO-RE full file/net suite beyond exec
 - Distinct policy vs update signing keys in production ceremony (code path ready; material dual-use until rotated)
 - macOS notarization staple and continuous SLSA provenance attestation
 - Full MITRE coverage matrix export and external penetration test

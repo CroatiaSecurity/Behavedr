@@ -110,6 +110,9 @@ public static class PlatformMonitors
             // v0.2.3: Kernel module + auth log coverage (Linux grade lift)
             monitors.Add(new LinuxKernelModuleMonitor());
             monitors.Add(new LinuxAuthMonitor());
+
+            // v0.2.7: eBPF exec epic (falls back soft if CAP_BPF / object missing)
+            monitors.Add(new LinuxEbpfExecMonitor());
         }
 
         // v0.1.5: macOS full detection suite (cross-platform parity)
@@ -128,6 +131,9 @@ public static class PlatformMonitors
             // v0.2.3: File VNODE events + codesign integrity (macOS grade lift)
             monitors.Add(new MacOSFileEventMonitor());
             monitors.Add(new MacOSCodeSignMonitor());
+
+            // v0.2.7: EndpointSecurity epic (needs entitlement + libbehavedr_es.dylib)
+            monitors.Add(new MacOSEndpointSecurityMonitor());
         }
 
         // v0.1.5: Android full detection suite

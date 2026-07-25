@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.7] — 2026-07-25
+
+### Large platform epics (single steady bump)
+
+One release for the three desktop platform depth epics. Still **userland** (no kernel rootkit omnipotence). Version stays on the 0.2.x line.
+
+#### Windows — WFP isolation
+
+- **`WindowsWfpEngine`**: real filter-engine API (`fwpuclnt` / `FwpmFilterAdd0`) at ALE_AUTH_CONNECT.
+- **`WindowsNetworkIsolation`**: tries WFP first, falls back to advfirewall.
+- Not a callout driver (no WHQL); block/permit filters only.
+
+#### Linux — eBPF exec
+
+- **`LinuxEbpfExecMonitor`**: loads `behavedr_exec.bpf.o` via bpftool when present; else minimal raw_tracepoint program via `bpf()` syscall; soft-fail to cn_proc.
+- **`native/linux/ebpf/`**: CO-RE-style `exec_trace.bpf.c` + build README.
+- **systemd**: `CAP_BPF` + `CAP_PERFMON` added to capability sets.
+
+#### macOS — EndpointSecurity
+
+- **`MacOSEndpointSecurityMonitor`**: ES client for NOTIFY_EXEC/FORK/EXIT/OPEN via native bridge.
+- **`native/macos/es_bridge/behavedr_es_bridge.c`**: block-capable dylib ABI for .NET.
+- **`packaging/unix/macos-endpointsecurity.md`**: entitlements, build, FDA.
+- Without entitlement/dylib → soft-fail; **kqueue remains active**.
+
+#### Docs / tests
+
+- SECURITY, MITRE map, epic smoke tests.
+- Residual: AUTH-mode ES, callout drivers, iOS product, paid OS certs.
+
 ## [0.2.6] — 2026-07-25
 
 ### Protection grade lift (steady 0.2.x — no major version jump)

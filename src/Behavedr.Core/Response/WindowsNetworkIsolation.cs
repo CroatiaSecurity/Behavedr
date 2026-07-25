@@ -15,9 +15,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 /// Requires elevation (SYSTEM service context).
 /// </summary>
 [SupportedOSPlatform("windows")]
-public sealed partial class WindowsNetworkIsolation : IResponseAction
+public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposable
 {
     private readonly ILogger<WindowsNetworkIsolation> _logger;
+    private readonly WindowsWfpEngine _wfp;
     private readonly HashSet<string> _blockedIps = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
     private const int MaxRules = 100;
@@ -35,7 +36,10 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction
     public WindowsNetworkIsolation(ILogger<WindowsNetworkIsolation>? logger = null)
     {
         _logger = logger ?? NullLogger<WindowsNetworkIsolation>.Instance;
+        _wfp = new WindowsWfpEngine(_logger);
     }
+
+    public void Dispose() => _wfp.Dispose();
 
     public async Task<ResponseOutcome> ExecuteAsync(DetectionResult result, CancellationToken ct = default)
     {
@@ -84,7 +88,13 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction
                 return false;
         }
 
-        // Rule name must be unique and free of special chars
+        // Prefer real WFP filter engine; fall back to advfirewall (also WFP-backed) via netsh.
+        if (IPAddress.TryParse(ip, out var addr) && _wfp.BlockRemoteAddress(addr, $"Behavedr:{processName}"))
+        {
+            _logger.LogWarning("[WinNetIsolation] WFP blocked remote IP {Ip} ({Process})", ip, processName);
+            return true;
+        }
+
         var safeName = $"BehavedrBlock_{ip.Replace(':', '_').Replace('.', '_')}";
         var args =
             $"advfirewall firewall add rule name=\"{safeName}\" " +
@@ -94,7 +104,7 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction
         var ok = await RunNetshAsync(args, ct);
         if (ok)
         {
-            _logger.LogWarning("[WinNetIsolation] Blocked remote IP {Ip} ({Process})", ip, processName);
+            _logger.LogWarning("[WinNetIsolation] advfirewall blocked remote IP {Ip} ({Process})", ip, processName);
             return true;
         }
 

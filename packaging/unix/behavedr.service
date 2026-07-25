@@ -19,15 +19,16 @@ TimeoutStopSec=10
 User=behavedr
 Group=behavedr
 
-# Capabilities for userland EDR:
+# Capabilities for userland EDR + eBPF (v0.2.7):
 #   CAP_SYS_PTRACE     — inspect foreign process memory/maps
 #   CAP_DAC_READ_SEARCH— read audit/auth logs and restricted paths
 #   CAP_NET_ADMIN      — cn_proc netlink + nftables isolation
 #   CAP_AUDIT_READ     — audit log where available
-#   CAP_SYS_ADMIN      — fanotify FAN_OPEN_EXEC on many kernels (residual risk;
-#                        SystemCallFilter below drops mount/reboot/swap/etc.)
-CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ CAP_SYS_ADMIN
-AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ CAP_SYS_ADMIN
+#   CAP_BPF / PERFMON  — eBPF load/attach (Linux 5.8+ preferred over SYS_ADMIN)
+#   CAP_SYS_ADMIN      — fanotify FAN_OPEN_EXEC + legacy eBPF on older kernels
+#                        (SystemCallFilter below drops mount/reboot/swap/etc.)
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
+AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
 
 # --- Hardening (v0.2.3) ---
 NoNewPrivileges=true

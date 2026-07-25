@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.2.6   | Yes       |
-| < 0.2.6 | No        |
+| 0.2.7   | Yes       |
+| < 0.2.7 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
@@ -155,16 +155,16 @@ These are current, intentional, or residual limits — not a backlog disguised a
 
 - **No kernel-level visibility.** Kernel rootkits can hide from userland monitors. Operational “10/10” is defined as best-in-class userland + supply chain, not omnipotence against ring-0 adversaries.
 - **Native ETW requires elevation** (SYSTEM/admin). Falls back to WMI polling without it.
-- **macOS real-time depth is kqueue/VNODE-based**, not EndpointSecurity.framework. Short-lived processes can still race discovery; EndpointSecurity remains a future platform epic.
-- **Linux real-time depth uses cn_proc, fanotify, and /proc**, not eBPF CO-RE. eBPF remains a future platform epic.
+- **macOS real-time:** EndpointSecurity client is implemented (`MacOSEndpointSecurityMonitor` + `libbehavedr_es.dylib`). Without Apple ES entitlement the client fails soft and **kqueue** remains active. NOTIFY-only (no AUTH block) in 0.2.7.
+- **Linux real-time:** eBPF exec path is implemented (`LinuxEbpfExecMonitor` + `native/linux/ebpf`). Without CAP_BPF / object file, **cn_proc** remains primary.
 - **Single-process agent architecture.** A successful privileged kill terminates protection until SCM/systemd/watchdog restart (seconds, not continuous multiproc resilience).
 - **Health-check auto-rollback** restores from `.previous` when post-update crypto health fails. It does **not** cover every possible failure mode (e.g. partial file locks on Windows may require manual recovery or reinstall).
 - **DPAPI entropy fallback** to a fixed value when the filesystem is unwritable (containers). Logged as CRITICAL.
-- **No WFP callout driver.** Windows network isolation uses **advfirewall** (`WindowsNetworkIsolation`) — strong userland control, not kernel WFP filtering.
+- **WFP user-mode filters** via `WindowsWfpEngine` (fwpuclnt); advfirewall fallback. **No callout driver** / deep packet inspection.
 - **OS code-signing is optional** and depends on repository secrets. Releases without Authenticode/codesign/keystore must not be described as OS-trusted. Agent-enforced RSA-PSS is independent of OS trust.
-- **Policy and update keys are distinct as of 0.2.6** (separate RSA-4096 pairs). Server must sign policies with `policy-signing-key.pem`.
+- **Policy and update keys are distinct as of 0.2.7** (separate RSA-4096 pairs). Server must sign policies with `policy-signing-key.pem`.
 - **Play Integrity** may degrade if the official dependency / cloud project number is not fully wired for a given build; treat attestation quality as deployment-specific.
-- **iOS is deferred / preview.** Not a production EDR platform in this product line at 0.2.6.
+- **iOS is deferred / preview.** Not a production EDR platform in this product line at 0.2.7.
 - **Default response mode is AlertOnly.** Active kill/isolate is an operator decision with legal and operational consequences.
 
 ## Further Reading

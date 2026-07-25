@@ -1,10 +1,11 @@
 # Behavedr MITRE ATT&CK Coverage (Userland)
 
-**Version:** 0.2.6  
+**Version:** 0.2.7  
 **Scope:** Techniques addressed by monitors/response in this tree. Not a claim of 100% ATT&CK completeness.
 
 | Technique | ID | Primary implementation |
 |-----------|-----|------------------------|
+| Process execution (real-time) | T1059 | Windows ETW; Linux cn_proc + **eBPF** (`LinuxEbpfExecMonitor`); macOS kqueue + **EndpointSecurity** (`MacOSEndpointSecurityMonitor`) |
 | Process injection / hollow | T1055 | MemoryAnalyzer, ThreadStartAddressScanner, BehavioralMonitor |
 | Credential dump (LSASS) | T1003.001 | LsassDumpMonitor, CredentialGuardMonitor |
 | Token impersonation | T1134 | TokenIntegrityMonitor, LinuxTokenMonitor |
@@ -41,14 +42,15 @@
 |--------|-----------|
 | Process kill (path-verified) | Windows, Linux (pidfd), macOS (proc_pidpath) |
 | File quarantine | Desktop |
-| Network isolate | Windows advfirewall, Linux nftables, macOS route/pf, Android iptables/VPN |
+| Network isolate | Windows **WFP** + advfirewall fallback, Linux nftables, macOS route/pf, Android iptables/VPN |
 | ISO/Docker/VM containment | IsolationResponseEngine |
 | Device Owner disable app | Android (when enrolled) |
 
 ## Explicit gaps (not covered)
 
-- Kernel rootkits that hide from userland
-- EndpointSecurity AUTH blocking (macOS)
-- eBPF CO-RE (Linux)
-- Full iOS EDR
+- Kernel rootkits that fully hide from userland / eBPF
+- EndpointSecurity **AUTH** (blocking) mode — NOTIFY only in 0.2.7
+- eBPF without CAP_BPF or without built `behavedr_exec.bpf.o` (falls back to cn_proc)
+- Full iOS EDR product
 - OS code-signing trust without commercial certs
+- WFP **callout driver** (user-mode filters only)
