@@ -30,6 +30,11 @@ public static class KeyProtection
     private const string KeyFileName = ".behavedr-key";
     private const string KeyringDescription = "behavedr:machine-key";
 
+    // Process-local cache: platform backends (esp. macOS keychain CLI) can fail
+    // intermittently and must not mint a new key mid-process (breaks AES-GCM unseal).
+    private static readonly object MachineKeyLock = new();
+    private static byte[]? _cachedMachineKey;
+
     /// <summary>
     /// Get the machine key using the most secure storage available:
     /// - Windows: DPAPI (LocalMachine scope)
@@ -40,6 +45,19 @@ public static class KeyProtection
     /// On first call with a legacy (unprotected) key, upgrades to best available protection.
     /// </summary>
     public static byte[] GetMachineKey()
+    {
+        lock (MachineKeyLock)
+        {
+            if (_cachedMachineKey is { Length: 32 })
+                return (byte[])_cachedMachineKey.Clone();
+
+            var key = LoadOrCreateMachineKey();
+            _cachedMachineKey = (byte[])key.Clone();
+            return key;
+        }
+    }
+
+    private static byte[] LoadOrCreateMachineKey()
     {
         // Android: Try Android Keystore first (hardware-backed, key never leaves TEE)
         // v0.2.0 audit fix A-3
@@ -179,6 +197,11 @@ public static class KeyProtection
         WriteProtectedKey(keyPath, newKey);
 
         File.WriteAllText(versionPath, (currentVersion + 1).ToString());
+
+        lock (MachineKeyLock)
+        {
+            _cachedMachineKey = (byte[])newKey.Clone();
+        }
 
         logger?.LogInformation("Machine key rotated: v{Old} → v{New}", currentVersion, currentVersion + 1);
     }
