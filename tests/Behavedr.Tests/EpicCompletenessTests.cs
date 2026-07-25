@@ -50,8 +50,9 @@ public class EpicCompletenessTests
         var root = FindRepoRoot();
         Assert.True(File.Exists(Path.Combine(root, "docs", "EPICS_STATUS.md")));
         var doc = File.ReadAllText(Path.Combine(root, "docs", "EPICS_STATUS.md"));
-        Assert.Contains("0.3.3", doc, StringComparison.Ordinal);
-        Assert.Contains("not scaffold", doc, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("0.3.4", doc, StringComparison.Ordinal);
+        Assert.Contains("System Extension *product*", doc, StringComparison.Ordinal);
+        Assert.Contains("Partial", doc, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -117,11 +118,45 @@ public class EpicCompletenessTests
         var c = File.ReadAllText(Path.Combine(root, "native", "macos", "es_bridge", "behavedr_es_bridge.c"));
         Assert.Contains("behavedr_es_poll", c, StringComparison.Ordinal);
         Assert.Contains("behavedr_es_create", c, StringComparison.Ordinal);
+        Assert.Contains("behavedr_es_subscribe_default", c, StringComparison.Ordinal);
         Assert.Contains("behavedr_es_set_auth_mode", c, StringComparison.Ordinal);
         Assert.Contains("BEHAVEDR_ES_RING", c, StringComparison.Ordinal);
         Assert.Contains("memory_order_release", c, StringComparison.Ordinal);
         Assert.Contains("g_auth_mode", c, StringComparison.Ordinal);
-        Assert.Contains("path_is_denylisted", c, StringComparison.Ordinal);
+        Assert.Contains("es_respond_flags_result", c, StringComparison.Ordinal);
+        // Full ring: drop newest (fetch_add dropped), do not steal consumer tail
+        Assert.Contains("drop newest", c, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("g_dropped", c, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SystemdUnit_AllowsBpffsForEbpf()
+    {
+        var root = FindRepoRoot();
+        var unit = File.ReadAllText(Path.Combine(root, "packaging", "unix", "behavedr.service"));
+        Assert.Contains("bpf", unit, StringComparison.Ordinal);
+        Assert.Contains("/sys/fs/bpf/behavedr", unit, StringComparison.Ordinal);
+        Assert.Contains("ProtectKernelTunables=false", unit, StringComparison.Ordinal);
+        Assert.Contains("CAP_BPF", unit, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ManagedEsMonitor_PrefersSubscribeDefault()
+    {
+        var root = FindRepoRoot();
+        var src = File.ReadAllText(Path.Combine(root, "src", "Behavedr.Core", "Monitors", "MacOSEndpointSecurityMonitor.cs"));
+        Assert.Contains("behavedr_es_subscribe_default", src, StringComparison.Ordinal);
+        Assert.DoesNotContain("ES_EVENT_TYPE_AUTH_EXEC = 8", src, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EbpfSuite_FiltersOpenatAndUsesAtomicCursor()
+    {
+        var root = FindRepoRoot();
+        var c = File.ReadAllText(Path.Combine(root, "native", "linux", "ebpf", "behavedr_suite.bpf.c"));
+        Assert.Contains("__sync_fetch_and_add", c, StringComparison.Ordinal);
+        Assert.Contains("path_is_interesting_open", c, StringComparison.Ordinal);
+        Assert.Contains("AF_INET", c, StringComparison.Ordinal);
     }
 
     [Fact]

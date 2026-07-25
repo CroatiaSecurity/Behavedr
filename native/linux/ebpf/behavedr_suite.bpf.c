@@ -148,56 +148,101 @@ static __always_inline void format_ipv6_port(char *dst, int max, const __u8 *add
 	write_u32_dec(dst, pos, max - 1, p);
 }
 
-static __always_inline void push_event(__u32 kind, const char *path_src, int path_is_user)
+/*
+ * Claim next array slot. Uses atomic fetch-add on the cursor value pointer
+ * so concurrent CPUs do not overwrite the same slot.
+ * pid field stores TGID (process id); tgid field also stores TGID for clarity.
+ */
+static __always_inline int claim_slot(__u32 *slot_out)
 {
 	__u32 zero = 0;
 	__u32 *idxp = bpf_map_lookup_elem(&cursor, &zero);
-	__u32 idx = idxp ? *idxp : 0;
-	struct behavedr_event ev = {};
+	__u32 idx;
+
+	if (!idxp)
+		return 0;
+	idx = __sync_fetch_and_add(idxp, 1);
+	*slot_out = idx % MAX_SLOTS;
+	return 1;
+}
+
+static __always_inline void fill_ids(struct behavedr_event *ev, __u32 kind)
+{
 	__u64 pt = bpf_get_current_pid_tgid();
-	__u32 slot, next;
+	__u32 tgid = (__u32)(pt >> 32);
 
-	ev.kind = kind;
-	ev.pid = (__u32)pt;
-	ev.tgid = (__u32)(pt >> 32);
-	bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
+	ev->kind = kind;
+	/* Process id for operators/signals (not thread id) */
+	ev->pid = tgid;
+	ev->tgid = tgid;
+	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
+}
 
+static __always_inline void push_event(__u32 kind, const char *path_src, int path_is_user)
+{
+	__u32 slot;
+	struct behavedr_event ev = {};
+
+	if (!claim_slot(&slot))
+		return;
+
+	fill_ids(&ev, kind);
 	if (path_src) {
 		if (path_is_user)
 			bpf_probe_read_user_str(&ev.path, sizeof(ev.path), path_src);
 		else
 			bpf_probe_read_kernel_str(&ev.path, sizeof(ev.path), path_src);
 	}
-
-	slot = idx % MAX_SLOTS;
-	next = idx + 1;
 	bpf_map_update_elem(&events, &slot, &ev, BPF_ANY);
-	bpf_map_update_elem(&cursor, &zero, &next, BPF_ANY);
 }
 
 static __always_inline void push_event_path_copy(__u32 kind, const char *path_stack, int path_len)
 {
-	__u32 zero = 0;
-	__u32 *idxp = bpf_map_lookup_elem(&cursor, &zero);
-	__u32 idx = idxp ? *idxp : 0;
+	__u32 slot;
 	struct behavedr_event ev = {};
-	__u64 pt = bpf_get_current_pid_tgid();
-	__u32 slot, next;
 	int n = path_len;
 
-	ev.kind = kind;
-	ev.pid = (__u32)pt;
-	ev.tgid = (__u32)(pt >> 32);
-	bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
+	if (!claim_slot(&slot))
+		return;
+
+	fill_ids(&ev, kind);
 	if (n > (int)sizeof(ev.path) - 1)
 		n = (int)sizeof(ev.path) - 1;
 	if (n > 0)
 		__builtin_memcpy(ev.path, path_stack, n);
-
-	slot = idx % MAX_SLOTS;
-	next = idx + 1;
 	bpf_map_update_elem(&events, &slot, &ev, BPF_ANY);
-	bpf_map_update_elem(&cursor, &zero, &next, BPF_ANY);
+}
+
+/* Prefix check against sensitive path list (openat filter). */
+static __always_inline int path_is_interesting_open(const char *path)
+{
+	/* path is kernel-copied string in stack after probe_read — check prefixes */
+	char p[64] = {};
+	int i;
+
+	if (!path)
+		return 0;
+	bpf_probe_read_user_str(p, sizeof(p), path);
+	/* empty */
+	if (!p[0])
+		return 0;
+	/* sensitive prefixes */
+	if (p[0] == '/' && p[1] == 'e' && p[2] == 't' && p[3] == 'c' && p[4] == '/') {
+		/* /etc/shadow, sudoers, ssh, ld.so.preload, passwd, crontab */
+		if (__builtin_memcmp(p, "/etc/shadow", 11) == 0) return 1;
+		if (__builtin_memcmp(p, "/etc/sudoers", 12) == 0) return 1;
+		if (__builtin_memcmp(p, "/etc/ssh/", 9) == 0) return 1;
+		if (__builtin_memcmp(p, "/etc/ld.so.preload", 18) == 0) return 1;
+		if (__builtin_memcmp(p, "/etc/passwd", 11) == 0) return 1;
+		if (__builtin_memcmp(p, "/etc/crontab", 12) == 0) return 1;
+		if (__builtin_memcmp(p, "/etc/kubernetes", 15) == 0) return 1;
+	}
+	if (__builtin_memcmp(p, "/root/.ssh", 10) == 0) return 1;
+	if (__builtin_memcmp(p, "/var/run/secrets", 16) == 0) return 1;
+	if (__builtin_memcmp(p, "/var/spool/cron", 15) == 0) return 1;
+	/* also catch /tmp/* executables being opened for write-ish paths — sample all /tmp rarely */
+	(void)i;
+	return 0;
 }
 
 SEC("tp/sched/sched_process_exec")
@@ -225,6 +270,9 @@ int handle_openat(struct trace_event_raw_sys_enter *ctx)
 {
 	const char *filename = (const char *)ctx->args[1];
 
+	/* Only sensitive paths — unfiltered openat floods a 256-slot ring. */
+	if (!path_is_interesting_open(filename))
+		return 0;
 	push_event(EV_OPEN, filename, /*path_is_user=*/1);
 	return 0;
 }
@@ -237,11 +285,12 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx)
 	char path[112] = {};
 
 	if (!usa)
-		goto emit;
+		return 0;
 
 	if (bpf_probe_read_user(&hdr, sizeof(hdr), usa) < 0)
-		goto emit;
+		return 0;
 
+	/* Skip AF_UNIX / unknown — only emit INET peers */
 	if (hdr.family == AF_INET) {
 		struct behavedr_sockaddr_in sin = {};
 
@@ -252,9 +301,12 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx)
 
 		if (bpf_probe_read_user(&sin6, sizeof(sin6), usa) == 0)
 			format_ipv6_port(path, sizeof(path), sin6.addr, sin6.port);
+	} else {
+		return 0;
 	}
 
-emit:
+	if (!path[0])
+		return 0;
 	push_event_path_copy(EV_CONNECT, path, 112);
 	return 0;
 }

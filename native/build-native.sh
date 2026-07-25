@@ -15,11 +15,18 @@ if command -v clang >/dev/null 2>&1 && [[ "$(uname -s)" == Linux ]]; then
     bpftool btf dump file /sys/kernel/btf/vmlinux format c > "$EBPF_DIR/vmlinux.h" || true
   fi
   SRC="$EBPF_DIR/behavedr_suite.bpf.c"
-  [[ -f "$SRC" ]] || SRC="$EBPF_DIR/exec_trace.bpf.c"
-  if [[ -f "$EBPF_DIR/vmlinux.h" ]]; then
-    if clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -I "$EBPF_DIR" \
+  if [[ ! -f "$SRC" ]]; then
+    echo "WARN: behavedr_suite.bpf.c missing — skip eBPF (legacy exec_trace.bpf.c is incompatible with loader)"
+    status=1
+  elif [[ -f "$EBPF_DIR/vmlinux.h" ]]; then
+    ARCH_DEF="__TARGET_ARCH_x86"
+    case "$(uname -m)" in
+      aarch64|arm64) ARCH_DEF="__TARGET_ARCH_arm64" ;;
+      armv7*|armhf) ARCH_DEF="__TARGET_ARCH_arm" ;;
+    esac
+    if clang -O2 -g -target bpf -D"$ARCH_DEF" -I "$EBPF_DIR" \
         -c "$SRC" -o "$OUT/behavedr_exec.bpf.o" 2>"$OUT/ebpf-build.log"; then
-      echo "Built $OUT/behavedr_exec.bpf.o from $(basename "$SRC")"
+      echo "Built $OUT/behavedr_exec.bpf.o from $(basename "$SRC") ($ARCH_DEF)"
       cp -f "$OUT/behavedr_exec.bpf.o" "$EBPF_DIR/behavedr_exec.bpf.o" 2>/dev/null || true
     else
       echo "WARN: eBPF compile failed (see ebpf-build.log)"

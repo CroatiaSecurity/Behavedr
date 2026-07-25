@@ -1,6 +1,6 @@
 # Behavedr MITRE ATT&CK Coverage (Userland)
 
-**Version:** 0.3.3  
+**Version:** 0.3.4  
 **Scope:** Techniques addressed by monitors/response in this tree. Not a claim of 100% ATT&CK completeness.
 
 | Technique | ID | Primary implementation |

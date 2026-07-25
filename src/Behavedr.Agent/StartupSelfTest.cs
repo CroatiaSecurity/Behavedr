@@ -223,11 +223,33 @@ public sealed class StartupSelfTest : IHostedService
     private void ReportPlatformDepth()
     {
         var names = _engine.RegisteredMonitors.Select(m => m.PlatformName).ToHashSet(StringComparer.Ordinal);
+        // Registration ≠ field-active. Probe suite/ES active flags when present.
+        var ebpfRegistered = names.Contains("LinuxEbpfExec") || names.Contains("LinuxEbpfFile") || names.Contains("LinuxEbpfNet");
+        var ebpfActive = false;
+        if (OperatingSystem.IsLinux() && ebpfRegistered)
+        {
+            try { ebpfActive = Behavedr.Core.Monitors.LinuxEbpfSuite.Shared().IsActive; }
+            catch { /* ignore */ }
+        }
+        var esRegistered = names.Contains("MacOSEndpointSecurity");
+        var esActive = false;
+        if (OperatingSystem.IsMacOS() && esRegistered)
+        {
+            try
+            {
+                var es = _engine.RegisteredMonitors.OfType<Behavedr.Core.Monitors.MacOSEndpointSecurityMonitor>().FirstOrDefault();
+                esActive = es?.IsActive == true;
+            }
+            catch { /* ignore */ }
+        }
+
         _logger.LogInformation(
-            "[StartupSelfTest] Platform depth: monitors={Count} hasEbpf={Ebpf} hasEs={Es} hasFanotify={Fan} landlockEnv={Ll} esAuthEnv={Auth}",
+            "[StartupSelfTest] Platform depth: monitors={Count} ebpfReg={EbpfReg} ebpfActive={EbpfAct} esReg={EsReg} esActive={EsAct} hasFanotify={Fan} landlockEnv={Ll} esAuthEnv={Auth}",
             names.Count,
-            names.Contains("LinuxEbpfExec") || names.Contains("LinuxEbpfFile") || names.Contains("LinuxEbpfNet"),
-            names.Contains("MacOSEndpointSecurity"),
+            ebpfRegistered,
+            ebpfActive,
+            esRegistered,
+            esActive,
             names.Contains("LinuxFanotify"),
             Environment.GetEnvironmentVariable("BEHAVEDR_LANDLOCK") == "1",
             Environment.GetEnvironmentVariable("BEHAVEDR_ES_AUTH") == "1");

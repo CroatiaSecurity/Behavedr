@@ -30,13 +30,18 @@ Group=behavedr
 CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
 AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_AUDIT_READ CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
 
-# --- Hardening (v0.2.3) ---
+# --- Hardening (v0.3.4: eBPF-compatible) ---
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/behavedr/logs /opt/behavedr/quarantine /var/lib/behavedr /opt/behavedr/buffer /opt/behavedr/run
+# bpffs pins live under /sys/fs/bpf/behavedr (LinuxEbpfLoader)
+ReadWritePaths=/opt/behavedr/logs /opt/behavedr/quarantine /var/lib/behavedr /opt/behavedr/buffer /opt/behavedr/run /sys/fs/bpf/behavedr
+# Create pin parent if missing (ExecStartPre would also work)
+# + = run as root so bpffs pin dir exists before dropping to service user
+ExecStartPre=+/bin/mkdir -p /sys/fs/bpf/behavedr
 ProtectHome=true
 PrivateTmp=true
-ProtectKernelTunables=true
+# Must be false for bpf map pin under /sys/fs/bpf (bpffs is a kernel tunable mount)
+ProtectKernelTunables=false
 ProtectKernelModules=true
 ProtectControlGroups=true
 ProtectKernelLogs=true
@@ -55,7 +60,8 @@ PrivateDevices=false
 UMask=0077
 # Drop entire dangerous syscall groups (seccomp via systemd)
 SystemCallFilter=~@mount @reboot @swap @obsolete @cpu-emulation @raw-io @debug
-RestrictFileSystems=ext4 btrfs xfs tmpfs proc sysfs
+# bpf filesystem type required for pinmaps; sysfs still needed for /sys
+RestrictFileSystems=ext4 btrfs xfs tmpfs proc sysfs bpf
 
 # Production network lockdown — set server IP then uncomment:
 # IPAddressDeny=any

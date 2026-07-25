@@ -74,20 +74,11 @@ public sealed class LinuxEbpfFileMonitor : IPlatformMonitor
             var comm = string.IsNullOrEmpty(e.Comm) ? "unknown" : e.Comm;
             var path = e.Path ?? "";
 
+            // Suite already filters to sensitive paths; emit high-confidence signals only
             signals.Add(new Signal(
-                $"ebpf_open:{comm}:pid:{e.Pid}:{Truncate(path, 64)}",
-                35, 0.7));
-
-            if (IsSensitive(path))
-            {
-                signals.Add(new Signal(
-                    $"ebpf_sensitive_open:{comm}:pid:{e.Pid}:{Truncate(path, 48)}",
-                    88, 0.92));
-            }
+                $"ebpf_sensitive_open:{comm}:pid:{e.Pid}:{Truncate(path, 48)}",
+                88, 0.92));
         }
-
-        if (batch.Count > 0)
-            signals.Add(new Signal($"ebpf_batch_open:{batch.Count}", 12, 0.5));
     }
 
     private void SampleProcFds(List<Signal> signals)

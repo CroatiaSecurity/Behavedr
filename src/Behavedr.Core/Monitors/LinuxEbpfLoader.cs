@@ -92,11 +92,26 @@ public sealed class LinuxEbpfLoader : IDisposable
                 return false;
             }
 
-            // Explicit attach when autoattach did not bind (idempotent failures OK)
-            AttachPinnedPrograms();
+            // Explicit attach when autoattach did not bind
+            int attached = AttachPinnedPrograms();
 
             if (!OpenPinnedMaps())
                 return false;
+
+            if (_cursorMapFd < 0)
+            {
+                _logger.LogError("[eBPF] cursor map required but not pinned — refusing active mode");
+                Dispose();
+                return false;
+            }
+
+            if (attached == 0)
+            {
+                // autoattach may have bound programs without our explicit attach counting
+                _logger.LogWarning(
+                    "[eBPF] No explicit prog attach confirmed; relying on autoattach if loadall used it. " +
+                    "If no events arrive, check bpftool prog show / pin dir.");
+            }
 
             // Seed cursor so we only observe NEW events after attach (no stale scan flood)
             if (_cursorMapFd >= 0 && MapLookupU32(_cursorMapFd, 0, out var cur))
@@ -192,29 +207,28 @@ public sealed class LinuxEbpfLoader : IDisposable
         _cursorMapFd = BpfObjGet(cursorPin);
         if (_cursorMapFd < 0)
             _cursorMapFd = BpfObjGet(Path.Combine(PinDir, "maps", "cursor"));
-        if (_cursorMapFd < 0)
-            _logger.LogWarning("[eBPF] cursor map not pinned — will only detect non-empty slots opportunistically");
+        // Missing cursor is a hard failure for DrainNewEvents — checked by caller.
 
         return true;
     }
 
-    private void AttachPinnedPrograms()
+    /// <summary>Returns number of successful explicit attaches.</summary>
+    private int AttachPinnedPrograms()
     {
         if (!Directory.Exists(PinDir))
-            return;
+            return 0;
 
-        // Map known program file names → tracepoint attach targets
         var targets = new Dictionary<string, (string cat, string name)>(StringComparer.OrdinalIgnoreCase)
         {
             ["handle_exec"] = ("sched", "sched_process_exec"),
             ["handle_openat"] = ("syscalls", "sys_enter_openat"),
             ["handle_connect"] = ("syscalls", "sys_enter_connect"),
-            // section-style pin names some bpftool versions use
             ["tp_sched_sched_process_exec"] = ("sched", "sched_process_exec"),
             ["tp_syscalls_sys_enter_openat"] = ("syscalls", "sys_enter_openat"),
             ["tp_syscalls_sys_enter_connect"] = ("syscalls", "sys_enter_connect"),
         };
 
+        int attached = 0;
         foreach (var entry in EnumeratePinFiles(PinDir))
         {
             var baseName = Path.GetFileName(entry);
@@ -222,22 +236,25 @@ public sealed class LinuxEbpfLoader : IDisposable
                 continue;
             if (!targets.TryGetValue(baseName, out var tp))
             {
-                // Heuristic: name contains exec/openat/connect
-                if (baseName.Contains("exec", StringComparison.OrdinalIgnoreCase))
-                    tp = ("sched", "sched_process_exec");
-                else if (baseName.Contains("openat", StringComparison.OrdinalIgnoreCase))
+                if (baseName.Contains("openat", StringComparison.OrdinalIgnoreCase))
                     tp = ("syscalls", "sys_enter_openat");
                 else if (baseName.Contains("connect", StringComparison.OrdinalIgnoreCase))
                     tp = ("syscalls", "sys_enter_connect");
+                else if (baseName.Contains("exec", StringComparison.OrdinalIgnoreCase) &&
+                         !baseName.Contains("open", StringComparison.OrdinalIgnoreCase))
+                    tp = ("sched", "sched_process_exec");
                 else
                     continue;
             }
 
-            // bpftool prog attach pinned <path> tracepoint <category> <name>
             var rc = RunBpftool($"prog attach pinned \"{entry}\" tracepoint {tp.cat} {tp.name}");
             if (rc == 0)
-                _logger.LogDebug("[eBPF] Attached {Prog} → {Cat}/{Name}", baseName, tp.cat, tp.name);
+            {
+                attached++;
+                _logger.LogInformation("[eBPF] Attached {Prog} → {Cat}/{Name}", baseName, tp.cat, tp.name);
+            }
         }
+        return attached;
     }
 
     private void ClearPinDir()

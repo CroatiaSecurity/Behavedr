@@ -200,10 +200,15 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
     {
         var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var ipv4 = Ipv4Regex();
+        // Bracketed or bare IPv6 (simplified; covers common signal encodings)
+        var ipv6 = Ipv6Regex();
         foreach (var signal in result.Signals)
         {
-            foreach (Match m in ipv4.Matches(signal.Type ?? ""))
+            var text = signal.Type ?? "";
+            foreach (Match m in ipv4.Matches(text))
                 found.Add(m.Value);
+            foreach (Match m in ipv6.Matches(text))
+                found.Add(m.Value.Trim('[', ']'));
         }
         foreach (Match m in ipv4.Matches(result.Event.ProcessName ?? ""))
             found.Add(m.Value);
@@ -224,13 +229,23 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
     {
         if (!IPAddress.TryParse(ip, out var addr))
             return true;
+        if (IPAddress.IsLoopback(addr))
+            return true;
         var b = addr.GetAddressBytes();
-        if (b.Length != 4) return false;
-        if (b[0] == 10) return true;
-        if (b[0] == 127) return true;
-        if (b[0] == 192 && b[1] == 168) return true;
-        if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
-        if (b[0] == 169 && b[1] == 254) return true;
+        if (b.Length == 4)
+        {
+            if (b[0] == 10) return true;
+            if (b[0] == 192 && b[1] == 168) return true;
+            if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+            if (b[0] == 169 && b[1] == 254) return true;
+            return false;
+        }
+        if (b.Length == 16)
+        {
+            // fe80::/10 link-local, fc00::/7 unique local
+            if ((b[0] & 0xFE) == 0xFC) return true;
+            if (b[0] == 0xFE && (b[1] & 0xC0) == 0x80) return true;
+        }
         return false;
     }
 
@@ -239,4 +254,8 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
 
     [GeneratedRegex(@"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b")]
     private static partial Regex Ipv4Regex();
+
+    // Matches forms like 2001:db8::1 or [fe80::1] (not exhaustive RFC, good enough for signal parse)
+    [GeneratedRegex(@"\[?(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}\]?")]
+    private static partial Regex Ipv6Regex();
 }

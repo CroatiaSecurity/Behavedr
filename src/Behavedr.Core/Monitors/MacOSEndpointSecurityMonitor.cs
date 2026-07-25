@@ -30,11 +30,11 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
     private volatile bool _stop;
 
     private BehavedrEsCreate? _create;
-    private BehavedrEsSubscribe? _subscribe;
+    private BehavedrEsSubscribeDefault? _subscribeDefault;
+    private BehavedrEsSubscribe? _subscribeLegacy;
     private BehavedrEsPoll? _poll;
     private BehavedrEsDelete? _delete;
     private BehavedrEsSetAuth? _setAuth;
-    private BehavedrEsPending? _pending;
     public string ActiveMode => _active ? "poll-ring-bridge" : "inactive";
 
     private static readonly HashSet<string> OffensiveTools = new(StringComparer.OrdinalIgnoreCase)
@@ -81,27 +81,37 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
                 Environment.GetEnvironmentVariable("BEHAVEDR_ES_AUTH"), "1", StringComparison.Ordinal);
             _setAuth?.Invoke(authMode ? 1 : 0);
 
-            var events = new List<uint>
+            // Prefer native subscribe_default so event IDs come from framework headers
+            // (hardcoded managed enums previously mismatched AUTH_EXEC=0 vs 8).
+            if (_subscribeDefault is not null)
             {
-                ES_EVENT_TYPE_NOTIFY_EXEC,
-                ES_EVENT_TYPE_NOTIFY_FORK,
-                ES_EVENT_TYPE_NOTIFY_EXIT,
-                ES_EVENT_TYPE_NOTIFY_OPEN,
-                ES_EVENT_TYPE_NOTIFY_CREATE,
-                ES_EVENT_TYPE_NOTIFY_WRITE,
-                ES_EVENT_TYPE_NOTIFY_RENAME,
-            };
-            if (authMode)
-            {
-                events.Add(ES_EVENT_TYPE_AUTH_EXEC);
-                events.Add(ES_EVENT_TYPE_AUTH_OPEN);
-                _logger.LogWarning("[ES] AUTH mode enabled (conservative denylist)");
+                rc = _subscribeDefault(_client, authMode ? 1 : 0);
+                if (rc < 0)
+                {
+                    _logger.LogWarning("[ES] behavedr_es_subscribe_default failed rc={Rc}", rc);
+                    _delete!(_client);
+                    _client = IntPtr.Zero;
+                    return false;
+                }
+                if (authMode)
+                    _logger.LogWarning("[ES] AUTH_EXEC denylist enabled (tmp droppers / known tools)");
             }
-
-            rc = _subscribe!(_client, events.ToArray(), events.Count);
-            if (rc != 0)
+            else if (_subscribeLegacy is not null)
             {
-                _logger.LogWarning("[ES] es_subscribe failed rc={Rc}", rc);
+                // Fallback: Apple 10.15+ enum order (AUTH_EXEC=0 … NOTIFY_EXEC=9 …)
+                var events = BuildDefaultEventIds(authMode);
+                rc = _subscribeLegacy(_client, events, events.Length);
+                if (rc != 0)
+                {
+                    _logger.LogWarning("[ES] es_subscribe failed rc={Rc}", rc);
+                    _delete!(_client);
+                    _client = IntPtr.Zero;
+                    return false;
+                }
+            }
+            else
+            {
+                _logger.LogWarning("[ES] No subscribe symbol in dylib");
                 _delete!(_client);
                 _client = IntPtr.Zero;
                 return false;
@@ -115,8 +125,8 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
                 Name = "Behavedr-ES-poll",
             };
             _pollThread.Start();
-            _logger.LogInformation("[ES] Active — poll mode, events={Count}, auth={Auth}",
-                events.Count, authMode);
+            _logger.LogInformation("[ES] Active — poll mode, auth={Auth}, via={Via}",
+                authMode, _subscribeDefault is not null ? "subscribe_default" : "legacy-ids");
             return true;
         }
         catch (Exception ex)
@@ -227,20 +237,21 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
             if (_lib == IntPtr.Zero) continue;
 
             _create = Load<BehavedrEsCreate>("behavedr_es_create");
-            _subscribe = Load<BehavedrEsSubscribe>("behavedr_es_subscribe");
+            _subscribeDefault = LoadOptional<BehavedrEsSubscribeDefault>("behavedr_es_subscribe_default");
+            _subscribeLegacy = LoadOptional<BehavedrEsSubscribe>("behavedr_es_subscribe");
             _poll = Load<BehavedrEsPoll>("behavedr_es_poll");
             _delete = Load<BehavedrEsDelete>("behavedr_es_delete");
             _setAuth = LoadOptional<BehavedrEsSetAuth>("behavedr_es_set_auth_mode");
-            _pending = LoadOptional<BehavedrEsPending>("behavedr_es_pending");
 
-            if (_create is null || _subscribe is null || _poll is null || _delete is null)
+            if (_create is null || _poll is null || _delete is null ||
+                (_subscribeDefault is null && _subscribeLegacy is null))
             {
-                error = $"incomplete ABI in {path} (need create/subscribe/poll/delete)";
-                try { /* leave lib open for next candidate */ } catch { /* ignore */ }
+                error = $"incomplete ABI in {path} (need create/poll/delete + subscribe*)";
                 continue;
             }
-            _logger.LogInformation("[ES] Bound library {Path} (poll ABI, optional set_auth/pending present={Auth}/{Pend})",
-                path, _setAuth is not null, _pending is not null);
+            _logger.LogInformation(
+                "[ES] Bound library {Path} (subscribe_default={Def}, set_auth={Auth})",
+                path, _subscribeDefault is not null, _setAuth is not null);
             return true;
         }
         error = "libbehavedr_es.dylib not found or incomplete (build native/macos/es_bridge)";
@@ -273,16 +284,27 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
     private static string Truncate(string s, int n) =>
         string.IsNullOrEmpty(s) ? "" : s.Length <= n ? s : s[..n];
 
-    // ES event type constants (stable across recent SDKs)
-    private const uint ES_EVENT_TYPE_AUTH_EXEC = 8;
-    private const uint ES_EVENT_TYPE_NOTIFY_EXEC = 9;
-    private const uint ES_EVENT_TYPE_NOTIFY_OPEN = 10;
-    private const uint ES_EVENT_TYPE_AUTH_OPEN = 11;
-    private const uint ES_EVENT_TYPE_NOTIFY_FORK = 13;
-    private const uint ES_EVENT_TYPE_NOTIFY_EXIT = 14;
-    private const uint ES_EVENT_TYPE_NOTIFY_CREATE = 16;
-    private const uint ES_EVENT_TYPE_NOTIFY_WRITE = 25;
-    private const uint ES_EVENT_TYPE_NOTIFY_RENAME = 27;
+    /// <summary>
+    /// Apple ESTypes.h order from macOS 10.15 (only used if dylib lacks subscribe_default).
+    /// AUTH_EXEC=0, AUTH_OPEN=1, … AUTH_UNLINK=8, NOTIFY_EXEC=9, NOTIFY_OPEN=10,
+    /// NOTIFY_FORK=11, NOTIFY_CLOSE=12, NOTIFY_CREATE=13, NOTIFY_EXCHANGEDATA=14,
+    /// NOTIFY_EXIT=15. WRITE/RENAME appear later in the enum — prefer subscribe_default.
+    /// </summary>
+    private static uint[] BuildDefaultEventIds(bool authMode)
+    {
+        // Minimal correct set without WRITE/RENAME (those numbers vary by SDK generation).
+        var list = new List<uint>
+        {
+            9,  // NOTIFY_EXEC
+            11, // NOTIFY_FORK
+            15, // NOTIFY_EXIT
+            10, // NOTIFY_OPEN
+            13, // NOTIFY_CREATE
+        };
+        if (authMode)
+            list.Add(0); // AUTH_EXEC only
+        return list.ToArray();
+    }
 
     private readonly record struct EsEvent(string Kind, int Pid, string ProcessName, string Path);
 
@@ -296,6 +318,9 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int BehavedrEsCreate(out IntPtr client);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int BehavedrEsSubscribeDefault(IntPtr client, int authMode);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int BehavedrEsSubscribe(IntPtr client, uint[] events, int count);
@@ -312,7 +337,4 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int BehavedrEsSetAuth(int enabled);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int BehavedrEsPending();
 }

@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.3.4] — 2026-07-25
+
+### Audit hardening (no corners)
+
+Post-0.3.3 production review fixed real field-breakers, not cosmetics.
+
+#### macOS EndpointSecurity
+- **Critical:** managed code no longer passes wrong ES event IDs; prefers
+  `behavedr_es_subscribe_default` (framework header enums)
+- AUTH_OPEN uses `es_respond_flags_result`; default AUTH is **AUTH_EXEC only**
+- Ring: drop **newest** when full (producer never mutates consumer tail)
+- System Extension host: atomics, honest “ES host binary” docs (not auto SE product)
+
+#### Linux eBPF
+- systemd unit: `bpf` FS + writable `/sys/fs/bpf/behavedr`, `ProtectKernelTunables=false`
+- Suite: atomic cursor, **filtered openat** (sensitive paths only), INET-only connect
+- Process id field is TGID (not thread id)
+- Loader requires cursor map; no silent “active with no events”
+- Signal weights lowered for bulk telemetry; no per-cycle `ebpf_inactive` noise
+- Build: arch-aware (`arm64`), no incompatible `exec_trace` fallback
+
+#### Windows isolation
+- IPv6 extraction + ULA/link-local skip
+
+#### Ops honesty
+- StartupSelfTest reports **ebpfActive/esActive**, not just registration
+- EPICS_STATUS clarifies SE host vs installable System Extension
+
 ## [0.3.3] — 2026-07-25
 
 ### Proper epic implementations (no scaffolds)

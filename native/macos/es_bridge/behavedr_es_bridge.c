@@ -1,20 +1,16 @@
 /*
- * Behavedr EndpointSecurity bridge — production C ABI (0.3.3)
+ * Behavedr EndpointSecurity bridge — production C ABI (0.3.4)
  *
  * Design:
- *  - ES messages are handled on the ES callback thread only.
- *  - Events are copied into a fixed SPSC ring buffer (no managed callback from ES).
- *  - Managed code polls via behavedr_es_poll.
- *  - AUTH events are answered on the callback thread (required by ES deadline).
- *  - AUTH DENY only when g_auth_mode is set AND path matches conservative denylist.
+ *  - ES messages handled on the ES callback thread only.
+ *  - Fixed SPSC ring; producer never mutates consumer tail (drop newest when full).
+ *  - Managed code polls via behavedr_es_poll OR uses behavedr_es_subscribe_default
+ *    so event type enums always come from EndpointSecurity.framework headers.
+ *  - AUTH answered on callback thread; AUTH_OPEN uses es_respond_flags_result.
  *
  * Build:
  *   clang -dynamiclib -O2 -o libbehavedr_es.dylib behavedr_es_bridge.c \
  *     -framework EndpointSecurity -framework CoreFoundation
- *   install_name_tool -id @rpath/libbehavedr_es.dylib libbehavedr_es.dylib
- *   sudo cp libbehavedr_es.dylib /opt/behavedr/
- *
- * Requires: root + com.apple.developer.endpoint-security.client
  */
 
 #include <EndpointSecurity/EndpointSecurity.h>
@@ -41,9 +37,9 @@ typedef struct {
 static es_client_t *g_client = NULL;
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static behavedr_es_event g_ring[BEHAVEDR_ES_RING];
-/* SPSC: producer = ES callback thread, consumer = poll thread */
-static atomic_uint g_head = 0; /* write index (producer) */
-static atomic_uint g_tail = 0; /* read index (consumer) */
+/* SPSC: producer = ES callback, consumer = poll thread */
+static atomic_uint g_head = 0;
+static atomic_uint g_tail = 0;
 static atomic_int g_auth_mode = 0;
 static atomic_int g_muted_self = 0;
 static atomic_ullong g_dropped = 0;
@@ -56,11 +52,12 @@ static void get_proc_name(pid_t pid, char *buf, size_t len)
         snprintf(buf, len, "pid-%d", (int)pid);
 }
 
-static int path_is_denylisted(const char *path)
+/* Conservative AUTH_EXEC denylist — high-confidence only (not all of /tmp for OPEN). */
+static int path_is_exec_denylisted(const char *path)
 {
     if (!path || !path[0])
         return 0;
-    /* Conservative AUTH denylist — high-confidence droppers only */
+    /* Exec from world-writable staging dirs */
     if (strncmp(path, "/tmp/", 5) == 0) return 1;
     if (strncmp(path, "/private/tmp/", 13) == 0) return 1;
     if (strncmp(path, "/var/tmp/", 9) == 0) return 1;
@@ -69,7 +66,6 @@ static int path_is_denylisted(const char *path)
     if (strstr(path, "meterpreter") != NULL) return 1;
     if (strstr(path, "sliver") != NULL) return 1;
     if (strstr(path, "cobaltstrike") != NULL) return 1;
-    if (strstr(path, "/Users/Shared/") != NULL && strstr(path, ".dmg") != NULL) return 1;
     return 0;
 }
 
@@ -89,9 +85,9 @@ static void enqueue(const char *kind, int pid, const char *name, const char *pat
     uint32_t next = (head + 1u) % BEHAVEDR_ES_RING;
     uint32_t tail = atomic_load_explicit(&g_tail, memory_order_acquire);
     if (next == tail) {
-        /* ring full — drop oldest to keep newest telemetry */
-        atomic_store_explicit(&g_tail, (tail + 1u) % BEHAVEDR_ES_RING, memory_order_release);
+        /* Full: drop newest (never advance consumer tail — avoids SPSC race). */
         atomic_fetch_add_explicit(&g_dropped, 1, memory_order_relaxed);
+        return;
     }
 
     behavedr_es_event *e = &g_ring[head];
@@ -113,6 +109,30 @@ static void enqueue(const char *kind, int pid, const char *name, const char *pat
     atomic_fetch_add_explicit(&g_enqueued, 1, memory_order_relaxed);
 }
 
+static void respond_auth(es_client_t *client, const es_message_t *msg, const char *pathbuf,
+                         int pid, const char *name)
+{
+    int deny = 0;
+    if (atomic_load_explicit(&g_auth_mode, memory_order_relaxed)) {
+        if (msg->event_type == ES_EVENT_TYPE_AUTH_EXEC)
+            deny = path_is_exec_denylisted(pathbuf);
+        /* AUTH_OPEN: never deny via path denylist (too noisy); always allow flags. */
+    }
+
+    if (msg->event_type == ES_EVENT_TYPE_AUTH_OPEN) {
+        uint32_t flags = deny ? 0u : msg->event.open.fflag;
+        es_respond_flags_result(client, msg, flags, false);
+    } else {
+        es_auth_result_t result = deny ? ES_AUTH_RESULT_DENY : ES_AUTH_RESULT_ALLOW;
+        es_respond_auth_result(client, msg, result, false);
+    }
+
+    if (deny) {
+        atomic_fetch_add_explicit(&g_auth_denied, 1, memory_order_relaxed);
+        enqueue("auth_denied", pid, name, pathbuf);
+    }
+}
+
 static void handle_msg(es_client_t *client, const es_message_t *msg)
 {
     if (!msg || !msg->process)
@@ -120,9 +140,11 @@ static void handle_msg(es_client_t *client, const es_message_t *msg)
 
     pid_t pid = audit_token_to_pid(msg->process->audit_token);
     if (atomic_load_explicit(&g_muted_self, memory_order_relaxed) && pid == getpid()) {
-        /* Still must respond to AUTH for our own process if subscribed */
         if (msg->action_type == ES_ACTION_TYPE_AUTH) {
-            es_respond_auth_result(client, msg, ES_AUTH_RESULT_ALLOW, false);
+            if (msg->event_type == ES_EVENT_TYPE_AUTH_OPEN)
+                es_respond_flags_result(client, msg, msg->event.open.fflag, false);
+            else
+                es_respond_auth_result(client, msg, ES_AUTH_RESULT_ALLOW, false);
         }
         return;
     }
@@ -179,16 +201,8 @@ static void handle_msg(es_client_t *client, const es_message_t *msg)
 
     enqueue(kind, (int)pid, name, pathbuf);
 
-    if (is_auth) {
-        es_auth_result_t result = ES_AUTH_RESULT_ALLOW;
-        if (atomic_load_explicit(&g_auth_mode, memory_order_relaxed) &&
-            path_is_denylisted(pathbuf)) {
-            result = ES_AUTH_RESULT_DENY;
-            atomic_fetch_add_explicit(&g_auth_denied, 1, memory_order_relaxed);
-            enqueue("auth_denied", (int)pid, name, pathbuf);
-        }
-        es_respond_auth_result(client, msg, result, false);
-    }
+    if (is_auth)
+        respond_auth(client, msg, pathbuf, (int)pid, name);
 }
 
 /* ===== exported ABI ===== */
@@ -215,7 +229,6 @@ int behavedr_es_create(void **out_client)
         return (int)res;
     }
 
-    /* Mute our own process tree prefix to reduce noise (best-effort) */
     es_mute_path(g_client, "/opt/behavedr/", ES_MUTE_PATH_TYPE_PREFIX);
     atomic_store_explicit(&g_muted_self, 1, memory_order_relaxed);
 
@@ -228,6 +241,34 @@ int behavedr_es_set_auth_mode(int enabled)
 {
     atomic_store_explicit(&g_auth_mode, enabled ? 1 : 0, memory_order_relaxed);
     return 0;
+}
+
+/*
+ * Subscribe using framework enum constants (correct ABI).
+ * Prefer this over passing numeric IDs from managed code.
+ * auth_mode: 0 = NOTIFY only; non-zero = + AUTH_EXEC (AUTH_OPEN not subscribed — too heavy).
+ */
+int behavedr_es_subscribe_default(void *client, int auth_mode)
+{
+    if (!client)
+        return -1;
+
+    es_event_type_t types[16];
+    uint32_t n = 0;
+    types[n++] = ES_EVENT_TYPE_NOTIFY_EXEC;
+    types[n++] = ES_EVENT_TYPE_NOTIFY_FORK;
+    types[n++] = ES_EVENT_TYPE_NOTIFY_EXIT;
+    types[n++] = ES_EVENT_TYPE_NOTIFY_OPEN;
+    types[n++] = ES_EVENT_TYPE_NOTIFY_CREATE;
+    types[n++] = ES_EVENT_TYPE_NOTIFY_WRITE;
+    types[n++] = ES_EVENT_TYPE_NOTIFY_RENAME;
+    if (auth_mode) {
+        types[n++] = ES_EVENT_TYPE_AUTH_EXEC;
+        /* AUTH_OPEN intentionally omitted from default: high volume + requires flags API. */
+    }
+
+    es_return_t r = es_subscribe((es_client_t *)client, types, n);
+    return r == ES_RETURN_SUCCESS ? (int)n : -2;
 }
 
 int behavedr_es_subscribe(void *client, const uint32_t *events, int count)
@@ -246,7 +287,6 @@ int behavedr_es_subscribe(void *client, const uint32_t *events, int count)
     return r == ES_RETURN_SUCCESS ? 0 : -2;
 }
 
-/* Returns 1 if event dequeued, 0 if empty, <0 on error */
 int behavedr_es_poll(char *kind, int kind_len,
                      int *pid,
                      char *name, int name_len,
@@ -282,7 +322,6 @@ int behavedr_es_pending(void)
     return (int)(BEHAVEDR_ES_RING - tail + head);
 }
 
-/* Stats for operators / SE host (optional) */
 int behavedr_es_stats(unsigned long long *enqueued,
                       unsigned long long *dropped,
                       unsigned long long *auth_denied)
@@ -308,7 +347,6 @@ void behavedr_es_delete(void *client)
     pthread_mutex_unlock(&g_mu);
 }
 
-/* Back-compat: ignore callback, create client the same way */
 typedef void (*behavedr_es_cb)(const char *, int, const char *, const char *);
 int behavedr_es_create_cb(behavedr_es_cb cb, void **out_client)
 {

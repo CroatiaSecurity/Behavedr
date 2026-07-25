@@ -1,18 +1,15 @@
 /*
- * Behavedr Endpoint Security System Extension host (0.3.3 production)
+ * Behavedr Endpoint Security host binary (0.3.4)
  *
- * Runs a real ES client (same event coverage as the in-process dylib path),
- * answers AUTH on the ES thread, and publishes events as JSONL to:
- *   /var/run/behavedr/es.events
+ * This is a real ES client process suitable for packaging into a System Extension
+ * bundle *once* Apple enrollment + OSSystemExtensionRequest wiring is added by
+ * release engineering. Today it runs as an elevated ES host daemon that publishes
+ * JSONL events for operators / future agent XPC.
  *
- * When the agent process holds the ES entitlement it prefers libbehavedr_es.dylib
- * in-process. This host is for enterprise packaging where ES lives in a
- * System Extension and the agent only needs FDA + event file / socket.
+ * Not claimed: App Store install, automatic SE activation, or agent consumption.
  *
- * Build: ./build.sh (macOS + EndpointSecurity.framework + signing identity)
- * Env:
- *   BEHAVEDR_ES_AUTH=1          enable AUTH denylist
- *   BEHAVEDR_ES_EVENTS_PATH=…   override JSONL path
+ * Build: ./build.sh
+ * Env: BEHAVEDR_ES_AUTH=1, BEHAVEDR_ES_EVENTS_PATH=…
  */
 
 #import <Foundation/Foundation.h>
@@ -20,6 +17,7 @@
 #include <libproc.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,8 +39,8 @@ typedef struct {
 static es_client_t *g_client = NULL;
 static volatile sig_atomic_t g_stop = 0;
 static se_event g_ring[RING];
-static volatile uint32_t g_head = 0;
-static volatile uint32_t g_tail = 0;
+static atomic_uint g_head = 0;
+static atomic_uint g_tail = 0;
 static pthread_mutex_t g_file_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_auth_mode = 0;
 static FILE *g_events_fp = NULL;
@@ -50,7 +48,7 @@ static char g_events_path[512] = "/var/run/behavedr/es.events";
 
 static void on_sig(int s) { (void)s; g_stop = 1; }
 
-static int path_is_denylisted(const char *path)
+static int path_is_exec_denylisted(const char *path)
 {
     if (!path || !path[0]) return 0;
     if (strncmp(path, "/tmp/", 5) == 0) return 1;
@@ -73,10 +71,11 @@ static void copy_token(char *dst, size_t dstlen, es_string_token_t tok)
 
 static void enqueue(const char *kind, int pid, const char *name, const char *path)
 {
-    uint32_t head = g_head;
+    uint32_t head = atomic_load_explicit(&g_head, memory_order_relaxed);
     uint32_t next = (head + 1u) % RING;
-    if (next == g_tail)
-        g_tail = (g_tail + 1u) % RING;
+    uint32_t tail = atomic_load_explicit(&g_tail, memory_order_acquire);
+    if (next == tail)
+        return; /* drop newest */
 
     se_event *e = &g_ring[head];
     memset(e, 0, sizeof(*e));
@@ -84,7 +83,7 @@ static void enqueue(const char *kind, int pid, const char *name, const char *pat
     e->pid = pid;
     if (name) strncpy(e->name, name, NAME_LEN - 1);
     if (path) strncpy(e->path, path, PATH_LEN - 1);
-    g_head = next;
+    atomic_store_explicit(&g_head, next, memory_order_release);
 }
 
 static void json_escape(const char *in, char *out, size_t outlen)
@@ -96,9 +95,7 @@ static void json_escape(const char *in, char *out, size_t outlen)
         if (c == '"' || c == '\\') {
             out[j++] = '\\';
             out[j++] = c;
-        } else if ((unsigned char)c < 0x20) {
-            /* skip control */
-        } else {
+        } else if ((unsigned char)c >= 0x20) {
             out[j++] = c;
         }
     }
@@ -133,11 +130,11 @@ static void handle_msg(es_client_t *client, const es_message_t *msg)
 
     const char *kind = "event";
     char pathbuf[PATH_LEN] = {0};
-    int is_auth = 0;
+    int is_auth_exec = 0;
 
     switch (msg->event_type) {
     case ES_EVENT_TYPE_AUTH_EXEC:
-        is_auth = 1;
+        is_auth_exec = 1;
         kind = "auth_exec";
         if (msg->event.exec.target && msg->event.exec.target->executable)
             copy_token(pathbuf, sizeof(pathbuf), msg->event.exec.target->executable->path);
@@ -152,12 +149,6 @@ static void handle_msg(es_client_t *client, const es_message_t *msg)
         break;
     case ES_EVENT_TYPE_NOTIFY_EXIT:
         kind = "exit";
-        break;
-    case ES_EVENT_TYPE_AUTH_OPEN:
-        is_auth = 1;
-        kind = "auth_open";
-        if (msg->event.open.file)
-            copy_token(pathbuf, sizeof(pathbuf), msg->event.open.file->path);
         break;
     case ES_EVENT_TYPE_NOTIFY_OPEN:
         kind = "open";
@@ -179,13 +170,13 @@ static void handle_msg(es_client_t *client, const es_message_t *msg)
 
     enqueue(kind, (int)pid, name, pathbuf);
 
-    if (is_auth) {
-        es_auth_result_t result = ES_AUTH_RESULT_ALLOW;
-        if (g_auth_mode && path_is_denylisted(pathbuf)) {
-            result = ES_AUTH_RESULT_DENY;
-            enqueue("auth_denied", (int)pid, name, pathbuf);
-        }
+    if (is_auth_exec) {
+        es_auth_result_t result = (g_auth_mode && path_is_exec_denylisted(pathbuf))
+            ? ES_AUTH_RESULT_DENY
+            : ES_AUTH_RESULT_ALLOW;
         es_respond_auth_result(client, msg, result, false);
+        if (result == ES_AUTH_RESULT_DENY)
+            enqueue("auth_denied", (int)pid, name, pathbuf);
     }
 }
 
@@ -195,13 +186,12 @@ static int open_events_file(void)
     if (env && env[0])
         snprintf(g_events_path, sizeof(g_events_path), "%s", env);
 
-    /* ensure parent dir */
     char dir[512];
     snprintf(dir, sizeof(dir), "%s", g_events_path);
     char *slash = strrchr(dir, '/');
     if (slash) {
         *slash = '\0';
-        mkdir(dir, 0755);
+        mkdir(dir, 0750);
     }
 
     g_events_fp = fopen(g_events_path, "a");
@@ -209,6 +199,7 @@ static int open_events_file(void)
         fprintf(stderr, "[BehavedrES] cannot open %s — logging to stderr only\n", g_events_path);
         return -1;
     }
+    fchmod(fileno(g_events_fp), 0640);
     fprintf(stderr, "[BehavedrES] events → %s\n", g_events_path);
     return 0;
 }
@@ -217,14 +208,14 @@ static void *publisher_thread(void *arg)
 {
     (void)arg;
     while (!g_stop) {
-        uint32_t tail = g_tail;
-        uint32_t head = g_head;
+        uint32_t tail = atomic_load_explicit(&g_tail, memory_order_relaxed);
+        uint32_t head = atomic_load_explicit(&g_head, memory_order_acquire);
         if (tail == head) {
             usleep(25000);
             continue;
         }
         se_event e = g_ring[tail];
-        g_tail = (tail + 1u) % RING;
+        atomic_store_explicit(&g_tail, (tail + 1u) % RING, memory_order_release);
         write_jsonl(&e);
         fprintf(stderr, "[BehavedrES] %s pid=%d name=%s\n", e.kind, e.pid, e.name);
     }
@@ -263,8 +254,7 @@ int main(int argc, char **argv)
     events[n++] = ES_EVENT_TYPE_NOTIFY_RENAME;
     if (g_auth_mode) {
         events[n++] = ES_EVENT_TYPE_AUTH_EXEC;
-        events[n++] = ES_EVENT_TYPE_AUTH_OPEN;
-        fprintf(stderr, "[BehavedrES] AUTH mode enabled (conservative denylist)\n");
+        fprintf(stderr, "[BehavedrES] AUTH_EXEC denylist enabled\n");
     }
 
     if (es_subscribe(g_client, events, n) != ES_RETURN_SUCCESS) {
@@ -276,7 +266,7 @@ int main(int argc, char **argv)
     pthread_t thr;
     pthread_create(&thr, NULL, publisher_thread, NULL);
 
-    fprintf(stderr, "[BehavedrES] subscribed events=%d — running\n", n);
+    fprintf(stderr, "[BehavedrES] subscribed events=%d — running (ES host binary)\n", n);
     while (!g_stop)
         sleep(1);
 

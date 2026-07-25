@@ -1,7 +1,16 @@
-# macOS Endpoint Security System Extension (0.3.3)
+# macOS Endpoint Security System Extension (0.3.4)
 
-For enterprise deployment beyond an entitled daemon, host the ES client in a
-**System Extension**. The 0.3.3 host is a **real ES client**, not a stub.
+## Honest status
+
+In-tree we ship a **real Endpoint Security host binary** (subscribes, AUTH_EXEC,
+JSONL publisher) plus a **bundle shell** (`Info.plist`, entitlements, `build.sh`).
+
+We do **not** yet ship a complete installable System Extension product
+(`OSSystemExtensionRequest`, notarized app container, agent XPC consumer).
+Release engineering still owns Apple enrollment + activation UX.
+
+For enterprise deployment beyond an entitled agent process, the host is the
+starting point for that work.
 
 ## What ships in-tree
 

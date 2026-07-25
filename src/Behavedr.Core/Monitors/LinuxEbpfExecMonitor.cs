@@ -58,10 +58,7 @@ public sealed class LinuxEbpfExecMonitor : IPlatformMonitor, IDisposable
 
         var signals = new List<Signal>();
         if (!_active)
-        {
-            signals.Add(new Signal("ebpf_inactive:using_cn_proc_fallback", 15, 0.4));
-            return Task.FromResult<IEnumerable<Signal>>(signals);
-        }
+            return Task.FromResult<IEnumerable<Signal>>(signals); // cn_proc is primary; no per-cycle noise
 
         var batch = LinuxEbpfSuite.Shared().DrainExec();
         foreach (var e in batch)
@@ -70,7 +67,8 @@ public sealed class LinuxEbpfExecMonitor : IPlatformMonitor, IDisposable
             var comm = string.IsNullOrEmpty(e.Comm) ? "unknown" : e.Comm;
             var pathPart = string.IsNullOrEmpty(e.Path) ? "" : $":{Truncate(e.Path, 64)}";
 
-            signals.Add(new Signal($"ebpf_exec:{comm}:pid:{e.Pid}{pathPart}", 40, 0.85));
+            // Low-weight telemetry; high weight only for offensive tools
+            signals.Add(new Signal($"ebpf_exec:{comm}:pid:{e.Pid}{pathPart}", 18, 0.55));
 
             if (OffensiveTools.Any(t =>
                     comm.Contains(t, StringComparison.OrdinalIgnoreCase) ||
@@ -79,9 +77,6 @@ public sealed class LinuxEbpfExecMonitor : IPlatformMonitor, IDisposable
                 signals.Add(new Signal($"ebpf_offensive_tool:{comm}:pid:{e.Pid}", 92, 0.95));
             }
         }
-
-        if (batch.Count > 0)
-            signals.Add(new Signal($"ebpf_batch_exec:{batch.Count}", 15, 0.55));
 
         return Task.FromResult<IEnumerable<Signal>>(signals);
     }

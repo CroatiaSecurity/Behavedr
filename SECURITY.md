@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.3.3   | Yes       |
-| < 0.3.3 | No        |
+| 0.3.4   | Yes       |
+| < 0.3.4 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 

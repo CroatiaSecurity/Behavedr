@@ -69,15 +69,18 @@ public sealed class LinuxEbpfNetMonitor : IPlatformMonitor
             var comm = string.IsNullOrEmpty(e.Comm) ? "unknown" : e.Comm;
             var peer = e.Path ?? "";
 
-            signals.Add(new Signal(
-                $"ebpf_connect:{comm}:pid:{e.Pid}:{Truncate(peer, 48)}",
-                45, 0.78));
-
             if (TryParsePort(peer, out var port) && SuspiciousPorts.Contains(port))
             {
                 signals.Add(new Signal(
                     $"ebpf_net_suspicious_port:{peer}:pid:{e.Pid}:{comm}",
                     78, 0.85));
+            }
+            else if (!string.IsNullOrEmpty(peer))
+            {
+                // Low-weight connect telemetry (not every connect is malicious)
+                signals.Add(new Signal(
+                    $"ebpf_connect:{comm}:pid:{e.Pid}:{Truncate(peer, 48)}",
+                    20, 0.55));
             }
 
             if (!string.IsNullOrEmpty(peer))
@@ -97,9 +100,6 @@ public sealed class LinuxEbpfNetMonitor : IPlatformMonitor
 
         if (_remoteHits.Count > 2000)
             _remoteHits.Clear();
-
-        if (batch.Count > 0)
-            signals.Add(new Signal($"ebpf_batch_connect:{batch.Count}", 12, 0.5));
     }
 
     private void ScanProcNetAll(List<Signal> signals)
