@@ -300,7 +300,7 @@ public sealed class LinuxEbpfLoader : IDisposable
                 value = (ulong)valPin.AddrOfPinnedObject(),
                 flags = 0,
             };
-            if (Bpf(BPF_MAP_LOOKUP_ELEM, ref attr) != 0)
+            if (Bpf(Platform.LinuxSyscallNumbers.BPF_MAP_LOOKUP_ELEM, ref attr) != 0)
                 return false;
 
             // Layout: kind@0 pid@4 tgid@8 pad@12 comm@16 path@32
@@ -334,7 +334,7 @@ public sealed class LinuxEbpfLoader : IDisposable
                 key = (ulong)keyPin.AddrOfPinnedObject(),
                 value = (ulong)valPin.AddrOfPinnedObject(),
             };
-            if (Bpf(BPF_MAP_LOOKUP_ELEM, ref attr) != 0)
+            if (Bpf(Platform.LinuxSyscallNumbers.BPF_MAP_LOOKUP_ELEM, ref attr) != 0)
                 return false;
             value = BitConverter.ToUInt32(valBytes, 0);
             return true;
@@ -469,22 +469,22 @@ public sealed class LinuxEbpfLoader : IDisposable
 
     private static string Escape(string s) => s.Replace("\"", "\\\"");
 
-    // --- bpf() syscalls ---
+    // --- bpf() syscalls: numbers from LinuxSyscallNumbers (kernel tables, not guessed) ---
 
-    private const int BPF_MAP_LOOKUP_ELEM = 1;
-    private const int BPF_OBJ_GET = 7;
-
-    private static int SysBpfNumber =>
-        RuntimeInformation.ProcessArchitecture switch
+    private static int SysBpfNumber
+    {
+        get
         {
-            Architecture.Arm64 => 280,
-            Architecture.Arm => 386,
-            _ => 321, // x86_64
-        };
+            var n = Platform.LinuxSyscallNumbers.Bpf;
+            return n > 0 ? (int)n : -1;
+        }
+    }
 
     private static int BpfObjGet(string path)
     {
         if (string.IsNullOrEmpty(path))
+            return -1;
+        if (SysBpfNumber < 0)
             return -1;
         // pinned BPF objects are special files; File.Exists is true for map pins
         var pathBytes = Encoding.UTF8.GetBytes(path + "\0");
@@ -497,14 +497,18 @@ public sealed class LinuxEbpfLoader : IDisposable
                 bpf_fd = 0,
                 file_flags = 0,
             };
-            var fd = (int)syscall(SysBpfNumber, BPF_OBJ_GET, ref attr, (ulong)Marshal.SizeOf<BpfAttrObj>());
+            var fd = (int)syscall(SysBpfNumber, Platform.LinuxSyscallNumbers.BPF_OBJ_GET, ref attr, (ulong)Marshal.SizeOf<BpfAttrObj>());
             return fd;
         }
         finally { pin.Free(); }
     }
 
-    private static int Bpf(int cmd, ref BpfAttrMapElem attr) =>
-        (int)syscall_map(SysBpfNumber, cmd, ref attr, (ulong)Marshal.SizeOf<BpfAttrMapElem>());
+    private static int Bpf(int cmd, ref BpfAttrMapElem attr)
+    {
+        if (SysBpfNumber < 0)
+            return -1;
+        return (int)syscall_map(SysBpfNumber, cmd, ref attr, (ulong)Marshal.SizeOf<BpfAttrMapElem>());
+    }
 
     /// <summary>
     /// bpf_attr for MAP_*_ELEM: map_fd (u32) + pad + key/value/flags as aligned u64.

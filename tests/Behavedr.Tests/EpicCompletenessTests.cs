@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace Behavedr.Tests;
 
 /// <summary>
@@ -187,6 +189,27 @@ public class EpicCompletenessTests
         Assert.Contains("jsonl-host", src, StringComparison.Ordinal);
         Assert.Contains("es.events", src, StringComparison.Ordinal);
         Assert.Contains("TryStartJsonlFallback", src, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LinuxSyscallNumbers_MatchKernelTables()
+    {
+        // Documented in docs/PLATFORM_ABI.md — fail if someone "simplifies" wrong
+        Assert.Equal(1, Behavedr.Core.Platform.LinuxSyscallNumbers.BPF_MAP_LOOKUP_ELEM);
+        Assert.Equal(7, Behavedr.Core.Platform.LinuxSyscallNumbers.BPF_OBJ_GET);
+        if (RuntimeInformation.ProcessArchitecture == Architecture.X64)
+        {
+            Assert.Equal(321, Behavedr.Core.Platform.LinuxSyscallNumbers.Bpf);
+            Assert.Equal(434, Behavedr.Core.Platform.LinuxSyscallNumbers.PidfdOpen);
+            Assert.Equal(424, Behavedr.Core.Platform.LinuxSyscallNumbers.PidfdSendSignal);
+            Assert.Equal(444, Behavedr.Core.Platform.LinuxSyscallNumbers.LandlockCreateRuleset);
+        }
+        if (RuntimeInformation.ProcessArchitecture == Architecture.Arm64)
+        {
+            Assert.Equal(280, Behavedr.Core.Platform.LinuxSyscallNumbers.Bpf);
+            Assert.Equal(434, Behavedr.Core.Platform.LinuxSyscallNumbers.PidfdOpen);
+            Assert.Equal(424, Behavedr.Core.Platform.LinuxSyscallNumbers.PidfdSendSignal);
+        }
     }
 
     [Fact]

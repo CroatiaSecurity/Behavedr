@@ -167,7 +167,11 @@ public class ProcessKillAction : IResponseAction
                     return ResponseOutcome.Skipped(Name, $"Safety: {r2}");
             }
 
-            var pidfd = syscall_pidfd_open(434, pid, 0);
+            // NR from kernel tables (LinuxSyscallNumbers): 434/424 on x86_64 and arm64
+            if (!Platform.LinuxSyscallNumbers.SupportsPidfd)
+                return null;
+
+            var pidfd = syscall_pidfd_open(Platform.LinuxSyscallNumbers.PidfdOpen, pid, 0);
             if (pidfd < 0)
                 return null;
 
@@ -182,7 +186,8 @@ public class ProcessKillAction : IResponseAction
                     processName, pid, score);
 
                 const int SIGKILL = 9;
-                var result = syscall_pidfd_send_signal(424, pidfd, SIGKILL, IntPtr.Zero, 0);
+                var result = syscall_pidfd_send_signal(
+                    Platform.LinuxSyscallNumbers.PidfdSendSignal, pidfd, SIGKILL, IntPtr.Zero, 0);
                 if (result == 0)
                 {
                     return ResponseOutcome.Ok(Name,

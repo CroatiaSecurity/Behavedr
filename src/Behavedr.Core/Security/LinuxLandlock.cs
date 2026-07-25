@@ -122,13 +122,11 @@ public static class LinuxLandlock
         | AccessFsMakeFifo | AccessFsMakeBlock | AccessFsMakeSym | AccessFsRefer | AccessFsTruncate;
 
     private const int LandlockRuleTypePathBeneath = 1;
+    // fcntl.h: O_PATH=010000000, O_CLOEXEC=02000000 (octal) on Linux
     private const int O_PATH = 0x200000;
     private const int O_CLOEXEC = 0x80000;
     private const int PR_SET_NO_NEW_PRIVS = 38;
-    // x86_64 syscall numbers
-    private const long NR_landlock_create_ruleset = 444;
-    private const long NR_landlock_add_rule = 445;
-    private const long NR_landlock_restrict_self = 446;
+    // Syscall NRs: Platform.LinuxSyscallNumbers (kernel tables; 444/445/446 on x86_64 + arm64)
 
     [StructLayout(LayoutKind.Sequential)]
     private struct LandlockRulesetAttr
@@ -143,14 +141,26 @@ public static class LinuxLandlock
         public int parent_fd;
     }
 
-    private static int SyscallLandlockCreate(ref LandlockRulesetAttr attr) =>
-        (int)syscall3(NR_landlock_create_ruleset, ref attr, (ulong)Marshal.SizeOf<LandlockRulesetAttr>(), 0);
+    private static int SyscallLandlockCreate(ref LandlockRulesetAttr attr)
+    {
+        var nr = Platform.LinuxSyscallNumbers.LandlockCreateRuleset;
+        if (nr < 0) return -1;
+        return (int)syscall3(nr, ref attr, (ulong)Marshal.SizeOf<LandlockRulesetAttr>(), 0);
+    }
 
-    private static int SyscallLandlockAddRule(int ruleset, ref LandlockPathBeneathAttr pathAttr) =>
-        (int)syscall4(NR_landlock_add_rule, ruleset, LandlockRuleTypePathBeneath, ref pathAttr, 0);
+    private static int SyscallLandlockAddRule(int ruleset, ref LandlockPathBeneathAttr pathAttr)
+    {
+        var nr = Platform.LinuxSyscallNumbers.LandlockAddRule;
+        if (nr < 0) return -1;
+        return (int)syscall4(nr, ruleset, LandlockRuleTypePathBeneath, ref pathAttr, 0);
+    }
 
-    private static int SyscallLandlockRestrictSelf(int ruleset) =>
-        (int)syscall2(NR_landlock_restrict_self, ruleset, 0);
+    private static int SyscallLandlockRestrictSelf(int ruleset)
+    {
+        var nr = Platform.LinuxSyscallNumbers.LandlockRestrictSelf;
+        if (nr < 0) return -1;
+        return (int)syscall2(nr, ruleset, 0);
+    }
 
     [DllImport("libc", EntryPoint = "syscall", SetLastError = true)]
     private static extern long syscall3(long n, ref LandlockRulesetAttr a, ulong size, ulong flags);
