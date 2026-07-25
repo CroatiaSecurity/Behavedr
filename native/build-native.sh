@@ -8,16 +8,19 @@ OUT="${1:-$ROOT/dist/native}"
 mkdir -p "$OUT"
 status=0
 
-echo "==> Linux eBPF object (requires clang + libbpf headers + vmlinux.h)"
+echo "==> Linux eBPF suite object (clang + BTF)"
 if command -v clang >/dev/null 2>&1 && [[ "$(uname -s)" == Linux ]]; then
   EBPF_DIR="$ROOT/native/linux/ebpf"
   if [[ -f /sys/kernel/btf/vmlinux ]] && command -v bpftool >/dev/null 2>&1; then
     bpftool btf dump file /sys/kernel/btf/vmlinux format c > "$EBPF_DIR/vmlinux.h" || true
   fi
+  SRC="$EBPF_DIR/behavedr_suite.bpf.c"
+  [[ -f "$SRC" ]] || SRC="$EBPF_DIR/exec_trace.bpf.c"
   if [[ -f "$EBPF_DIR/vmlinux.h" ]]; then
-    if clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
-        -c "$EBPF_DIR/exec_trace.bpf.c" -o "$OUT/behavedr_exec.bpf.o" 2>"$OUT/ebpf-build.log"; then
-      echo "Built $OUT/behavedr_exec.bpf.o"
+    if clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -I "$EBPF_DIR" \
+        -c "$SRC" -o "$OUT/behavedr_exec.bpf.o" 2>"$OUT/ebpf-build.log"; then
+      echo "Built $OUT/behavedr_exec.bpf.o from $(basename "$SRC")"
+      cp -f "$OUT/behavedr_exec.bpf.o" "$EBPF_DIR/behavedr_exec.bpf.o" 2>/dev/null || true
     else
       echo "WARN: eBPF compile failed (see ebpf-build.log)"
       status=1
@@ -30,18 +33,24 @@ else
   echo "SKIP: eBPF build (not Linux or no clang)"
 fi
 
-echo "==> macOS EndpointSecurity bridge dylib"
+echo "==> macOS EndpointSecurity bridge dylib + System Extension"
 if [[ "$(uname -s)" == Darwin ]]; then
   if clang -dynamiclib -o "$OUT/libbehavedr_es.dylib" \
       "$ROOT/native/macos/es_bridge/behavedr_es_bridge.c" \
       -framework EndpointSecurity -framework CoreFoundation 2>"$OUT/es-build.log"; then
     echo "Built $OUT/libbehavedr_es.dylib"
   else
-    echo "WARN: ES bridge build failed (see es-build.log) — entitlement/SDK may be missing"
+    echo "WARN: ES bridge build failed (see es-build.log)"
     status=1
   fi
+  if [[ -x "$ROOT/native/macos/SystemExtension/build.sh" ]]; then
+    chmod +x "$ROOT/native/macos/SystemExtension/build.sh"
+    (cd "$ROOT/native/macos/SystemExtension" && ./build.sh) \
+      && cp -a "$ROOT/native/macos/SystemExtension/dist/." "$OUT/" 2>/dev/null \
+      || echo "WARN: System Extension build skipped/failed"
+  fi
 else
-  echo "SKIP: ES dylib (not macOS)"
+  echo "SKIP: ES dylib / System Extension (not macOS)"
 fi
 
 echo "Native build finished with soft-status=$status (0=all ok)"

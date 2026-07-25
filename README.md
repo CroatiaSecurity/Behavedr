@@ -2,9 +2,9 @@
 
 Behavioral endpoint detection and response agent. Monitors process activity, network connections, and system integrity in real time. Produces scored detections and executes configurable response actions.
 
-**Current version: 0.3.1**
+**Current version: 0.3.2**
 
-Versioning: current product line is **0.3.x**. Prefer patch bumps (`0.3.1`) for incremental work; use a **minor** (`0.2` → `0.3`) when cumulative capability advances the line. See [docs/RELEASE.md](docs/RELEASE.md) §0.
+Versioning: current product line is **0.3.x**. Prefer patch bumps (`0.3.2`) for incremental work; use a **minor** (`0.2` → `0.3`) when cumulative capability advances the line. See [docs/RELEASE.md](docs/RELEASE.md) §0.
 
 ## Platforms
 
@@ -62,6 +62,7 @@ dotnet publish src/Behavedr.Agent/Behavedr.Agent.csproj -c Release -r win-x64 --
 | [docs/RELEASE.md](docs/RELEASE.md) | Release runbook |
 | [docs/MITRE_COVERAGE.md](docs/MITRE_COVERAGE.md) | ATT&CK technique map (userland) |
 | [docs/OPERATOR_GUIDE.md](docs/OPERATOR_GUIDE.md) | AlertOnly vs Active, platform activation |
+| [docs/EPICS_STATUS.md](docs/EPICS_STATUS.md) | Honest field-readiness of platform epics |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 | [docs/](docs/) | Architecture decisions, audit reports |
 

@@ -26,6 +26,8 @@ public sealed class WindowsWfpEngine : IDisposable
     private static readonly Guid BehavedrSubLayerKey = new("A7C4E8F1-2B3D-4E5F-9A0B-1C2D3E4F5A6C");
     private static readonly Guid FwpmLayerAleAuthConnectV4 = new("c38d57d1-05a7-4c33-904f-7fbceee60e82");
     private static readonly Guid FwpmLayerAleAuthConnectV6 = new("4a72393b-319f-44bc-84c3-ba54dcb3b6b4");
+    private static readonly Guid FwpmLayerAleAuthRecvAcceptV4 = new("e1cd9fe7-f4b5-4273-96c0-ffd55ca401d7");
+    private static readonly Guid FwpmLayerAleAuthRecvAcceptV6 = new("a3b42c97-9f04-4672-b87e-cee9c483257f");
     private static readonly Guid FwpmConditionIpRemoteAddressV4 = new("b235ae9a-1d64-49b8-a44c-5ff3d9095045");
     private static readonly Guid FwpmConditionIpRemoteAddressV6 = new("246e1d8f-40f3-4f3b-b6bb-b5b501ffd1f7");
 
@@ -62,7 +64,7 @@ public sealed class WindowsWfpEngine : IDisposable
     }
 
     /// <summary>
-    /// Block outbound connections to a remote IPv4 or IPv6 address at ALE_AUTH_CONNECT.
+    /// Block remote address at ALE_AUTH_CONNECT (outbound) and ALE_AUTH_RECV_ACCEPT (inbound).
     /// </summary>
     public bool BlockRemoteAddress(IPAddress address, string comment)
     {
@@ -71,7 +73,7 @@ public sealed class WindowsWfpEngine : IDisposable
 
         lock (_lock)
         {
-            if (_filterIds.Count >= MaxFilters)
+            if (_filterIds.Count >= MaxFilters - 1)
             {
                 _logger.LogWarning("[WFP] Filter limit {Max} reached", MaxFilters);
                 return false;
@@ -79,20 +81,36 @@ public sealed class WindowsWfpEngine : IDisposable
         }
 
         bool isV6 = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6;
-        var layerKey = isV6 ? FwpmLayerAleAuthConnectV6 : FwpmLayerAleAuthConnectV4;
-        var condField = isV6 ? FwpmConditionIpRemoteAddressV6 : FwpmConditionIpRemoteAddressV4;
+        // Dual-layer isolation (0.3.2)
+        bool outOk = AddBlockFilter(
+            address, isV6,
+            isV6 ? FwpmLayerAleAuthConnectV6 : FwpmLayerAleAuthConnectV4,
+            isV6 ? FwpmConditionIpRemoteAddressV6 : FwpmConditionIpRemoteAddressV4,
+            comment + " (out)");
+        bool inOk = AddBlockFilter(
+            address, isV6,
+            isV6 ? FwpmLayerAleAuthRecvAcceptV6 : FwpmLayerAleAuthRecvAcceptV4,
+            isV6 ? FwpmConditionIpRemoteAddressV6 : FwpmConditionIpRemoteAddressV4,
+            comment + " (in)");
 
+        if (outOk || inOk)
+        {
+            _logger.LogWarning("[WFP] Blocked remote {Ip} out={Out} in={In}", address, outOk, inOk);
+            return true;
+        }
+        return false;
+    }
+
+    private bool AddBlockFilter(IPAddress address, bool isV6, Guid layerKey, Guid condField, string comment)
+    {
         var filterKey = Guid.NewGuid();
-        var displayName = $"Behavedr block {address}";
-
-        // Build FWPM_FILTER0 on unmanaged heap for correct layout across runtimes
         IntPtr filterPtr = IntPtr.Zero;
         IntPtr namePtr = IntPtr.Zero;
         IntPtr descPtr = IntPtr.Zero;
         IntPtr condPtr = IntPtr.Zero;
         try
         {
-            namePtr = Marshal.StringToHGlobalUni(displayName);
+            namePtr = Marshal.StringToHGlobalUni($"Behavedr block {address}");
             descPtr = Marshal.StringToHGlobalUni(comment.Length > 200 ? comment[..200] : comment);
 
             var condition = new FWPM_FILTER_CONDITION0
@@ -113,7 +131,7 @@ public sealed class WindowsWfpEngine : IDisposable
                 providerData = default,
                 layerKey = layerKey,
                 subLayerKey = BehavedrSubLayerKey,
-                weight = new FWP_VALUE0 { type = FWP_EMPTY },
+                weight = new FWP_VALUE0 { type = FWP_UINT8, uint32 = 0x0F },
                 numFilterConditions = 1,
                 filterCondition = condPtr,
                 action = new FWPM_ACTION0 { type = FWP_ACTION_BLOCK, filterType = Guid.Empty },
@@ -126,17 +144,12 @@ public sealed class WindowsWfpEngine : IDisposable
             filterPtr = Marshal.AllocHGlobal(Marshal.SizeOf<FWPM_FILTER0>());
             Marshal.StructureToPtr(filter, filterPtr, false);
 
-            uint hr = FwpmFilterAdd0(_engine, filterPtr, IntPtr.Zero, out ulong filterId);
+            uint hr = FwpmFilterAdd0(_engine, filterPtr, IntPtr.Zero, out _);
             if (hr != 0)
-            {
-                _logger.LogWarning("[WFP] FwpmFilterAdd0 failed for {Ip}: 0x{Code:X8}", address, hr);
                 return false;
-            }
 
             lock (_lock)
                 _filterIds.Add(filterKey);
-
-            _logger.LogWarning("[WFP] Blocked remote {Ip} (filterId={Id})", address, filterId);
             return true;
         }
         finally
@@ -247,11 +260,13 @@ public sealed class WindowsWfpEngine : IDisposable
 
     private const uint RPC_C_AUTHN_WINNT = 10;
     private const ushort FWP_EMPTY = 0;
+    private const ushort FWP_UINT8 = 1;
     private const ushort FWP_UINT32 = 4;
     private const ushort FWP_BYTE_ARRAY16_TYPE = 11;
     private const ushort FWP_V4_ADDR_MASK = 12;
     private const uint FWP_MATCH_EQUAL = 0;
-    private const uint FWP_ACTION_BLOCK = 0x00001001 | 0x00000001; // FWP_ACTION_FLAG_TERMINATING | BLOCK
+    // FWP_ACTION_BLOCK | FWP_ACTION_FLAG_TERMINATING
+    private const uint FWP_ACTION_BLOCK = 0x00001001;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct FWPM_DISPLAY_DATA0

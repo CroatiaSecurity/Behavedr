@@ -35,6 +35,8 @@ public sealed class LinuxEbpfExecMonitor : IPlatformMonitor, IDisposable
     private Thread? _pollThread;
     private volatile bool _stop;
     private string _mode = "inactive";
+    private LinuxEbpfLoader? _loader;
+    private int _lastCursor;
 
     private static readonly HashSet<string> OffensiveTools = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -65,6 +67,19 @@ public sealed class LinuxEbpfExecMonitor : IPlatformMonitor, IDisposable
 
         try
         {
+            // 0.3.2 production path: LinuxEbpfLoader + array map dump
+            var loader = new LinuxEbpfLoader(_logger);
+            var obj = loader.FindObject();
+            if (obj is not null && loader.TryLoadAll(obj))
+            {
+                _active = true;
+                _mode = "bpftool-suite";
+                _loader = loader;
+                StartPollThread();
+                _logger.LogInformation("[eBPF] Production suite loaded from {Obj}", obj);
+                return true;
+            }
+
             if (TryLoadViaBpftool())
             {
                 _active = true;
@@ -83,6 +98,7 @@ public sealed class LinuxEbpfExecMonitor : IPlatformMonitor, IDisposable
                 return true;
             }
 
+            Telemetry.SecurityTelemetry.ReportPlatformSoftFail("ebpf");
             _logger.LogWarning(
                 "[eBPF] Unavailable — place behavedr_exec.bpf.o next to agent or grant CAP_BPF. " +
                 "cn_proc remains active. See native/linux/ebpf/README.md");
@@ -234,9 +250,23 @@ public sealed class LinuxEbpfExecMonitor : IPlatformMonitor, IDisposable
         {
             try
             {
-                if (_mapFd >= 0)
+                if (_loader is not null && _mode.Contains("suite", StringComparison.Ordinal))
                 {
-                    // Walk circular indices
+                    foreach (var e in _loader.DumpEvents())
+                    {
+                        if (e.Pid == 0 || e.Slot < _lastCursor && _lastCursor - e.Slot < 200)
+                            continue;
+                        lock (_lock)
+                        {
+                            _events.Enqueue(new EbpfExecEvent(e.Pid, e.Tgid, e.Comm));
+                            while (_events.Count > MaxEvents)
+                                _events.Dequeue();
+                        }
+                        if (e.Slot > _lastCursor) _lastCursor = e.Slot;
+                    }
+                }
+                else if (_mapFd >= 0)
+                {
                     for (int i = 0; i < 64; i++)
                     {
                         int key = (idx + i) % 64;
@@ -254,8 +284,6 @@ public sealed class LinuxEbpfExecMonitor : IPlatformMonitor, IDisposable
                 }
                 else if (_mode.StartsWith("bpftool", StringComparison.Ordinal))
                 {
-                    // Sample recent process table for new PIDs as secondary sensor when object-loaded
-                    // (ringbuf userspace requires libbpf; production builds should link libbpf)
                     SampleProcForNewExecs();
                 }
             }

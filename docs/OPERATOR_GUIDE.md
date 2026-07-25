@@ -1,8 +1,8 @@
 # Behavedr Operator Guide
 
-**Version:** 0.3.1  
+**Version:** 0.3.2  
 
-## Live policy (0.3.1+)
+## Live policy (0.3.2+)
 
 When `Communication:Enabled` and the management server returns a **signed** policy:
 

@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.2] — 2026-07-25
+
+### Close remaining platform epics (code + field-activation path)
+
+#### Linux eBPF (production suite)
+- **`behavedr_suite.bpf.c`**: exec + openat + connect → dumpable array map
+- **`LinuxEbpfLoader`**: bpftool loadall/attach/map dump for field installs
+- **`LinuxEbpfExecMonitor`**: prefers suite loader before legacy/minimal paths
+- Soft-fail metric when unavailable; cn_proc remains primary
+
+#### macOS EndpointSecurity
+- **System Extension scaffold**: `native/macos/SystemExtension/` (main.m, entitlements, build.sh)
+- `native/build-native.sh` builds ES dylib + SE when on Darwin
+
+#### Windows WFP
+- Dual-layer block: ALE_AUTH_CONNECT **and** ALE_AUTH_RECV_ACCEPT (in + out)
+
+#### Mobile
+- Android: optional `Xamarin.Google.Android.Play.Integrity` package reference
+- iOS: `IosKeychainProtection` + Network Extension notes
+
+#### Docs
+- **`docs/EPICS_STATUS.md`**: honest field-readiness matrix
+
 ## [0.3.1] — 2026-07-25
 
 ### Live signed policy application
