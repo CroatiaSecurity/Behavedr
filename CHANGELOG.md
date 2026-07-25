@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.3] — 2026-07-25
+
+### Linux + macOS protection grade lift (iOS de-emphasized)
+
+#### Linux
+- **`LinuxKernelModuleMonitor`**: baselines `/proc/modules`, alerts on new loads and known rootkit names; soft signal when kernel lockdown is `[none]`.
+- **`LinuxAuthMonitor`**: tails `auth.log` / `secure` for failure bursts, root sessions, root SSH.
+- **systemd unit hardening**: `ProtectKernelLogs`, `ProtectClock`, `ProtectHostname`, denser `SystemCallFilter` (`@raw-io` `@debug`), `UMask=0077`, capability docs, optional `IPAddressAllow` template.
+- **UnixAntiTamper**: `/proc` self-tamper / TracerPid checks on Linux.
+
+#### macOS
+- **`MacOSFileEventMonitor`**: kqueue `EVFILT_VNODE` on LaunchDaemons/Agents, PrivilegedHelperTools, `/etc`, `/tmp`, etc.
+- **`MacOSCodeSignMonitor`**: self `codesign -v`, SIP status, unsigned LaunchDaemon binaries.
+- **`MacOSKqueueMonitor`**: PID discovery interval **2s → 500ms** (shorter ephemeral blind spots).
+- **`MacOSNetworkIsolation`**: route blackhole / optional `pfctl` table for C2 IPs from signals (rate-limited).
+- **launchd plist**: keep-alive on crash, interactive process type, FDA notes.
+
+#### Packaging / docs
+- Expanded `packaging/unix/README.txt` install paths for production.
+- README: iOS marked deferred; Linux/macOS status updated.
+
 ## [0.2.2] — 2026-07-25
 
 ### Production Hardening — Android Pipeline Fix + Sentinel Imports

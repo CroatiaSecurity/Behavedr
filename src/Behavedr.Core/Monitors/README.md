@@ -7,8 +7,12 @@ Registered at runtime via `PlatformMonitors` / `AgentBootstrap` when `IsSupporte
 | WindowsMonitor | Windows | Base process heuristics |
 | DriverLoadMonitor | Windows | BYOVD / vulnerable driver (v0.2.2, Sentinel-inspired) |
 | LinuxMonitor | Linux | Base process heuristics |
+| LinuxKernelModuleMonitor | Linux | New/suspicious kernel module loads (v0.2.3) |
+| LinuxAuthMonitor | Linux | auth.log/secure failure bursts + root sessions (v0.2.3) |
 | MacOSMonitor | macOS | Base process heuristics |
-| MacOSKqueueMonitor | macOS | Real-time process events |
+| MacOSKqueueMonitor | macOS | Real-time process events (500ms discovery) |
+| MacOSFileEventMonitor | macOS | VNODE watches on persistence/tmp paths (v0.2.3) |
+| MacOSCodeSignMonitor | macOS | codesign self + LaunchDaemon scan (v0.2.3) |
 | AndroidMonitor | Android | Root/process + platform signal injection |
 | IosMonitor | iOS / Catalyst | Jailbreak heuristics (preview) |
 | + many specialized monitors | per-OS | See `PlatformMonitors.BuildMonitorList` |

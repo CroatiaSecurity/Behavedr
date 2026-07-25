@@ -16,14 +16,11 @@
     <key>RunAtLoad</key>
     <true/>
 
-    <key>KeepAlive</key>
-    <true/>
-
     <key>ThrottleInterval</key>
     <integer>1</integer>
 
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Interactive</string>
 
     <key>StandardOutPath</key>
     <string>/opt/behavedr/logs/behavedr-stdout.log</string>
@@ -49,37 +46,45 @@
         <string>Production</string>
     </dict>
 
-    <!-- v0.1.6 audit fixes (RT-10): Hardening keys -->
-
-    <!-- Create isolated security session for the daemon -->
+    <!-- v0.2.3 hardening -->
     <key>SessionCreate</key>
     <true/>
 
-    <!-- Restrictive file creation mask (owner-only) -->
     <key>Umask</key>
     <integer>77</integer>
 
-    <!-- Fast exit timeout for rapid re-launch on unload -->
     <key>ExitTimeOut</key>
     <integer>5</integer>
 
-    <!-- Higher scheduling priority for security-critical monitoring -->
+    <!-- Prefer CPU for detection loops -->
     <key>Nice</key>
     <integer>-10</integer>
 
-    <!-- Do not deprioritize I/O — detection must be responsive -->
     <key>LowPriorityBackgroundIO</key>
     <false/>
 
-    <!-- Prevent macOS from killing daemon under memory pressure -->
     <key>EnablePressuredExit</key>
     <false/>
 
-    <!-- Register Mach service for IPC (future: admin CLI communication) -->
+    <!-- Survive user logout when installed as system daemon -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
     <key>MachServices</key>
     <dict>
         <key>com.croatiasecurity.behavedr</key>
         <true/>
     </dict>
+
+    <!-- Require Full Disk Access for deep monitoring (document for operators) -->
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>com.croatiasecurity.behavedr</string>
+    </array>
 </dict>
 </plist>

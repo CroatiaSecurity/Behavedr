@@ -2,17 +2,17 @@
 
 Behavioral endpoint detection and response agent. Monitors process activity, network connections, and system integrity in real time. Produces scored detections and executes configurable response actions.
 
-**Current version: 0.2.2**
+**Current version: 0.2.3**
 
 ## Platforms
 
 | Platform | Status |
 |----------|--------|
 | Windows (x64) | Production — Full detection + response + BYOVD driver monitoring |
-| Linux (x64) | Production — Full detection + response |
-| macOS (ARM64) | Production — Detection + response (kqueue real-time; EndpointSecurity planned) |
-| Android | Production — Detection + response pipeline, VPN inspection, Keystore, supply-chain checks (Device Owner recommended for full response) |
-| iOS | Preview — Jailbreak/persistence heuristics within sandbox; MDM/Network Extension planned |
+| Linux (x64) | Production — cn_proc, fanotify, kernel modules, auth logs, nftables isolation, hardened systemd |
+| macOS (ARM64) | Production — kqueue process (500ms), VNODE file watches, codesign checks, network isolation |
+| Android | Production — Detection + response pipeline, VPN inspection, Keystore (Device Owner recommended) |
+| iOS | Deferred / preview only — not a release focus |
 
 ## Quick Start
 

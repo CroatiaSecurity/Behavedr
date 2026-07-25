@@ -94,6 +94,12 @@ try
         builder.Services.AddSingleton<LinuxNetworkIsolation>();
     }
 
+    // v0.2.3: macOS network isolation (route blackhole / pf table)
+    if (OperatingSystem.IsMacOS())
+    {
+        builder.Services.AddSingleton<MacOSNetworkIsolation>();
+    }
+
     // v0.2.0: Android response engine (kill/isolate/force-stop)
     if (OperatingSystem.IsAndroid())
     {
@@ -168,6 +174,12 @@ try
     if (OperatingSystem.IsLinux())
     {
         responseEngine.RegisterAction(host.Services.GetRequiredService<LinuxNetworkIsolation>());
+    }
+
+    // v0.2.3: Register macOS network isolation
+    if (OperatingSystem.IsMacOS())
+    {
+        responseEngine.RegisterAction(host.Services.GetRequiredService<MacOSNetworkIsolation>());
     }
 
     // v0.2.0: Register Android response engine

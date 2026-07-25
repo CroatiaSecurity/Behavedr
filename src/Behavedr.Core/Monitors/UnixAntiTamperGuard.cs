@@ -62,10 +62,57 @@ public class UnixAntiTamperGuard : IPlatformMonitor
             DetectDebuggerAttachment(signals);
             CheckServiceHealth(signals);
             CheckLogIntegrity(signals);
+            if (OperatingSystem.IsLinux())
+                CheckLinuxProcTamper(signals);
             _lastCheck = DateTime.UtcNow;
         }
 
         return Task.FromResult<IEnumerable<Signal>>(signals);
+    }
+
+    /// <summary>
+    /// Detect /proc hide / mount tricks against the agent (bind-mount over /proc/self).
+    /// </summary>
+    private void CheckLinuxProcTamper(List<Signal> signals)
+    {
+        try
+        {
+            var status = "/proc/self/status";
+            if (!File.Exists(status))
+            {
+                signals.Add(new Signal("proc_self_missing", 95, 0.95));
+                return;
+            }
+
+            // /proc/self should resolve to our PID
+            var link = "/proc/self";
+            if (Directory.Exists(link))
+            {
+                var target = new DirectoryInfo(link).ResolveLinkTarget(true)?.FullName
+                             ?? Path.GetFullPath(link);
+                if (!target.Contains(Environment.ProcessId.ToString(), StringComparison.Ordinal))
+                {
+                    // Some kernels expose numeric path; soft check via cmdline
+                    var cmdline = File.ReadAllText($"/proc/{Environment.ProcessId}/cmdline");
+                    if (string.IsNullOrEmpty(cmdline))
+                        signals.Add(new Signal("proc_pid_cmdline_empty", 70, 0.75));
+                }
+            }
+
+            // TracerPid re-check is in DetectDebuggerAttachment; here check NSpid hide
+            foreach (var line in File.ReadLines(status))
+            {
+                if (line.StartsWith("TracerPid:", StringComparison.Ordinal) &&
+                    !line.Trim().EndsWith("0", StringComparison.Ordinal))
+                {
+                    signals.Add(new Signal("tracer_pid_attached", 92, 0.95));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[UnixAntiTamper] /proc check failed");
+        }
     }
 
     /// <summary>

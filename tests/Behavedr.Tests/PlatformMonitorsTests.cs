@@ -43,4 +43,33 @@ public class PlatformMonitorsTests
         Assert.False(string.IsNullOrWhiteSpace(summary));
         Assert.NotEqual("Unknown", summary);
     }
+
+    [Fact]
+    public void LinuxAndMacOSGradeLiftMonitors_ConstructAndGateIsSupported()
+    {
+        // Types must construct on every CI host; IsSupported is platform-gated.
+        var kernel = new Behavedr.Core.Monitors.LinuxKernelModuleMonitor();
+        var auth = new Behavedr.Core.Monitors.LinuxAuthMonitor();
+        var files = new Behavedr.Core.Monitors.MacOSFileEventMonitor();
+        var codesign = new Behavedr.Core.Monitors.MacOSCodeSignMonitor();
+        var isolation = new Behavedr.Core.Response.MacOSNetworkIsolation();
+
+        Assert.Equal(OperatingSystem.IsLinux(), kernel.IsSupported);
+        Assert.Equal(OperatingSystem.IsLinux(), auth.IsSupported);
+        Assert.Equal(OperatingSystem.IsMacOS(), files.IsSupported);
+        Assert.Equal(OperatingSystem.IsMacOS(), codesign.IsSupported);
+        Assert.Equal(OperatingSystem.IsMacOS(), isolation.IsSupported);
+
+        if (OperatingSystem.IsLinux())
+        {
+            Assert.Contains(PlatformMonitors.All, m => m.GetType().Name == "LinuxKernelModuleMonitor");
+            Assert.Contains(PlatformMonitors.All, m => m.GetType().Name == "LinuxAuthMonitor");
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            Assert.Contains(PlatformMonitors.All, m => m.GetType().Name == "MacOSFileEventMonitor");
+            Assert.Contains(PlatformMonitors.All, m => m.GetType().Name == "MacOSCodeSignMonitor");
+        }
+    }
 }

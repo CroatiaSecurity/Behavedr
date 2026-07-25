@@ -42,7 +42,8 @@ public class MacOSKqueueMonitor : IPlatformMonitor
     private readonly object _lock = new();
     private const int MaxBufferedEvents = 500;
     private DateTime _lastPidScan = DateTime.MinValue;
-    private readonly TimeSpan _pidScanInterval = TimeSpan.FromSeconds(2);
+    // v0.2.3: 500ms discovery — shrinks short-lived process blind spots vs previous 2s
+    private readonly TimeSpan _pidScanInterval = TimeSpan.FromMilliseconds(500);
 
     // Track exec timestamps for ephemeral process detection
     private readonly Dictionary<int, long> _execTimestamps = new();

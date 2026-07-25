@@ -106,6 +106,10 @@ public static class PlatformMonitors
             // v0.2.0: Real-time event sourcing (eliminates polling blind spots)
             monitors.Add(new LinuxProcessConnector());
             monitors.Add(new LinuxFanotifyMonitor());
+
+            // v0.2.3: Kernel module + auth log coverage (Linux grade lift)
+            monitors.Add(new LinuxKernelModuleMonitor());
+            monitors.Add(new LinuxAuthMonitor());
         }
 
         // v0.1.5: macOS full detection suite (cross-platform parity)
@@ -120,6 +124,10 @@ public static class PlatformMonitors
 
             // v0.1.6: Real-time process event monitoring via kqueue (RT-1 fix)
             monitors.Add(new MacOSKqueueMonitor());
+
+            // v0.2.3: File VNODE events + codesign integrity (macOS grade lift)
+            monitors.Add(new MacOSFileEventMonitor());
+            monitors.Add(new MacOSCodeSignMonitor());
         }
 
         // v0.1.5: Android full detection suite
