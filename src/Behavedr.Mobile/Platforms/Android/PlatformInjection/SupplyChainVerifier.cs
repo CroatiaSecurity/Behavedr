@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Security.Cryptography;
 
+using Environment = System.Environment;
 using Signal = Behavedr.Core.Models.Signal;
 
 namespace Behavedr.Mobile.PlatformInjection;

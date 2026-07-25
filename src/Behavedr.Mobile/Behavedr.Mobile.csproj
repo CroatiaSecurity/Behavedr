@@ -12,7 +12,7 @@
 
     <ApplicationTitle>Behavedr</ApplicationTitle>
     <ApplicationId>com.croatiasecurity.behavedr</ApplicationId>
-    <ApplicationDisplayVersion>0.3.9</ApplicationDisplayVersion>
+    <ApplicationDisplayVersion>0.3.10</ApplicationDisplayVersion>
     <ApplicationVersion>21</ApplicationVersion>
 
     <!-- Publisher APK cert pin (not end users). Optional for release.

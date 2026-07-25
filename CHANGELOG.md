@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.10] — 2026-07-25
+
+### CI / Android build fixes
+
+- Agent `packages.lock.json`: RID-less graph so `--locked-mode` works on win/linux/osx (no stale win-x64/ILLink from publish)
+- Mobile csproj: XML comment no longer contains illegal `--` (MSB4025)
+- Vuln audit: word-boundary severity match; Tests path requires vulnerable-packages header (false positive on “following”)
+- Android: disambiguate `System.Environment` vs `Android.OS.Environment` in supply-chain / Play Integrity / update security
+
 ## [0.3.9] — 2026-07-25
 
 ### Platform epics: in-repo complete
