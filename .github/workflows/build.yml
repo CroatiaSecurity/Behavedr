@@ -33,11 +33,42 @@ jobs:
         dotnet-version: '10.0.x'
         dotnet-quality: 'ga'
 
-    - name: Restore
-      run: dotnet restore src/Behavedr.Agent/Behavedr.Agent.csproj --locked-mode
+    - name: Restore (locked)
+      run: |
+        dotnet restore src/Behavedr.Core/Behavedr.Core.csproj --locked-mode
+        dotnet restore src/Behavedr.Agent/Behavedr.Agent.csproj --locked-mode
+        dotnet restore tests/Behavedr.Tests/Behavedr.Tests.csproj --locked-mode
 
-    - name: Restore Tests
-      run: dotnet restore tests/Behavedr.Tests/Behavedr.Tests.csproj --locked-mode
+    - name: Vulnerability audit
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Fail the build if any restored package is known-vulnerable at moderate+ severity.
+        # Uses the NuGet vulnerability database via the .NET SDK.
+        echo "Scanning Agent project for vulnerable packages..."
+        if ! dotnet list src/Behavedr.Agent/Behavedr.Agent.csproj package --vulnerable --include-transitive 2>&1 | tee vuln-agent.txt; then
+          echo "::error::dotnet list package --vulnerable failed for Agent"
+          exit 1
+        fi
+        if grep -Eiq 'has the following vulnerable packages|Severity' vuln-agent.txt; then
+          # SDK prints a table when vulnerabilities exist
+          if grep -Eiq 'Critical|High|Moderate|Low' vuln-agent.txt; then
+            echo "::error::Vulnerable NuGet packages detected in Agent dependency graph"
+            cat vuln-agent.txt
+            exit 1
+          fi
+        fi
+        echo "Scanning Tests project for vulnerable packages..."
+        if ! dotnet list tests/Behavedr.Tests/Behavedr.Tests.csproj package --vulnerable --include-transitive 2>&1 | tee vuln-tests.txt; then
+          echo "::error::dotnet list package --vulnerable failed for Tests"
+          exit 1
+        fi
+        if grep -Eiq 'Critical|High|Moderate|Low' vuln-tests.txt; then
+          echo "::error::Vulnerable NuGet packages detected in Tests dependency graph"
+          cat vuln-tests.txt
+          exit 1
+        fi
+        echo "No known vulnerable packages reported."
 
     - name: Build Core + Agent
       run: |
@@ -63,7 +94,8 @@ jobs:
   android:
     name: Android
     runs-on: ubuntu-latest
-    # Mobile builds are best-effort — don't block desktop CI
+    # PR CI remains best-effort so desktop merges are not blocked by MAUI SDK flake.
+    # Release workflow hard-fails if the APK is missing (see release.yml).
     continue-on-error: true
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -85,7 +117,6 @@ jobs:
 
     - name: Install Android platform packages
       run: |
-        # Install latest available API level; fall back gracefully
         sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools" 2>/dev/null \
           || sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
         yes | sdkmanager --licenses || true
@@ -93,11 +124,20 @@ jobs:
     - name: Install MAUI Android workload
       run: dotnet workload install maui-android
 
+    - name: Restore Mobile (locked when lockfile present)
+      run: |
+        if [ -f src/Behavedr.Mobile/packages.lock.json ]; then
+          dotnet restore src/Behavedr.Mobile/Behavedr.Mobile.csproj --locked-mode -p:MobileTfms=net10.0-android
+        else
+          echo "::warning::Mobile packages.lock.json missing — restore without locked-mode"
+          dotnet restore src/Behavedr.Mobile/Behavedr.Mobile.csproj -p:MobileTfms=net10.0-android
+        fi
+
     - name: Build Android
-      run: dotnet build src/Behavedr.Mobile/Behavedr.Mobile.csproj -c Release -f net10.0-android -r android-arm64
+      run: dotnet build src/Behavedr.Mobile/Behavedr.Mobile.csproj -c Release -f net10.0-android -r android-arm64 --no-restore
 
     - name: Publish Android
-      run: dotnet publish src/Behavedr.Mobile/Behavedr.Mobile.csproj -c Release -f net10.0-android -r android-arm64 -o publish/android
+      run: dotnet publish src/Behavedr.Mobile/Behavedr.Mobile.csproj -c Release -f net10.0-android -r android-arm64 -o publish/android --no-restore
 
     - name: Upload Android artifact
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -109,7 +149,7 @@ jobs:
   ios:
     name: iOS
     runs-on: macos-latest
-    # Mobile builds are best-effort — don't block desktop CI
+    # iOS is deferred / preview — never blocks desktop CI.
     continue-on-error: true
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -125,7 +165,6 @@ jobs:
         set -e
         echo "Available Xcode versions:"
         ls -d /Applications/Xcode*.app 2>/dev/null || true
-        # Pick the latest Xcode available on the runner
         LATEST_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
         if [ -z "$LATEST_XCODE" ]; then
           LATEST_XCODE="/Applications/Xcode.app"

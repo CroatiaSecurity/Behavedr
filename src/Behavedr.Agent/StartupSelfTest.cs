@@ -4,6 +4,7 @@ using Behavedr.Core;
 using Behavedr.Core.Platform;
 using Behavedr.Core.Response;
 using Behavedr.Core.Security;
+using Behavedr.Core.Update;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -31,6 +32,31 @@ public sealed class StartupSelfTest : IHostedService
     {
         _logger.LogInformation("[StartupSelfTest] Running pre-flight checks...");
         int passed = 0, failed = 0;
+
+        // 0. If an update was staged last run, evaluate health and auto-rollback on failure.
+        // Runs before other checks so a broken update can restore .previous binaries.
+        try
+        {
+            var rolledBack = AutoUpdater.TryHealthCheckRollback(
+                () => RunCriticalCryptoHealth(),
+                _logger);
+            if (rolledBack)
+            {
+                failed++;
+                _logger.LogCritical(
+                    "[StartupSelfTest] Auto-rollback executed after failed post-update health check. " +
+                    "Restart the agent to load restored binaries.");
+            }
+            else
+            {
+                passed++;
+            }
+        }
+        catch (Exception ex)
+        {
+            failed++;
+            _logger.LogWarning(ex, "[StartupSelfTest] Post-update rollback check FAILED");
+        }
 
         // 1. SecureEnvelope seal/unseal round-trip
         try
@@ -144,6 +170,31 @@ public sealed class StartupSelfTest : IHostedService
             _logger.LogWarning(ex, "[StartupSelfTest] Update key check FAILED");
         }
 
+        // 7. Policy signing path is configured (may still share update key until rotation)
+        try
+        {
+            if (PolicySignatureVerifier.IsProductionKeyConfigured())
+            {
+                passed++;
+                if (PolicySignatureVerifier.IsUsingSharedUpdateKey())
+                {
+                    _logger.LogInformation(
+                        "[StartupSelfTest] Policy and update signing keys are currently shared — " +
+                        "rotate to distinct keys for blast-radius isolation (see docs/SUPPLY_CHAIN.md)");
+                }
+            }
+            else
+            {
+                failed++;
+                _logger.LogWarning("[StartupSelfTest] Policy signing public key is PLACEHOLDER (dev mode)");
+            }
+        }
+        catch (Exception ex)
+        {
+            failed++;
+            _logger.LogWarning(ex, "[StartupSelfTest] Policy key check FAILED");
+        }
+
         if (failed == 0)
             _logger.LogInformation("[StartupSelfTest] All {Passed} checks PASSED", passed);
         else
@@ -151,6 +202,35 @@ public sealed class StartupSelfTest : IHostedService
                 passed, failed);
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Minimal crypto health used for post-update rollback decisions.
+    /// Does not depend on monitors (which may not be registered yet when this runs early).
+    /// </summary>
+    private static bool RunCriticalCryptoHealth()
+    {
+        try
+        {
+            var payload = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+            var sealedData = SecureEnvelope.Seal(payload, "post-update-health");
+            var opened = SecureEnvelope.Unseal(sealedData, "post-update-health");
+            if (opened is null || !opened.AsSpan().SequenceEqual(payload))
+                return false;
+
+            var key = KeyProtection.GetMachineKey();
+            if (key is not { Length: 32 })
+                return false;
+
+            if (!UpdateSignatureVerifier.IsProductionKeyConfigured())
+                return false;
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

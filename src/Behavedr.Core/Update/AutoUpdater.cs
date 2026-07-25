@@ -1,7 +1,6 @@
 namespace Behavedr.Core.Update;
 
 using System.IO.Compression;
-using System.Net.Security;
 using System.Reflection;
 using System.Security.Authentication;
 using System.Security.Cryptography;
@@ -11,10 +10,21 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>
 /// Auto-update mechanism using GitHub Releases API.
-/// Checks for newer versions, downloads, verifies SHA-256, and replaces binary.
+/// Downloads platform packages, verifies RSA-PSS signatures (and optional SHA-256
+/// manifests), stages binaries with a rollback point, and supports health-check
+/// driven rollback on the subsequent process start.
 /// </summary>
 public class AutoUpdater
 {
+    /// <summary>Marker written after a successful stage; cleared after healthy startup or rollback.</summary>
+    public const string PendingUpdateMarkerFileName = ".update-pending";
+
+    /// <summary>Directory holding previous binaries for rollback.</summary>
+    public const string PreviousDirectoryName = ".previous";
+
+    /// <summary>Staging directory used during extraction.</summary>
+    public const string StagingDirectoryName = ".update-staging";
+
     private readonly HttpClient _http;
     private readonly ILogger<AutoUpdater> _logger;
     private readonly string _currentVersion;
@@ -35,7 +45,6 @@ public class AutoUpdater
         _platform = GetPlatformRid();
 
         // RT-5 FIX: Pin TLS to 1.2+ and prefer 1.3 for update downloads.
-        // Prevents TLS downgrade attacks on the update channel.
         var handler = new HttpClientHandler
         {
             SslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12,
@@ -44,6 +53,9 @@ public class AutoUpdater
         _http.DefaultRequestHeaders.UserAgent.ParseAdd(
             $"Behavedr/{_currentVersion}");
     }
+
+    /// <summary>Current agent version used for anti-downgrade comparisons.</summary>
+    public string CurrentVersion => _currentVersion;
 
     /// <summary>
     /// Check GitHub Releases for a newer version.
@@ -75,7 +87,6 @@ public class AutoUpdater
                 return null;
             }
 
-            // Find the asset for our platform
             var assetUrl = FindPlatformAsset(root);
             if (assetUrl is null)
             {
@@ -83,7 +94,8 @@ public class AutoUpdater
                 return null;
             }
 
-            return new UpdateInfo(latestVersion, assetUrl, tagName);
+            var checksumsUrl = FindAssetUrl(root, "SHA256SUMS");
+            return new UpdateInfo(latestVersion, assetUrl, tagName, checksumsUrl);
         }
         catch (Exception ex)
         {
@@ -93,7 +105,8 @@ public class AutoUpdater
     }
 
     /// <summary>
-    /// Download and apply an update. Verifies RSA-PSS signature before extraction.
+    /// Download and apply an update. Verifies RSA-PSS signature (and SHA-256
+    /// when a release SHA256SUMS is published) before extraction.
     /// </summary>
     public async Task<bool> ApplyUpdateAsync(UpdateInfo update, CancellationToken ct = default)
     {
@@ -102,7 +115,6 @@ public class AutoUpdater
 
         try
         {
-            // Anti-downgrade: reject packages that would roll the agent back
             if (!IsNewerVersion(update.Version, _currentVersion))
             {
                 _logger.LogCritical(
@@ -114,7 +126,6 @@ public class AutoUpdater
             var tempPath = Path.Combine(Path.GetTempPath(), $"behavedr-update-{update.Version}.zip");
             var sigPath = tempPath + ".sig";
 
-            // Download the zip with exclusive file lock to prevent TOCTOU
             await using (var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
             await using (var responseStream = await _http.GetStreamAsync(update.DownloadUrl, ct))
             {
@@ -123,7 +134,6 @@ public class AutoUpdater
 
             _logger.LogInformation("Downloaded update to {Path}", tempPath);
 
-            // Download the signature file (.sig) with exclusive lock
             var sigUrl = update.DownloadUrl + ".sig";
             try
             {
@@ -140,7 +150,6 @@ public class AutoUpdater
                 return false;
             }
 
-            // Verify integrity (basic size check)
             var fileInfo = new FileInfo(tempPath);
             if (fileInfo.Length < 1_000_000)
             {
@@ -150,7 +159,6 @@ public class AutoUpdater
                 return false;
             }
 
-            // CRITICAL: Verify cryptographic signature before extraction
             if (Security.UpdateSignatureVerifier.IsProductionKeyConfigured())
             {
                 if (!Security.UpdateSignatureVerifier.VerifySignature(tempPath, sigPath, _logger))
@@ -165,11 +173,20 @@ public class AutoUpdater
                 _logger.LogWarning("Update signing key is not configured (development mode) — skipping signature verification");
             }
 
-            // Compute SHA-256 for logging/audit
             var hash = ComputeHash(tempPath);
             _logger.LogInformation("Update SHA-256: {Hash}", hash[..16] + "...");
 
-            // Stage the update with rollback support
+            // Optional second factor: published SHA256SUMS (signed separately on release).
+            if (!string.IsNullOrEmpty(update.ChecksumsUrl))
+            {
+                if (!await VerifyAgainstChecksumManifestAsync(update.ChecksumsUrl, update.DownloadUrl, hash, ct))
+                {
+                    _logger.LogCritical("SECURITY: SHA-256 does not match published SHA256SUMS — aborting update");
+                    CleanupTempFiles(tempPath, sigPath);
+                    return false;
+                }
+            }
+
             var currentExe = Environment.ProcessPath;
             if (currentExe is null)
             {
@@ -178,50 +195,25 @@ public class AutoUpdater
                 return false;
             }
 
-            // Extract from zip with Zip Slip protection — staged with rollback
             var targetDir = Path.GetFullPath(Path.GetDirectoryName(currentExe)!);
-            var stagingDir = Path.Combine(targetDir, ".update-staging");
-            var previousDir = Path.Combine(targetDir, ".previous");
+            var stagingDir = Path.Combine(targetDir, StagingDirectoryName);
+            var previousDir = Path.Combine(targetDir, PreviousDirectoryName);
 
-            // Clean up any prior failed staging
             if (Directory.Exists(stagingDir))
                 Directory.Delete(stagingDir, recursive: true);
             Directory.CreateDirectory(stagingDir);
 
-            using (var archive = System.IO.Compression.ZipFile.OpenRead(tempPath))
+            if (!ExtractZipSafely(tempPath, stagingDir, _logger))
             {
-                foreach (var entry in archive.Entries)
-                {
-                    // Skip directory entries
-                    if (string.IsNullOrEmpty(entry.Name))
-                        continue;
-
-                    var destPath = Path.GetFullPath(Path.Combine(stagingDir, entry.FullName));
-
-                    // SECURITY: Reject entries that escape the target directory (Zip Slip)
-                    if (!destPath.StartsWith(stagingDir + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
-                        !destPath.Equals(stagingDir, StringComparison.Ordinal))
-                    {
-                        _logger.LogCritical("SECURITY: Zip Slip detected — entry '{Entry}' resolves outside target directory. Aborting update.",
-                            entry.FullName);
-                        Directory.Delete(stagingDir, recursive: true);
-                        CleanupTempFiles(tempPath, sigPath);
-                        return false;
-                    }
-
-                    // Ensure parent directory exists
-                    var destDir = Path.GetDirectoryName(destPath)!;
-                    Directory.CreateDirectory(destDir);
-
-                    entry.ExtractToFile(destPath, overwrite: true);
-                }
+                if (Directory.Exists(stagingDir))
+                    Directory.Delete(stagingDir, recursive: true);
+                CleanupTempFiles(tempPath, sigPath);
+                return false;
             }
 
-            // Verify staged binary can be found
             var stagedExe = Path.Combine(stagingDir, Path.GetFileName(currentExe));
             if (!File.Exists(stagedExe))
             {
-                // Try finding any executable in staging
                 stagedExe = Directory.GetFiles(stagingDir, "Behavedr*").FirstOrDefault() ?? "";
             }
 
@@ -233,12 +225,10 @@ public class AutoUpdater
                 return false;
             }
 
-            // Move current to .previous (rollback point)
             if (Directory.Exists(previousDir))
                 Directory.Delete(previousDir, recursive: true);
             Directory.CreateDirectory(previousDir);
 
-            // Back up current binaries (only .dll and executable files)
             foreach (var file in Directory.GetFiles(targetDir))
             {
                 var ext = Path.GetExtension(file).ToLowerInvariant();
@@ -246,11 +236,10 @@ public class AutoUpdater
                 {
                     var backupDest = Path.Combine(previousDir, Path.GetFileName(file));
                     try { File.Copy(file, backupDest, overwrite: true); }
-                    catch { }
+                    catch { /* locked files are skipped; partial backup still aids recovery */ }
                 }
             }
 
-            // Swap: move staged files to target directory
             foreach (var file in Directory.GetFiles(stagingDir, "*", SearchOption.AllDirectories))
             {
                 var relativePath = Path.GetRelativePath(stagingDir, file);
@@ -260,26 +249,26 @@ public class AutoUpdater
 
                 try
                 {
-                    // On Unix, rename over a running binary works (old inode kept until exit)
                     File.Move(file, finalPath, overwrite: true);
                 }
                 catch (IOException)
                 {
-                    // Windows: file locked — rename current first
                     var bakPath = finalPath + ".bak";
                     try { File.Move(finalPath, bakPath, overwrite: true); } catch { }
                     File.Move(file, finalPath, overwrite: true);
                 }
             }
 
-            // Clean up staging
             try { Directory.Delete(stagingDir, recursive: true); } catch { }
 
-            _logger.LogInformation(
-                "Update v{Version} staged successfully. Previous version backed up to .previous/. " +
-                "Restart the agent to complete the update.", update.Version);
+            // Health-check rollback contract: next healthy startup clears this marker.
+            WritePendingUpdateMarker(targetDir, update.Version);
 
-            // Clean up temp
+            _logger.LogInformation(
+                "Update v{Version} staged successfully. Previous version backed up to {Previous}/. " +
+                "Marker {Marker} written for health-check rollback. Restart the agent to complete the update.",
+                update.Version, PreviousDirectoryName, PendingUpdateMarkerFileName);
+
             CleanupTempFiles(tempPath, sigPath);
             return true;
         }
@@ -287,6 +276,235 @@ public class AutoUpdater
         {
             _logger.LogError(ex, "Failed to apply update");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// If a pending-update marker exists and <paramref name="isHealthy"/> returns false,
+    /// restore binaries from <see cref="PreviousDirectoryName"/> and clear the marker.
+    /// If healthy, clear the marker and leave the new binaries in place.
+    /// </summary>
+    /// <returns>
+    /// <c>true</c> if a rollback was performed; <c>false</c> if no marker, healthy clear, or rollback unavailable.
+    /// </returns>
+    public static bool TryHealthCheckRollback(Func<bool> isHealthy, ILogger? logger = null)
+    {
+        logger ??= NullLogger.Instance;
+
+        var currentExe = Environment.ProcessPath;
+        if (currentExe is null)
+            return false;
+
+        var targetDir = Path.GetFullPath(Path.GetDirectoryName(currentExe)!);
+        var markerPath = Path.Combine(targetDir, PendingUpdateMarkerFileName);
+        if (!File.Exists(markerPath))
+            return false;
+
+        string pendingVersion = "(unknown)";
+        try { pendingVersion = File.ReadAllText(markerPath).Trim(); } catch { }
+
+        bool healthy;
+        try
+        {
+            healthy = isHealthy();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Health check threw after pending update v{Version} — treating as unhealthy", pendingVersion);
+            healthy = false;
+        }
+
+        if (healthy)
+        {
+            try { File.Delete(markerPath); } catch { }
+            logger.LogInformation(
+                "Post-update health check PASSED for v{Version} — pending marker cleared",
+                pendingVersion);
+            return false;
+        }
+
+        var previousDir = Path.Combine(targetDir, PreviousDirectoryName);
+        if (!Directory.Exists(previousDir))
+        {
+            logger.LogCritical(
+                "SECURITY: Post-update health check FAILED for v{Version} but no {Previous} directory exists — cannot auto-rollback",
+                pendingVersion, PreviousDirectoryName);
+            return false;
+        }
+
+        logger.LogCritical(
+            "SECURITY: Post-update health check FAILED for v{Version} — restoring binaries from {Previous}",
+            pendingVersion, PreviousDirectoryName);
+
+        try
+        {
+            foreach (var file in Directory.GetFiles(previousDir))
+            {
+                var dest = Path.Combine(targetDir, Path.GetFileName(file));
+                try
+                {
+                    File.Copy(file, dest, overwrite: true);
+                }
+                catch (IOException)
+                {
+                    // Windows may lock the running image; leave .previous for manual recovery.
+                    logger.LogWarning("Could not restore {File} (locked) — manual recovery from {Previous} may be required",
+                        Path.GetFileName(file), PreviousDirectoryName);
+                }
+            }
+
+            try { File.Delete(markerPath); } catch { }
+            logger.LogWarning(
+                "Rollback from failed update v{Version} completed. Restart the agent to run the restored binary.",
+                pendingVersion);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Rollback after failed update v{Version} encountered errors", pendingVersion);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Extract a zip into <paramref name="stagingDir"/> with Zip Slip rejection.
+    /// Returns false if any entry escapes the staging root or extraction fails.
+    /// </summary>
+    public static bool ExtractZipSafely(string zipPath, string stagingDir, ILogger? logger = null)
+    {
+        logger ??= NullLogger.Instance;
+        stagingDir = Path.GetFullPath(stagingDir);
+
+        try
+        {
+            using var archive = ZipFile.OpenRead(zipPath);
+            foreach (var entry in archive.Entries)
+            {
+                if (string.IsNullOrEmpty(entry.Name))
+                    continue;
+
+                if (!TryResolveZipEntryPath(stagingDir, entry.FullName, out var destPath))
+                {
+                    logger.LogCritical(
+                        "SECURITY: Zip Slip detected — entry '{Entry}' resolves outside target directory. Aborting update.",
+                        entry.FullName);
+                    return false;
+                }
+
+                var destDir = Path.GetDirectoryName(destPath)!;
+                Directory.CreateDirectory(destDir);
+                entry.ExtractToFile(destPath, overwrite: true);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Zip extraction failed");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Resolve a zip entry path under <paramref name="stagingDir"/>. Returns false on Zip Slip.
+    /// </summary>
+    public static bool TryResolveZipEntryPath(string stagingDir, string entryFullName, out string destPath)
+    {
+        destPath = string.Empty;
+        stagingDir = Path.GetFullPath(stagingDir);
+
+        // Normalize entry path separators before combine
+        var normalizedEntry = entryFullName.Replace('/', Path.DirectorySeparatorChar)
+            .Replace('\\', Path.DirectorySeparatorChar);
+
+        try
+        {
+            destPath = Path.GetFullPath(Path.Combine(stagingDir, normalizedEntry));
+        }
+        catch
+        {
+            return false;
+        }
+
+        var root = stagingDir.EndsWith(Path.DirectorySeparatorChar)
+            ? stagingDir
+            : stagingDir + Path.DirectorySeparatorChar;
+
+        // OrdinalIgnoreCase: Windows paths are case-insensitive; Unix remains safe (case-sensitive FS still OK).
+        if (!destPath.StartsWith(root, StringComparison.OrdinalIgnoreCase) &&
+            !destPath.Equals(stagingDir, StringComparison.OrdinalIgnoreCase))
+        {
+            destPath = string.Empty;
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Compare dotted version strings; true when latest is strictly greater than current.</summary>
+    public static bool IsNewerVersion(string latest, string current)
+    {
+        if (Version.TryParse(latest, out var latestVer) &&
+            Version.TryParse(current, out var currentVer))
+        {
+            return latestVer > currentVer;
+        }
+        return false;
+    }
+
+    public static void WritePendingUpdateMarker(string targetDir, string version)
+    {
+        var markerPath = Path.Combine(targetDir, PendingUpdateMarkerFileName);
+        File.WriteAllText(markerPath, version + Environment.NewLine);
+    }
+
+    private async Task<bool> VerifyAgainstChecksumManifestAsync(
+        string checksumsUrl,
+        string downloadUrl,
+        string actualHashHex,
+        CancellationToken ct)
+    {
+        try
+        {
+            var text = await _http.GetStringAsync(checksumsUrl, ct);
+            var assetName = Path.GetFileName(new Uri(downloadUrl).AbsolutePath);
+            if (string.IsNullOrEmpty(assetName))
+                return false;
+
+            foreach (var line in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+            {
+                // Formats: "hash  filename" or "hash *filename"
+                var trimmed = line.Trim();
+                if (trimmed.StartsWith('#'))
+                    continue;
+
+                var parts = trimmed.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2)
+                    continue;
+
+                var listedHash = parts[0];
+                var listedName = parts[^1].TrimStart('*');
+                if (!listedName.Equals(assetName, StringComparison.OrdinalIgnoreCase) &&
+                    !listedName.EndsWith(assetName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var match = string.Equals(listedHash, actualHashHex, StringComparison.OrdinalIgnoreCase);
+                if (match)
+                    _logger.LogInformation("SHA-256 matches published SHA256SUMS for {Asset}", assetName);
+                else
+                    _logger.LogCritical(
+                        "SECURITY: SHA-256 mismatch for {Asset}: expected {Expected}, got {Actual}",
+                        assetName, listedHash, actualHashHex);
+                return match;
+            }
+
+            _logger.LogWarning("Asset {Asset} not listed in SHA256SUMS — treating as soft failure (signature still required)", assetName);
+            return true; // signature remains the hard gate; missing line is not fatal
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not download or parse SHA256SUMS — continuing with signature-only verification");
+            return true;
         }
     }
 
@@ -303,8 +521,6 @@ public class AutoUpdater
         if (!root.TryGetProperty("assets", out var assets))
             return null;
 
-        var expectedPattern = $"Behavedr-Portable-";
-
         foreach (var asset in assets.EnumerateArray())
         {
             var name = asset.GetProperty("name").GetString() ?? "";
@@ -318,14 +534,19 @@ public class AutoUpdater
         return null;
     }
 
-    private static bool IsNewerVersion(string latest, string current)
+    private static string? FindAssetUrl(JsonElement root, string exactName)
     {
-        if (Version.TryParse(latest, out var latestVer) &&
-            Version.TryParse(current, out var currentVer))
+        if (!root.TryGetProperty("assets", out var assets))
+            return null;
+
+        foreach (var asset in assets.EnumerateArray())
         {
-            return latestVer > currentVer;
+            var name = asset.GetProperty("name").GetString() ?? "";
+            if (name.Equals(exactName, StringComparison.OrdinalIgnoreCase))
+                return asset.GetProperty("browser_download_url").GetString();
         }
-        return false;
+
+        return null;
     }
 
     private static string ComputeHash(string filePath)
@@ -347,4 +568,12 @@ public class AutoUpdater
 /// <summary>
 /// Information about an available update.
 /// </summary>
-public record UpdateInfo(string Version, string DownloadUrl, string TagName);
+/// <param name="Version">Semantic version string without leading 'v'.</param>
+/// <param name="DownloadUrl">Browser download URL for the platform zip.</param>
+/// <param name="TagName">Git tag (e.g. v0.2.4).</param>
+/// <param name="ChecksumsUrl">Optional URL of release SHA256SUMS manifest.</param>
+public record UpdateInfo(
+    string Version,
+    string DownloadUrl,
+    string TagName,
+    string? ChecksumsUrl = null);

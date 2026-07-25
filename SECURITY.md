@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.2.3   | Yes       |
-| < 0.2.3 | No        |
+| 0.2.4   | Yes       |
+| < 0.2.4 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
@@ -49,22 +49,24 @@ We will credit reporters in release notes unless anonymity is preferred. We do n
 - Build pipeline and supply chain
 - Installer and packaging scripts
 - Configuration handling and integrity verification
+- Android agent (MAUI) detection and response path
 
 **Out of scope:**
 - Third-party dependency vulnerabilities (report upstream; notify us for tracking)
 - Social engineering against CroatiaSecurity personnel
 - Denial of service against CI/CD infrastructure
+- iOS production EDR claims (iOS is deferred / preview only)
 
 ## Security Architecture
 
 ### Design Principles
 
-- **Userland operation.** No kernel driver requirement. Reduces attack surface and deployment complexity at the cost of kernel rootkit visibility. Full behavioral detection on Windows (ETW + P/Invoke), Linux (/proc + audit), and macOS (process enumeration + lsof/vmmap).
-- **Least privilege where possible.** SYSTEM context is required for ETW, process inspection, and response actions. File permissions are restricted to SYSTEM and Administrators.
+- **Userland operation.** No kernel driver requirement. Reduces attack surface and deployment complexity at the cost of kernel rootkit visibility. Full behavioral detection on Windows (ETW + P/Invoke), Linux (cn_proc, fanotify, /proc, auth logs, kernel modules), and macOS (kqueue process + VNODE file watches, codesign checks).
+- **Least privilege where possible.** SYSTEM context is required for ETW, process inspection, and response actions. File permissions are restricted to SYSTEM and Administrators on Windows; systemd hardening applies on Linux.
 - **Defense in depth.** Multiple independent self-protection mechanisms. No single bypass disables all detection.
 - **Fail-closed communication.** TLS connections are rejected without a valid pinned CA certificate. No fallback to insecure transport.
-- **Cryptographic integrity.** All local storage uses authenticated encryption (AES-256-GCM). Configuration files are HMAC-sealed. Updates require RSA-4096 PSS signatures.
-- **Minimal attack surface.** Single-file deployment. No temp extraction. Deterministic builds. Pinned dependencies with lock files.
+- **Cryptographic integrity.** All local storage uses authenticated encryption (AES-256-GCM). Configuration files are HMAC-sealed. Updates require RSA-4096 PSS signatures. Policy verification uses a dedicated verifier path (key may still be dual-use until rotated — see [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md)).
+- **Minimal attack surface.** Single-file deployment. No temp extraction for the running agent image. Deterministic builds. Pinned dependencies with lock files on desktop projects.
 
 ### Cryptographic Inventory
 
@@ -74,12 +76,13 @@ We will credit reporters in release notes unless anonymity is preferred. We do n
 | Local encryption | AES-256-GCM | 256-bit | Purpose-specific keys derived via HKDF-SHA256 |
 | Config integrity | HMAC-SHA256 | 256-bit | Key derived from machine key via HKDF |
 | Update signing | RSA-PSS SHA-256 | 4096-bit | Private key offline; public key baked into binary |
-| Policy signing | RSA-PSS SHA-256 | 4096-bit | Same key infrastructure as updates |
+| Policy signing | RSA-PSS SHA-256 | 4096-bit | Separate `PolicySignatureVerifier` path; may share material until rotation |
 | Transport | TLS 1.3 (mTLS) | 2048-bit client cert | CA-pinned; fail-closed |
 | Config value encryption | AES-256-GCM (cross-platform) / DPAPI (Windows) | 256-bit | DPAPI uses LocalMachine scope |
-| macOS key storage | Keychain Services (System Keychain) | 256-bit | Via `security` CLI; backed by Secure Enclave on Apple Silicon |
+| macOS key storage | Keychain Services (System Keychain) | 256-bit | Via `security` CLI; Secure Enclave-backed on Apple Silicon when available |
+| Android key storage | Android Keystore (TEE/StrongBox preferred) | 256-bit | Hardware-backed when device supports it |
 
-### Self-Protection Mechanisms (v0.2.2)
+### Self-Protection Mechanisms (desktop, current)
 
 | Mechanism | Check Interval | Description |
 |-----------|---------------|-------------|
@@ -96,15 +99,22 @@ We will credit reporters in release notes unless anonymity is preferred. We do n
 | Config HMAC seal | Startup | Refuses to start if config has been tampered |
 | Connectivity canary | ~45s (jittered) | Detects network isolation/firewall silencing |
 | Watchdog heartbeat | 3s | Detects monitoring loop suspension or deadlock |
-| macOS kqueue process monitor | Real-time | Detects process exec/fork/exit via kernel events |
+| Driver load / BYOVD monitoring | Continuous / event | Registry, service installs, LOLDrivers-oriented heuristics |
+| Startup self-test | Startup | Crypto, keys, monitors, response actions, directories |
+| Post-update health rollback | Startup after update | Restores `.previous` if crypto health fails |
+| macOS kqueue process monitor | Real-time (500ms discovery) | Detects process exec/fork/exit via kernel events |
+| macOS VNODE file watches | Real-time | LaunchDaemons/Agents, helpers, sensitive paths |
+| macOS codesign self-check | Periodic | `codesign -v`, SIP status, unsigned LaunchDaemon binaries |
 | macOS Keychain key storage | Startup | Machine key in System Keychain (not on filesystem) |
 | macOS proc_pidpath kill verify | On response | Verifies process identity before termination |
 | Linux ProtectProc=invisible | Service-level | Hides agent from /proc enumeration |
 | Linux syscall filtering | Service-level | Blocks mount/reboot/swap/obsolete syscalls |
+| Linux kernel module monitor | Periodic | New module loads, known rootkit names, lockdown soft signal |
+| Linux auth monitor | Tailing | Failure bursts, root sessions, root SSH |
 | Linux nftables rate limiting | On response | Max 100 isolation rules (prevents DoS) |
 | Memory secret zeroing | On use | CryptographicOperations.ZeroMemory after key derivation |
 
-### Android Self-Protection Mechanisms (v0.2.0)
+### Android Self-Protection Mechanisms
 
 | Mechanism | Check Interval | Description |
 |-----------|---------------|-------------|
@@ -119,27 +129,49 @@ We will credit reporters in release notes unless anonymity is preferred. We do n
 | Memory analysis | 10s | RWX regions, memfd, suspicious library loading |
 | Credential monitoring | 10s | Accessibility abuse, banking trojans, clipboard |
 | Anti-tamper guard | 10s | OOM adj, binary integrity, data directory health |
-| Response engine | On detection | kill -9 (root), iptables isolation, force-stop |
+| Response engine | On detection | kill -9 (root), isolation, Device Owner actions when enrolled |
 | Key protection | Startup | Android Keystore TEE/StrongBox hardware-backed encryption |
+| Shared detection runtime | Process lifetime | Foreground service and UI share one DetectionEngine (fixed in 0.2.2) |
 
 ### Supply Chain Controls
 
-- **Deterministic builds** enabled in Directory.Build.props
-- **Package lock files** committed (RestorePackagesWithLockFile)
-- **Pinned CI action SHAs** (no floating tags)
-- **SBOM generation** on Linux release builds
-- **Signed auto-updates** with RSA-4096 PSS verification
-- **Local build capability** via installer/build.ps1 (no CI dependency)
-- **No runtime package downloads** during build (ISCC discovered locally)
+Documented in full in [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md). Summary:
+
+- Deterministic builds (`Directory.Build.props`)
+- Package lock files for Agent, Core, Tests; CI `--locked-mode`
+- Pinned CI action SHAs (no floating tags)
+- SBOM generation on Linux release builds (best-effort tool install)
+- Signed auto-updates with RSA-4096 PSS verification
+- Release `SHA256SUMS` (+ `.sig` when `UPDATE_SIGNING_KEY` is configured)
+- Android APK hard-required for release workflow
+- Vulnerability audit in CI (`dotnet list package --vulnerable`)
+- Dependabot for NuGet and GitHub Actions
+- Optional Authenticode / codesign / Android keystore when secrets are present
+- Local build capability via `installer/build.ps1` (no CI dependency for Windows portable/installer builds)
 
 ## Known Limitations
 
-- No kernel-level visibility. Kernel rootkits can hide from all monitors.
-- Native ETW requires elevation (SYSTEM/admin). Falls back to WMI polling without it.
-- macOS monitors use process enumeration and lsof/vmmap rather than EndpointSecurity.framework (planned for future release).
-- Linux monitors use /proc filesystem and audit logs rather than eBPF (planned for future release).
-- Single-process architecture. A successful SYSTEM-level kill terminates all protection until SCM restart (5s).
-- Auto-update rollback is not implemented. A corrupted update that passes signature verification could prevent startup.
-- DPAPI entropy fallback to fixed value when filesystem is unwritable (containers). Logged as CRITICAL.
-- No WFP (Windows Filtering Platform) integration for real-time network filtering.
-- No driver load monitoring.
+These are current, intentional, or residual limits — not a backlog disguised as features.
+
+- **No kernel-level visibility.** Kernel rootkits can hide from userland monitors. Operational “10/10” is defined as best-in-class userland + supply chain, not omnipotence against ring-0 adversaries.
+- **Native ETW requires elevation** (SYSTEM/admin). Falls back to WMI polling without it.
+- **macOS real-time depth is kqueue/VNODE-based**, not EndpointSecurity.framework. Short-lived processes can still race discovery; EndpointSecurity remains a future platform epic.
+- **Linux real-time depth uses cn_proc, fanotify, and /proc**, not eBPF CO-RE. eBPF remains a future platform epic.
+- **Single-process agent architecture.** A successful privileged kill terminates protection until SCM/systemd/watchdog restart (seconds, not continuous multiproc resilience).
+- **Health-check auto-rollback** restores from `.previous` when post-update crypto health fails. It does **not** cover every possible failure mode (e.g. partial file locks on Windows may require manual recovery or reinstall).
+- **DPAPI entropy fallback** to a fixed value when the filesystem is unwritable (containers). Logged as CRITICAL.
+- **No WFP (Windows Filtering Platform)** integration for kernel-assisted network filtering; isolation is process/firewall-tool based.
+- **OS code-signing is optional** and depends on repository secrets. Releases without Authenticode/codesign/keystore must not be described as OS-trusted. Agent-enforced RSA-PSS is independent of OS trust.
+- **Policy and update keys may still be dual-use** until a second key is provisioned (`PolicySignatureVerifier.IsUsingSharedUpdateKey()`).
+- **Play Integrity** may degrade if the official dependency / cloud project number is not fully wired for a given build; treat attestation quality as deployment-specific.
+- **iOS is deferred / preview.** Not a production EDR platform in this product line at 0.2.4.
+- **Default response mode is AlertOnly.** Active kill/isolate is an operator decision with legal and operational consequences.
+
+## Further Reading
+
+| Document | Contents |
+|----------|----------|
+| [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md) | Release trust, secrets, operator verification |
+| [docs/RELEASE.md](docs/RELEASE.md) | Release runbook |
+| [THREAT_MODEL.md](THREAT_MODEL.md) | System threat model |
+| [docs/](docs/) | Architecture notes and red/blue audits |

@@ -2,7 +2,7 @@
 
 Behavioral endpoint detection and response agent. Monitors process activity, network connections, and system integrity in real time. Produces scored detections and executes configurable response actions.
 
-**Current version: 0.2.3**
+**Current version: 0.2.4**
 
 ## Platforms
 
@@ -13,6 +13,10 @@ Behavioral endpoint detection and response agent. Monitors process activity, net
 | macOS (ARM64) | Production — kqueue process (500ms), VNODE file watches, codesign checks, network isolation |
 | Android | Production — Detection + response pipeline, VPN inspection, Keystore (Device Owner recommended) |
 | iOS | Deferred / preview only — not a release focus |
+
+“Production” means the platform is intended for operational deployment **within the limits of a userland agent**. It does not mean kernel omnipotence, notarized Apple distribution, or that every release is Authenticode-signed. Release trust details: [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md).
+
+Default response mode is **AlertOnly**. Enable Active response only after understanding process kill, quarantine, and isolation side effects.
 
 ## Quick Start
 
@@ -32,6 +36,8 @@ chmod +x Behavedr
 sudo ./Behavedr
 ```
 
+Before production install, verify `SHA256SUMS` and RSA-PSS `.sig` files for the asset (see [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md) §7).
+
 ## Building from Source
 
 Requires .NET 10 SDK.
@@ -48,8 +54,10 @@ dotnet publish src/Behavedr.Agent/Behavedr.Agent.csproj -c Release -r win-x64 --
 
 | Document | Contents |
 |----------|----------|
-| [SECURITY.md](SECURITY.md) | Vulnerability reporting, security design, supported versions |
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting, security design, known limitations |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Threat model, attack surface, trust boundaries |
+| [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md) | Build integrity, signing, secrets, operator verification |
+| [docs/RELEASE.md](docs/RELEASE.md) | Release runbook |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 | [docs/](docs/) | Architecture decisions, audit reports |
 

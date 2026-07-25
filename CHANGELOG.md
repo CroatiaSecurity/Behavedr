@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.2.4] — 2026-07-25
+
+### Supply chain trust, release hard gates, and update recovery
+
+This release focuses on **provable distribution integrity** and honest operational documentation. It does not claim EndpointSecurity, eBPF, or OS-level signing without secrets; those remain optional or future work and are stated as such.
+
+#### Release pipeline
+
+- **Android is a hard release gate** — `release.yml` no longer treats the APK job as best-effort. A production GitHub Release requires desktop packages **and** `Behavedr-*-android.apk`.
+- **SHA256SUMS** published for every binary release asset; **RSA-PSS `.sig`** sidecars generated when `UPDATE_SIGNING_KEY` is configured (fails the release if any asset lacks a signature in that mode).
+- **Conditional OS trust signing hooks** (secrets documented in `docs/SUPPLY_CHAIN.md`):
+  - Windows Authenticode via `WINDOWS_CODESIGN_PFX_BASE64` / password (exe + installer)
+  - macOS `codesign --options runtime` via Developer ID P12 secrets
+  - Android release keystore re-sign via `ANDROID_KEYSTORE_*` secrets
+- **CI vulnerability audit** — `dotnet list package --vulnerable` on Agent and Tests; fails desktop build on known findings.
+- **Dependabot** — weekly NuGet and GitHub Actions updates (`.github/dependabot.yml`).
+- **Locked restore** expanded in build/release for Core, Agent, and Tests.
+- **Signing tooling** — `tools/sign-release.ps1` and `tools/sign-release.sh` (OpenSSL RSA-PSS, saltlen=digest, matches agent verifier).
+
+#### Update security
+
+- **Health-check auto-rollback** — after staging an update, `.update-pending` is written and current binaries are kept in `.previous/`. On next start, failed critical crypto health restores from `.previous`.
+- **Optional SHA256SUMS second factor** during `ApplyUpdateAsync` when the release publishes a manifest.
+- **Zip Slip extraction** exposed as testable `ExtractZipSafely` / `TryResolveZipEntryPath` with unit coverage.
+- **Policy signature path separation** — `PolicySignatureVerifier` is distinct from `UpdateSignatureVerifier`. Keys remain dual-use until an offline ceremony rotates a dedicated policy key (`IsUsingSharedUpdateKey()` reports interim state).
+
+#### Tests and self-test
+
+- New `UpdateSecurityTests`: version compare, Zip Slip reject/accept, policy key configuration, bogus signature fail-closed, pending marker, rollback no-op without marker.
+- `StartupSelfTest` runs post-update rollback check and reports shared policy/update key status.
+
+#### Documentation (truthful)
+
+- New **`docs/SUPPLY_CHAIN.md`** — threats, crypto, secrets, residual risk, operator verification.
+- New **`docs/RELEASE.md`** — release runbook and failure modes.
+- **`SECURITY.md`**, **`THREAT_MODEL.md`**, **`README.md`** updated for 0.2.4: removed stale claims (e.g. “no driver load monitoring”, “rollback not implemented”), clarified OS signing optional nature, iOS deferred.
+
+#### Version alignment
+
+- Product version **0.2.4** across `Directory.Build.props`, Mobile display version, iOS `Info.plist`, Inno Setup default.
+
+#### Explicitly not in this release
+
+- EndpointSecurity.framework / eBPF platform epics
+- Guaranteed Authenticode/notarization without configured secrets
+- Distinct production policy private key (code path only; material still shared)
+- iOS production EDR
+- Mobile `packages.lock.json` committed (requires MAUI workload host; CI locked-mode when present)
+
 ## [0.2.3] — 2026-07-25
 
 ### Linux + macOS protection grade lift (iOS de-emphasized)
@@ -878,4 +927,4 @@ First public release. Desktop agent + Android MAUI APK + iOS simulator CI.
 
 ## [Unreleased]
 
-- (next)
+- (none yet)

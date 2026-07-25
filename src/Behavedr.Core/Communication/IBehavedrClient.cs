@@ -91,16 +91,13 @@ public record PolicyUpdate(
 {
     /// <summary>
     /// Verify that this policy update was signed by the server.
-    /// Uses RSA-PSS SHA-256 with the same baked-in public key as update verification.
+    /// Uses RSA-PSS SHA-256 via <see cref="Security.PolicySignatureVerifier"/>
+    /// (separate key material path from package updates as of v0.2.4).
     /// </summary>
     public bool VerifySignature()
     {
         if (string.IsNullOrEmpty(Signature))
             return false;
-
-        // If production key is not configured, skip verification (dev mode)
-        if (!Security.UpdateSignatureVerifier.IsProductionKeyConfigured())
-            return true;
 
         try
         {
@@ -115,24 +112,11 @@ public record PolicyUpdate(
 
             var payloadBytes = System.Text.Encoding.UTF8.GetBytes(payload);
             var sigBytes = Convert.FromBase64String(Signature);
-
-            using var rsa = System.Security.Cryptography.RSA.Create();
-            rsa.ImportFromPem(GetServerPublicKey());
-
-            return rsa.VerifyData(
-                payloadBytes,
-                sigBytes,
-                System.Security.Cryptography.HashAlgorithmName.SHA256,
-                System.Security.Cryptography.RSASignaturePadding.Pss);
+            return Security.PolicySignatureVerifier.VerifyPayload(payloadBytes, sigBytes);
         }
         catch
         {
             return false;
         }
     }
-
-    // Server public key for policy signing — uses the same baked-in key as update verification.
-    // In production, this could be a separate key from the update signing key.
-    private static string GetServerPublicKey() =>
-        Security.UpdateSignatureVerifier.GetPublicKeyPem() ?? "";
 }

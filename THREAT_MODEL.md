@@ -1,6 +1,6 @@
 # Behavedr — Threat Model
 
-Version: 0.2.3
+Version: 0.2.4
 Last updated: 2026-07-25
 Classification: Public
 
@@ -151,10 +151,13 @@ Behavedr is a userland behavioral endpoint detection and response (EDR) agent. I
 
 | Technique | MITRE | Mitigation |
 |-----------|-------|------------|
-| Trojanize NuGet package | T1195.002 | Lock files committed; deterministic builds; manual dependency review |
-| Compromise CI pipeline | T1195.002 | Pinned action SHAs; no secrets in build logs; SBOM generation |
-| MITM auto-update | T1195.002 | RSA-4096 PSS signature required; fail-closed TLS |
-| Tamper with installer | T1195.002 | Code signing (planned); SHA-256 hash published with releases |
+| Trojanize NuGet package | T1195.002 | Lock files committed (Agent/Core/Tests); `--locked-mode` CI; Dependabot; vulnerability audit gate |
+| Compromise CI pipeline | T1195.002 | Pinned action SHAs; no secrets in build logs; SBOM generation (best-effort) |
+| MITM auto-update | T1195.002 | RSA-4096 PSS signature required; optional SHA256SUMS second factor; fail-closed TLS 1.2+ |
+| Downgrade to older agent | T1195.002 | Anti-downgrade version check before apply |
+| Bad signed update breaks agent | T1195.002 | `.previous` backup + `.update-pending` health-check rollback |
+| Tamper with installer / release zip | T1195.002 | Per-asset `.sig` + `SHA256SUMS` on release; optional Authenticode/codesign/keystore when secrets configured (see docs/SUPPLY_CHAIN.md) |
+| Inject malicious policy | T1195.002 | RSA-PSS policy verification via `PolicySignatureVerifier` (distinct path; key dual-use until rotation) |
 
 ### T-4: Attacker exploits the agent itself
 
@@ -187,14 +190,18 @@ Behavedr is a userland behavioral endpoint detection and response (EDR) agent. I
 | Authenticated encryption at rest | AES-256-GCM via SecureEnvelope | Key derived per-purpose via HKDF |
 | Key protection | DPAPI LocalMachine + per-install random entropy | Restricted ACL on key file |
 | Transport security | mTLS with CA pinning; fail-closed | Rejects all connections without valid CA |
-| Update integrity | RSA-4096 PSS signatures | Baked-in public key; rejects unsigned |
+| Update integrity | RSA-4096 PSS signatures + optional SHA256SUMS | Baked-in public key; rejects unsigned |
+| Update anti-downgrade | Semantic version compare before apply | Rejects non-newer packages |
+| Post-update rollback | `.previous` + health-check marker | Restores prior binaries on crypto health failure |
+| Policy integrity | RSA-PSS via PolicySignatureVerifier | Fail-closed when signature missing/invalid |
 | Config integrity | HMAC-SHA256 seal + pre-seal validation | Refuses to start on tamper detection |
 | Binary integrity | SHA-256 baseline at startup; periodic verification | Tamper signal on mismatch |
 | Anti-tamper (process) | DACL + anti-debug + QPC suspension detection | Multiple independent checks |
 | Anti-tamper (ETW) | QueryTraceW liveness + function prologue verification | 10s check interval |
+| Driver / BYOVD monitoring | DriverLoadMonitor (registry, services, name/hash heuristics) | Userland only; not a kernel filter driver |
 | Input validation | Centralized SecurityValidation class | Path traversal, injection prevention |
 | Replay prevention | Boot nonce + sequence number + per-report nonce | Server validates monotonicity |
-| Response safety | Path-verified protected process list; rate limiting | 60s cooldown per target |
+| Response safety | Path-verified protected process list; kill budget + rate limiting | MaxKillsPerMinute + cooldown |
 
 ---
 
@@ -206,3 +213,6 @@ Behavedr is a userland behavioral endpoint detection and response (EDR) agent. I
 - Hardware attestation (TPM-based integrity measurement)
 - Linux eBPF integration for real-time syscall monitoring
 - macOS EndpointSecurity.framework integration
+- Distinct policy vs update signing keys in production ceremony (code path ready; material dual-use until rotated)
+- macOS notarization staple and continuous SLSA provenance attestation
+- Full MITRE coverage matrix export and external penetration test
