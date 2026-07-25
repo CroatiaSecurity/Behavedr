@@ -1,6 +1,6 @@
 # Behavedr — Threat Model
 
-Version: 0.3.9
+Version: 0.4.0
 Last updated: 2026-07-25
 Classification: Public
 

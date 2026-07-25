@@ -1,6 +1,6 @@
 # Behavedr Release Procedure
 
-**Applies to:** 0.3.x and later  
+**Applies to:** 0.4.x and later  
 **Last updated:** 2026-07-25  
 
 This is the operational runbook for cutting a Behavedr release. Follow it in order. Do not skip verification steps to “save time.”
@@ -11,14 +11,14 @@ This is the operational runbook for cutting a Behavedr release. Follow it in ord
 
 | Kind | When | Example |
 |------|------|---------|
-| **Patch** | Normal incremental work | `0.3.0` → … → `0.3.9` |
-| **Minor** | Product-line capability step (cumulative depth) | `0.2.x` → **`0.3.0`** |
+| **Patch** | Normal incremental work | `0.4.0` → `0.4.1` |
+| **Minor** | Product-line capability step (cumulative depth) | `0.3.x` → **`0.4.0`** |
 | **Major** | Breaking product/API contract (rare pre-1.0) | `0.x` → `1.0.0` |
 
-**Do not** keep stacking patch numbers past a real line break (`0.2.10` when you mean **0.3.0**).  
+**Do not** keep stacking patch numbers past a real line break (`0.3.10` when you mean **0.4.0**).  
 **Do not** invent minors for marketing of a single PR — use patch unless the line truly advanced.
 
-After **0.3.0**, default is patch-only until the next deliberate minor.
+After **0.4.0**, default is patch-only until the next deliberate minor.
 
 Scope (eBPF, EndpointSecurity, packaging) is described in the **changelog body**, not by skipping version numbers.
 

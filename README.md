@@ -2,11 +2,11 @@
 
 Behavioral endpoint detection and response agent. Monitors process activity, network connections, and system integrity in real time. Produces scored detections and executes configurable response actions.
 
-**Current version: 0.3.9**
+**Current version: 0.4.0**
 
-Versioning: current product line is **0.3.x**. Prefer patch bumps (`0.3.9`) for incremental work; use a **minor** (`0.2` → `0.3`) when cumulative capability advances the line. See [docs/RELEASE.md](docs/RELEASE.md) §0.
+Versioning: current product line is **0.4.x**. Prefer patch bumps for incremental work; use a **minor** when cumulative capability advances the line. See [docs/RELEASE.md](docs/RELEASE.md) §0.
 
-**Platform epics (0.3.9):** in-repo implementation is complete. Field activation (eBPF object, ES entitlement, SE product, paid certs) is documented in [docs/EPICS_STATUS.md](docs/EPICS_STATUS.md).
+**Platform epics (0.4.0):** in-repo implementation is complete. Field activation (eBPF object, ES entitlement, SE product, paid certs) is documented in [docs/EPICS_STATUS.md](docs/EPICS_STATUS.md).
 
 ## Platforms
 

@@ -1,13 +1,16 @@
 # Changelog
 
-## [0.3.10] — 2026-07-25
+## [0.4.0] — 2026-07-25
 
-### CI / Android build fixes
+### Platform epics line close + CI hard green
 
-- Agent `packages.lock.json`: RID-less graph so `--locked-mode` works on win/linux/osx (no stale win-x64/ILLink from publish)
-- Mobile csproj: XML comment no longer contains illegal `--` (MSB4025)
-- Vuln audit: word-boundary severity match; Tests path requires vulnerable-packages header (false positive on “following”)
-- Android: disambiguate `System.Environment` vs `Android.OS.Environment` in supply-chain / Play Integrity / update security
+Minor bump: 0.3.x platform-epic line is complete in-repo; this ships that work with a clean CI/release matrix.
+
+- Platform epics in-repo complete (Android/iOS/WSL heuristics, `ResponseSafety`, EPICS status close-out) — carried from 0.3.6–0.3.9
+- Agent `packages.lock.json`: RID-less graph so `--locked-mode` works on win/linux/osx
+- Mobile: illegal `--` removed from csproj XML comment (MSB4025); Android `System.Environment` vs `Android.OS.Environment` disambiguation
+- Vuln audit: word-boundary severity + vulnerable-packages header (no false positive on “following”)
+- Note: a mistaken `v0.3.10` tag may exist from an intermediate CI fix; **0.4.0** is the intended product version
 
 ## [0.3.9] — 2026-07-25
 
