@@ -2,9 +2,9 @@
 
 Behavioral endpoint detection and response agent. Monitors process activity, network connections, and system integrity in real time. Produces scored detections and executes configurable response actions.
 
-**Current version: 0.2.10**
+**Current version: 0.3.0**
 
-Versioning: every release is the **next patch** on `0.2.x` (e.g. `0.2.10`), regardless of how large the change is. Feature depth is described in the changelog, not in major/minor jumps. See [docs/RELEASE.md](docs/RELEASE.md) §0.
+Versioning: current product line is **0.3.x**. Prefer patch bumps (`0.3.1`) for incremental work; use a **minor** (`0.2` → `0.3`) when cumulative capability advances the line. See [docs/RELEASE.md](docs/RELEASE.md) §0.
 
 ## Platforms
 

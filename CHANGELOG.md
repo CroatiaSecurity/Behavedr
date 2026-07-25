@@ -1,24 +1,29 @@
 # Changelog
 
-## [0.2.10] — 2026-07-25
+## [0.3.0] — 2026-07-25
 
-### Packaging, telemetry wiring, native soft-build
+### Minor line: platform depth product step
 
-#### Observability
-- **`SecurityTelemetry`** hooks for signature failure, isolation, platform soft-fail
-- Wired to `BehavedrMetrics` at agent host start
-- Update/policy verifiers + AutoUpdater (missing `.sig`) emit signature-failure metrics
-- Windows isolation reports isolation metric on successful block
+**0.3.0** is the correct version for this capability bar (not `0.2.10`). It rolls up the
+0.2.7–0.2.9 platform epics plus packaging/telemetry completion into a new **0.3.x** line.
 
-#### Packaging
-- **`packaging/unix/build-rpm.sh`** (rpmbuild)
-- Release workflow: best-effort `native/build-native.sh`, optional `.deb`/`.rpm`, bundle eBPF/ES artifacts into portable zips when present
+#### Platform depth (from 0.2.7–0.2.9)
+- **Windows:** WFP user-mode isolation + advfirewall fallback (in/out), BYOVD, kill budget
+- **Linux:** eBPF suite (exec/file/net), Landlock (opt-in), fanotify NOTIFY + optional PERM, deb/rpm scripts
+- **macOS:** EndpointSecurity client + optional AUTH, kqueue, VNODE, pf
+- **Android:** full pipeline, VPN isolate, Play Integrity fail-closed option
+- **iOS:** MDM companion (self-protect, App Attest hooks, sandbox response)
 
-#### Windows
-- advfirewall isolation adds **inbound** block rule as well as outbound
+#### Supply chain & ops
+- Free RSA update signing + distinct policy key; SHA256SUMS; Android hard release gate
+- **`SecurityTelemetry`** → metrics (signature failure, isolation, soft-fail)
+- `Platform` config section; operator guide; response audit JSONL
+- Release soft-build of native artifacts (eBPF object / ES dylib) + optional packages
 
 #### Tests
-- Security telemetry unit tests
+- 100 unit tests at line cutover
+
+Historical 0.2.7–0.2.9 sections below remain for archaeology.
 
 ## [0.2.9] — 2026-07-25
 

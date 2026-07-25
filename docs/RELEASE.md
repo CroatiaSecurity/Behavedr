@@ -1,6 +1,6 @@
 # Behavedr Release Procedure
 
-**Applies to:** 0.2.x and later  
+**Applies to:** 0.3.x and later  
 **Last updated:** 2026-07-25  
 
 This is the operational runbook for cutting a Behavedr release. Follow it in order. Do not skip verification steps to “save time.”
@@ -9,24 +9,25 @@ This is the operational runbook for cutting a Behavedr release. Follow it in ord
 
 ## 0. Version numbering policy
 
-**Always ship as the next small patch on the current line** (e.g. `0.2.7` → `0.2.8` → `0.2.9` → `0.2.10`).
+| Kind | When | Example |
+|------|------|---------|
+| **Patch** | Normal incremental work | `0.3.0` → `0.3.1` → `0.3.2` |
+| **Minor** | Product-line capability step (cumulative depth) | `0.2.x` → **`0.3.0`** |
+| **Major** | Breaking product/API contract (rare pre-1.0) | `0.x` → `1.0.0` |
 
-| Do | Do not |
-|----|--------|
-| Bump patch by +1 for every release | Jump to `0.3`, `0.4`, `0.5` for “epic” or marketing milestones |
-| Put large platform work in the **changelog body** | Encode feature size in the major/minor number |
-| Keep `0.2.x` until an intentional product-line break is decided separately | Rename releases after tags exist |
+**Do not** keep stacking patch numbers past a real line break (`0.2.10` when you mean **0.3.0**).  
+**Do not** invent minors for marketing of a single PR — use patch unless the line truly advanced.
 
-Scope of the change (eBPF, EndpointSecurity, WFP, full rewrites) does **not** change the numbering rule. Huge work still ships as the next patch. Operators and auto-update compare versions numerically; steady increments avoid artificial “major” gates.
+After **0.3.0**, default is patch-only until the next deliberate minor.
 
-When the patch component grows large (`0.2.99`), continue (`0.2.100`) or only then discuss a deliberate minor bump for product reasons — never because the work felt big.
+Scope (eBPF, EndpointSecurity, packaging) is described in the **changelog body**, not by skipping version numbers.
 
 ---
 
 ## 1. Preconditions
 
 - [ ] All intended changes are on `main` and green on desktop CI.
-- [ ] `Directory.Build.props` version matches the intended release (next patch, e.g. `0.2.8`).
+- [ ] `Directory.Build.props` version matches the intended release (e.g. `0.3.0` or next patch).
 - [ ] `CHANGELOG.md` has a dated section for that version (not only `Unreleased`).
 - [ ] `SECURITY.md` supported-versions table lists the new version.
 - [ ] `THREAT_MODEL.md` version header matches.
@@ -114,9 +115,9 @@ dotnet restore src/Behavedr.Mobile/Behavedr.Mobile.csproj -p:MobileTfms=net10.0-
 ### Manual path
 
 ```bash
-git tag -a v0.2.4 -m "Release v0.2.4"
-git push origin v0.2.4
-# or: gh workflow run release.yml --ref v0.2.4
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin v0.3.0
+# or: gh workflow run release.yml --ref v0.3.0
 ```
 
 ---
@@ -153,7 +154,7 @@ git push origin v0.2.4
 ## 7. Documentation after release
 
 - [ ] CHANGELOG section is accurate (no aspirational language).
-- [ ] README platform table still honest (especially iOS deferred).
+- [ ] README platform table still honest (especially iOS companion).
 - [ ] Any new known limitation added to SECURITY.md.
 - [ ] If grades changed, note residual risk in the next audit rather than inventing scores in the changelog.
 

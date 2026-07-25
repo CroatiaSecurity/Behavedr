@@ -31,7 +31,7 @@ macOS (launchd) — production
   Grant Full Disk Access to /opt/behavedr/Behavedr in System Settings → Privacy.
   Prefer a Developer ID signed + notarized build for Gatekeeper.
 
-v0.2.10 platform coverage
+v0.3.0 platform coverage
 -------------------------
   Linux: cn_proc, fanotify (+ optional PERM), eBPF suite, Landlock (opt-in),
          nftables, hardened systemd, deb/rpm scripts (build-deb.sh / build-rpm.sh).

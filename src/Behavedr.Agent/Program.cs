@@ -188,7 +188,7 @@ try
 
     var host = builder.Build();
 
-    // v0.2.10: security telemetry → OpenTelemetry metrics
+    // v0.3.0: security telemetry → OpenTelemetry metrics
     var metrics = host.Services.GetRequiredService<BehavedrMetrics>();
     SecurityTelemetry.OnSignatureFailure = metrics.RecordSignatureFailure;
     SecurityTelemetry.OnIsolationAction = metrics.RecordIsolationAction;
