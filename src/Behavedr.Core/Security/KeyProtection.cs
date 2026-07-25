@@ -490,25 +490,16 @@ public static class KeyProtection
     {
         try
         {
-            using var proc = new System.Diagnostics.Process();
-            proc.StartInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "/usr/bin/security",
-                Arguments = $"find-generic-password -s \"{KeychainService}\" -a \"{KeychainAccount}\" -w",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-            proc.Start();
-            var output = proc.StandardOutput.ReadToEnd().Trim();
-            proc.WaitForExit(5000);
+            // NEVER ReadToEnd() before WaitForExit — security can block on keychain UI
+            // and deadlocks the test host (v0.2.2 macOS CI hang).
+            var (exitCode, output) = RunSecurityCli(
+                $"find-generic-password -s \"{KeychainService}\" -a \"{KeychainAccount}\" -w",
+                timeoutMs: 4000);
 
-            if (proc.ExitCode != 0 || string.IsNullOrEmpty(output))
+            if (exitCode != 0 || string.IsNullOrWhiteSpace(output))
                 return null;
 
-            // Key is stored as base64 in the keychain password field
-            var key = Convert.FromBase64String(output);
+            var key = Convert.FromBase64String(output.Trim());
             return key.Length == 32 ? key : null;
         }
         catch
@@ -529,43 +520,60 @@ public static class KeyProtection
         {
             var keyBase64 = Convert.ToBase64String(key);
 
-            // Delete existing entry (if upgrading)
-            using (var delProc = new System.Diagnostics.Process())
-            {
-                delProc.StartInfo = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "/usr/bin/security",
-                    Arguments = $"delete-generic-password -s \"{KeychainService}\" -a \"{KeychainAccount}\"",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true,
-                };
-                delProc.Start();
-                delProc.WaitForExit(3000);
-            }
+            // Best-effort delete of existing entry (ignore failure / timeout)
+            _ = RunSecurityCli(
+                $"delete-generic-password -s \"{KeychainService}\" -a \"{KeychainAccount}\"",
+                timeoutMs: 3000);
 
-            // Add new entry
-            using var proc = new System.Diagnostics.Process();
-            proc.StartInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "/usr/bin/security",
-                Arguments = $"add-generic-password -s \"{KeychainService}\" -a \"{KeychainAccount}\" " +
-                            $"-w \"{keyBase64}\" -T \"\" -U",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-            proc.Start();
-            proc.WaitForExit(5000);
+            var (exitCode, _) = RunSecurityCli(
+                $"add-generic-password -s \"{KeychainService}\" -a \"{KeychainAccount}\" " +
+                $"-w \"{keyBase64}\" -T \"\" -U",
+                timeoutMs: 4000);
 
-            return proc.ExitCode == 0;
+            return exitCode == 0;
         }
         catch
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// Run /usr/bin/security with a hard timeout. Kills the process on expiry so CI
+    /// never hangs when the login keychain is locked or prompts for UI.
+    /// </summary>
+    private static (int ExitCode, string StdOut) RunSecurityCli(string arguments, int timeoutMs)
+    {
+        using var proc = new System.Diagnostics.Process();
+        proc.StartInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "/usr/bin/security",
+            Arguments = arguments,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+
+        proc.Start();
+
+        // Async reads prevent pipe-buffer deadlocks with WaitForExit
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+
+        if (!proc.WaitForExit(timeoutMs))
+        {
+            try { proc.Kill(entireProcessTree: true); } catch { }
+            try { proc.WaitForExit(2000); } catch { }
+            return (-1, "");
+        }
+
+        // Ensure stream readers finish after process exit
+        if (!stdoutTask.Wait(2000))
+            return (proc.ExitCode, "");
+
+        _ = stderrTask.Wait(500);
+        return (proc.ExitCode, stdoutTask.Result);
     }
 
     // =========================================================================
