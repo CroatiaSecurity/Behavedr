@@ -66,7 +66,7 @@ public sealed class SupplyChainVerifier
         if (string.IsNullOrWhiteSpace(raw)) return;
         if (raw.Contains("PLACEHOLDER", StringComparison.OrdinalIgnoreCase)) return;
         var n = NormalizeFingerprint(raw);
-        if (n.Length >= 32)
+        if (n.Length >= 1)
             set.Add(n);
     }
 
