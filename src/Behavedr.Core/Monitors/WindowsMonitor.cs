@@ -15,15 +15,6 @@ public class WindowsMonitor : IPlatformMonitor
     public string PlatformName => "Windows";
     public bool IsSupported => OperatingSystem.IsWindows();
 
-    // Known suspicious process names (expandable via config)
-    private static readonly HashSet<string> SuspiciousProcessNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "mimikatz", "psexec", "cobalt", "meterpreter", "payload",
-        "reverse_tcp", "bind_shell", "empire", "covenant",
-        "rubeus", "seatbelt", "sharphound", "bloodhound",
-        "lazagne", "procdump", "ppldump", "nanodump",
-    };
-
     // Suspicious parent-child relationships moved to BehavioralMonitor (v0.0.7)
     // WindowsMonitor now focuses on process-level heuristics; behavioral analysis
     // is handled by the dedicated BehavioralMonitor with command-line scanning.
@@ -43,25 +34,33 @@ public class WindowsMonitor : IPlatformMonitor
 
                 try
                 {
-                    var name = proc.ProcessName.ToLowerInvariant();
+                    if (proc.Id == Environment.ProcessId) continue;
+                    var name = proc.ProcessName;
+                    string? path = null;
+                    try { path = proc.MainModule?.FileName; } catch { /* access denied */ }
+                    if (Response.ResponseSafety.IsOwnAgentImage(path)) continue;
 
-                    // Check for known offensive tools
-                    if (SuspiciousProcessNames.Any(s => name.Contains(s, StringComparison.OrdinalIgnoreCase)))
+                    // Rename-resistant scoring (name alone is low weight; Temp+exe high)
+                    var off = ThreatHeuristics.Evaluate(name, path);
+                    if (off is { } o)
                     {
-                        signals.Add(new Signal($"suspicious_process:{name}", 85, 0.9));
+                        signals.Add(new Signal(
+                            $"suspicious_process:{o.Tag}:{o.Detail}:pid:{proc.Id}",
+                            o.Weight, o.Confidence));
                     }
 
                     // Detect processes with unusually high thread counts (possible injection)
+                    var nameLower = name.ToLowerInvariant();
                     if (proc.Threads.Count > 200)
                     {
-                        signals.Add(new Signal($"high_thread_count:{name}({proc.Threads.Count})", 25, 0.4));
+                        signals.Add(new Signal($"high_thread_count:{nameLower}({proc.Threads.Count})", 25, 0.4));
                     }
 
                     // Detect processes consuming excessive memory relative to their type
                     var memMb = proc.WorkingSet64 / (1024 * 1024);
-                    if (memMb > 2048 && !IsKnownHighMemProcess(name))
+                    if (memMb > 2048 && !IsKnownHighMemProcess(nameLower))
                     {
-                        signals.Add(new Signal($"high_memory:{name}({memMb}MB)", 20, 0.3));
+                        signals.Add(new Signal($"high_memory:{nameLower}({memMb}MB)", 20, 0.3));
                     }
                 }
                 catch (Exception)

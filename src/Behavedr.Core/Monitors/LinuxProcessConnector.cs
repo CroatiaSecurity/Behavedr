@@ -36,17 +36,6 @@ public class LinuxProcessConnector : IPlatformMonitor
     private readonly Queue<ProcessExecEvent> _recentExecs = new();
     private const int MaxBufferedEvents = 500;
 
-    // Suspicious process detection (same list as LinuxMonitor for consistency)
-    private static readonly HashSet<string> OffensiveTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "mimikatz", "meterpreter", "empire", "covenant", "sliver",
-        "chisel", "ligolo", "socat", "ncat", "linpeas", "linenum",
-        "pspy", "dirtycow", "sudo_killer", "crackmapexec",
-        "impacket", "bloodhound", "sharphound", "rubeus", "kerbrute",
-        "hashcat", "john", "hydra", "medusa", "gobuster", "ffuf",
-        "nuclei", "sqlmap", "responder", "proxychains",
-    };
-
     // Track ephemeral processes: exec → exit within 2 seconds
     private readonly Dictionary<int, long> _execTimestamps = new();
     private const int EphemeralThresholdMs = 2000;
@@ -262,12 +251,18 @@ public class LinuxProcessConnector : IPlatformMonitor
     private void AnalyzeExecEvent(ProcessExecEvent evt, List<Signal> signals)
     {
         if (string.IsNullOrEmpty(evt.ProcessName)) return;
+        if (evt.Pid == Environment.ProcessId) return;
 
-        // Offensive tool detection
-        if (OffensiveTools.Any(t => evt.ProcessName.Contains(t, StringComparison.OrdinalIgnoreCase)))
+        // Path from /proc (rename of argv[0] does not hide image path)
+        var exePath = GetExePath(evt.Pid);
+        if (Response.ResponseSafety.IsOwnAgentImage(exePath)) return;
+
+        var off = ThreatHeuristics.Evaluate(evt.ProcessName, exePath ?? evt.CommandLine);
+        if (off is { } o)
         {
             signals.Add(new Signal(
-                $"realtime_suspicious_process:{evt.ProcessName}:pid:{evt.Pid}", 85, 0.92));
+                $"realtime_offensive:{o.Tag}:{o.Detail}:pid:{evt.Pid}",
+                o.Weight, o.Confidence));
         }
 
         // Ephemeral process (from exit handler)
@@ -277,7 +272,7 @@ public class LinuxProcessConnector : IPlatformMonitor
                 $"ephemeral_process:{evt.ProcessName}:pid:{evt.Pid}:{evt.CommandLine}", 55, 0.68));
         }
 
-        // Reverse shell patterns in command line
+        // Reverse shell / encoded patterns (behavior, not tool name)
         if (!string.IsNullOrEmpty(evt.CommandLine))
         {
             if (evt.CommandLine.Contains("/dev/tcp/", StringComparison.Ordinal) ||
@@ -288,7 +283,6 @@ public class LinuxProcessConnector : IPlatformMonitor
                     $"realtime_reverse_shell:{evt.ProcessName}:pid:{evt.Pid}", 92, 0.9));
             }
 
-            // Encoded execution
             if (evt.CommandLine.Contains("base64 -d", StringComparison.Ordinal) &&
                 evt.CommandLine.Contains("| bash", StringComparison.Ordinal))
             {
@@ -296,6 +290,15 @@ public class LinuxProcessConnector : IPlatformMonitor
                     $"realtime_encoded_exec:{evt.ProcessName}:pid:{evt.Pid}", 70, 0.75));
             }
         }
+    }
+
+    private static string? GetExePath(int pid)
+    {
+        try
+        {
+            return File.ResolveLinkTarget($"/proc/{pid}/exe", returnFinalTarget: true)?.FullName;
+        }
+        catch { return null; }
     }
 
     private static string? GetProcessName(int pid)

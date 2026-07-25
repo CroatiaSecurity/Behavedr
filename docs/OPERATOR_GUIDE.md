@@ -1,6 +1,7 @@
 # Behavedr Operator Guide
 
-**Version:** 0.3.6  
+**Version:** 0.3.8  
+
 
 ## Live policy (0.3.2+)
 
@@ -22,6 +23,17 @@ Unsigned or invalid policies are rejected; signature failures increment security
 | **Active** | `Response:Mode = Active` | Executes registered response actions at thresholds |
 
 Leave AlertOnly until you have baselined false positives for the environment.
+
+### Response safety (0.3.6+)
+
+Active mode will **not**:
+
+- Kill the agent process, its parent host, or agent install binaries  
+- Quarantine agent binaries or OS system paths  
+- Firewall-block the agent image or system images  
+- On Linux, UID-isolate the same user as the agent (uses destination IP block instead)  
+
+Detection treats **staging paths** (Temp, `/tmp`, Downloads) as higher risk than tool **names** alone (rename-resistant).
 
 ### Thresholds
 

@@ -32,16 +32,6 @@ public class MacOSMonitor : IPlatformMonitor
         _logger = logger ?? NullLogger<MacOSMonitor>.Instance;
     }
 
-    private static readonly HashSet<string> OffensiveTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "mimikatz", "meterpreter", "empire", "sliver", "cobalt",
-        "chisel", "ligolo", "socat", "ncat", "linpeas",
-        "crackmapexec", "impacket", "bloodhound", "rubeus",
-        "hashcat", "john", "hydra", "gobuster", "ffuf",
-        "nuclei", "sqlmap", "responder", "proxychains",
-        "swiftbelt", "bifrost", "jxa_runner", "mystic",
-    };
-
     private static readonly HashSet<string> ExpectedRootProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
         "launchd", "kernel_task", "loginwindow", "WindowServer",
@@ -100,12 +90,18 @@ public class MacOSMonitor : IPlatformMonitor
                 {
                     var name = proc.ProcessName;
                     var pid = proc.Id;
+                    if (pid == Environment.ProcessId) continue;
 
-                    // Known offensive tools
-                    if (OffensiveTools.Any(t => name.Contains(t, StringComparison.OrdinalIgnoreCase)))
+                    string? path = null;
+                    try { path = proc.MainModule?.FileName; } catch { /* permission */ }
+                    if (Response.ResponseSafety.IsOwnAgentImage(path)) continue;
+
+                    var off = ThreatHeuristics.Evaluate(name, path);
+                    if (off is { } o)
                     {
                         signals.Add(new Signal(
-                            $"suspicious_process:{name}:pid:{pid}", 85, 0.9));
+                            $"suspicious_process:{o.Tag}:{o.Detail}:pid:{pid}",
+                            o.Weight, o.Confidence));
                     }
 
                     // Get command line via ps (macOS doesn't expose /proc)

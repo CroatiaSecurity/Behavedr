@@ -51,12 +51,16 @@ public class AndroidResponseEngine : IResponseAction
         var pid = result.Event.ProcessId;
         var processName = result.Event.ProcessName;
 
-        if (!int.TryParse(pid, out var pidInt) || pidInt <= 4)
+        if (!int.TryParse(pid, out var pidInt) || pidInt <= 0)
             return ResponseOutcome.Skipped(Name, $"Invalid PID: {pid}");
 
-        // Never kill ourselves
-        if (pidInt == Environment.ProcessId)
-            return ResponseOutcome.Skipped(Name, "Cannot kill own process");
+        // Shared safety rails (self / parent / agent image)
+        if (ResponseSafety.ShouldRefuseKill(pidInt, processName ?? "", out var safetyReason))
+            return ResponseOutcome.Skipped(Name, $"Safety: {safetyReason}");
+
+        // Never kill/force-stop our package
+        if (IsOwnPackage(processName))
+            return ResponseOutcome.Skipped(Name, "Safety: own package");
 
         // Never kill system-critical processes
         if (IsSystemCritical(processName, pidInt))
@@ -266,15 +270,27 @@ public class AndroidResponseEngine : IResponseAction
                File.Exists("/data/local/bin/su");
     }
 
-    private static bool IsSystemCritical(string name, int pid)
+    private static bool IsOwnPackage(string? name)
     {
-        if (pid <= 100) return true; // Low PIDs are system processes on Android
+        if (string.IsNullOrEmpty(name)) return false;
+        return name.Contains("behavedr", StringComparison.OrdinalIgnoreCase) ||
+               name.Contains("com.croatiasecurity", StringComparison.OrdinalIgnoreCase);
+    }
 
+    private static bool IsSystemCritical(string? name, int pid)
+    {
+        // Android system_server / zygote are low PIDs; pid<=100 is a coarse floor only.
+        if (pid <= 100) return true;
+
+        if (string.IsNullOrEmpty(name)) return false;
+
+        // Exact system process names only — spoofed "system_server" under high PID
+        // is not given blanket immunity (path/UID checks are limited without platform API).
         var systemProcesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "zygote", "zygote64", "system_server", "servicemanager",
             "surfaceflinger", "vold", "installd", "netd", "lmkd",
-            "init", "ueventd", "healthd", "logd", "adbd",
+            "init", "ueventd", "healthd", "logd",
         };
 
         return systemProcesses.Contains(name);

@@ -49,16 +49,6 @@ public class MacOSKqueueMonitor : IPlatformMonitor
     private readonly Dictionary<int, long> _execTimestamps = new();
     private const int EphemeralThresholdMs = 2000;
 
-    private static readonly HashSet<string> OffensiveTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "mimikatz", "meterpreter", "empire", "sliver", "cobalt",
-        "chisel", "ligolo", "socat", "ncat", "linpeas",
-        "crackmapexec", "impacket", "bloodhound", "rubeus",
-        "hashcat", "john", "hydra", "gobuster", "ffuf",
-        "nuclei", "sqlmap", "responder", "proxychains",
-        "swiftbelt", "bifrost", "jxa_runner", "mystic",
-    };
-
     public string PlatformName => "MacOSKqueue";
     public bool IsSupported => OperatingSystem.IsMacOS();
 
@@ -272,11 +262,25 @@ public class MacOSKqueueMonitor : IPlatformMonitor
             return;
         }
 
-        // Offensive tool detection on exec
-        if (OffensiveTools.Any(t => evt.ProcessName.Contains(t, StringComparison.OrdinalIgnoreCase)))
+        if (evt.Pid == Environment.ProcessId) return;
+
+        // Name + best-effort path (proc_pidpath when available is heavier; name/staging heuristics)
+        string? path = null;
+        try
+        {
+            using var p = Process.GetProcessById(evt.Pid);
+            path = p.MainModule?.FileName;
+        }
+        catch { /* permission */ }
+
+        if (Response.ResponseSafety.IsOwnAgentImage(path)) return;
+
+        var off = ThreatHeuristics.Evaluate(evt.ProcessName, path);
+        if (off is { } o)
         {
             signals.Add(new Signal(
-                $"realtime_suspicious_process_macos:{evt.ProcessName}:pid:{evt.Pid}", 85, 0.92));
+                $"realtime_offensive_macos:{o.Tag}:{o.Detail}:pid:{evt.Pid}",
+                o.Weight, o.Confidence));
         }
     }
 

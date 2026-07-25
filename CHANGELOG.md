@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.8] — 2026-07-25
+
+### Rename-resistant detection across primary monitors
+
+- **cn_proc** (`LinuxProcessConnector`): use `/proc/pid/exe` + `ThreatHeuristics` (not name lists alone)
+- **Windows / Linux / macOS monitors + kqueue**: same heuristics; skip own agent image
+- **Android response**: `ResponseSafety` + never force-stop own package; system names exact match
+- Docs: EPICS / threat model version sync
+
 ## [0.3.7] — 2026-07-25
 
 ### ABI verification + isolation self-DoS fixes

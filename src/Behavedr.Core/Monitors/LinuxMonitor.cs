@@ -30,16 +30,6 @@ public class LinuxMonitor : IPlatformMonitor
         _logger = logger ?? NullLogger<LinuxMonitor>.Instance;
     }
 
-    private static readonly HashSet<string> OffensiveTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "mimikatz", "meterpreter", "empire", "covenant", "sliver",
-        "chisel", "ligolo", "socat", "ncat", "linpeas", "linenum",
-        "pspy", "dirtycow", "sudo_killer", "gtfobins", "crackmapexec",
-        "impacket", "bloodhound", "sharphound", "rubeus", "kerbrute",
-        "hashcat", "john", "hydra", "medusa", "gobuster", "ffuf",
-        "nuclei", "sqlmap", "responder", "evil-winrm", "proxychains",
-    };
-
     private static readonly HashSet<string> ExpectedRootProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
         "init", "systemd", "kthreadd", "sshd", "cron", "crond",
@@ -110,18 +100,29 @@ public class LinuxMonitor : IPlatformMonitor
                     if (!File.Exists(commPath)) continue;
                     var processName = File.ReadAllText(commPath).Trim();
 
-                    // Known offensive tools
-                    if (OffensiveTools.Any(t => processName.Contains(t, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        signals.Add(new Signal(
-                            $"suspicious_process:{processName}:pid:{pid}", 85, 0.9));
-                    }
-
-                    // Read command line
+                    // Read command line + exe path (rename-resistant)
                     var cmdlinePath = Path.Combine(procDir, "cmdline");
                     var cmdline = "";
                     if (File.Exists(cmdlinePath))
                         cmdline = File.ReadAllText(cmdlinePath).Replace('\0', ' ').Trim();
+
+                    string? exePath = null;
+                    try
+                    {
+                        exePath = File.ResolveLinkTarget(Path.Combine(procDir, "exe"), returnFinalTarget: true)?.FullName;
+                    }
+                    catch { /* permission */ }
+
+                    if (Response.ResponseSafety.IsOwnAgentImage(exePath))
+                        continue;
+
+                    var off = ThreatHeuristics.Evaluate(processName, exePath ?? cmdline);
+                    if (off is { } o)
+                    {
+                        signals.Add(new Signal(
+                            $"suspicious_process:{o.Tag}:{o.Detail}:pid:{pid}",
+                            o.Weight, o.Confidence));
+                    }
 
                     if (!string.IsNullOrEmpty(cmdline))
                     {

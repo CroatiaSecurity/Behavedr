@@ -52,7 +52,7 @@ public class EpicCompletenessTests
         var root = FindRepoRoot();
         Assert.True(File.Exists(Path.Combine(root, "docs", "EPICS_STATUS.md")));
         var doc = File.ReadAllText(Path.Combine(root, "docs", "EPICS_STATUS.md"));
-        Assert.Contains("0.3.5", doc, StringComparison.Ordinal);
+        Assert.Contains("0.3.8", doc, StringComparison.Ordinal);
         Assert.Contains("System Extension *product*", doc, StringComparison.Ordinal);
         Assert.Contains("Partial", doc, StringComparison.Ordinal);
         Assert.Contains("JSONL", doc, StringComparison.Ordinal);

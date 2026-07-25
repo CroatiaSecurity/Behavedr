@@ -1,4 +1,4 @@
-# Platform epics — honest status (0.3.7)
+# Platform epics — honest status (0.3.8)
 
 Source of truth for **production code** vs **field activation**. No marketing.
 
@@ -18,7 +18,12 @@ Source of truth for **production code** vs **field activation**. No marketing.
 | Kernel callout / rootkit win | **No** | N/A | Out of scope (userland EDR) |
 | OS Authenticode/notarize | Hooks only | No | Paid certs |
 
-## What 0.3.7 added
+## What 0.3.8 added
+
+- Primary monitors (cn_proc, kqueue, Windows/Linux/macOS poll monitors) use path-aware `ThreatHeuristics`
+- Android response uses shared safety rails + own-package protection
+
+## What 0.3.7 added (kept)
 
 - fanotify / cn_proc ABI documented from kernel uapi (no guessed flags)
 - Linux isolation never UID-blocks the agent user; fanotify never denies agent install path  
