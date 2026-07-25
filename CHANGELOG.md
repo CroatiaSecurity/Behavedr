@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.1] — 2026-07-25
+
+### Live signed policy application
+
+- **`PolicyApplicator`**: applies verified `PolicyUpdate` to live `ResponseEngine` + `ScoringEngine` + monitoring interval
+- **`ResponseEngine.TryUpdatePolicy` / `ScoringEngine.TryUpdateConfig`**: hot-reload with validation
+- **`LivePolicyState`**: monitoring interval adjustable without restart
+- **`CommunicationService`**: no longer logs-and-drops policy; applies or rejects with reason
+- **Linux nftables**: IPv6 C2 block + isolation metrics
+- **StartupSelfTest**: platform depth posture log (eBPF/ES/fanotify/env flags)
+- Tests for policy apply / invalid reject (103 total)
+
 ## [0.3.0] — 2026-07-25
 
 ### Minor line: platform depth product step

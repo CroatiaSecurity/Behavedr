@@ -98,6 +98,7 @@ public class LinuxNetworkIsolation : IResponseAction
         if (success)
         {
             lock (_ruleLock) { _activeRuleCount++; }
+            Telemetry.SecurityTelemetry.ReportIsolationAction();
             _logger.LogWarning(
                 "[NetworkIsolation] Isolated UID {Uid} (process: {Process}, PID {Pid}) — all outbound traffic dropped",
                 uid, processName, pid);
@@ -110,14 +111,20 @@ public class LinuxNetworkIsolation : IResponseAction
     [SupportedOSPlatform("linux")]
     private async Task<ResponseOutcome> IsolateByDestination(DetectionResult result, int pid, CancellationToken ct)
     {
-        // Extract destination IPs from signal strings (format: "...→IP:PORT:pid:N")
-        var ips = new HashSet<string>();
+        // Extract destination IPs (IPv4 dotted or IPv6) from signal type strings
+        var ips = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var signal in result.Signals)
         {
-            var match = System.Text.RegularExpressions.Regex.Match(
-                signal.Type, @"→([\d\.]+):\d+");
-            if (match.Success)
-                ips.Add(match.Groups[1].Value);
+            foreach (System.Text.RegularExpressions.Match m in
+                     System.Text.RegularExpressions.Regex.Matches(
+                         signal.Type,
+                         @"(?:→|->)?((?:\d{1,3}\.){3}\d{1,3}|[0-9a-fA-F:]+):\d+"))
+            {
+                var ip = m.Groups[1].Value;
+                if (ip is "127.0.0.1" or "::1" or "0.0.0.0" or "::") continue;
+                if (System.Net.IPAddress.TryParse(ip, out _))
+                    ips.Add(ip);
+            }
         }
 
         if (ips.Count == 0)
@@ -126,7 +133,10 @@ public class LinuxNetworkIsolation : IResponseAction
         var blocked = 0;
         foreach (var ip in ips)
         {
-            var rule = $"add rule inet behavedr_isolation output ip daddr {ip} counter drop comment \"behavedr:c2block:pid:{pid}\"";
+            var isV6 = ip.Contains(':');
+            var rule = isV6
+                ? $"add rule inet behavedr_isolation output ip6 daddr {ip} counter drop comment \"behavedr:c2block6:pid:{pid}\""
+                : $"add rule inet behavedr_isolation output ip daddr {ip} counter drop comment \"behavedr:c2block:pid:{pid}\"";
             if (await RunNft(rule, ct))
             {
                 blocked++;
@@ -136,6 +146,7 @@ public class LinuxNetworkIsolation : IResponseAction
 
         if (blocked > 0)
         {
+            Telemetry.SecurityTelemetry.ReportIsolationAction();
             _logger.LogWarning(
                 "[NetworkIsolation] Blocked {Count} C2 destination IPs for root PID {Pid}",
                 blocked, pid);

@@ -1,6 +1,18 @@
 # Behavedr Operator Guide
 
-**Version:** 0.3.0  
+**Version:** 0.3.1  
+
+## Live policy (0.3.1+)
+
+When `Communication:Enabled` and the management server returns a **signed** policy:
+
+| Field | Effect |
+|-------|--------|
+| `ResponsePolicy` | Mode, thresholds, kill budget — hot-applied |
+| `ScoringConfig` | President-kill / multipliers — hot-applied |
+| `MonitoringIntervalSeconds` | Detection cycle delay (1–60s) without restart |
+
+Unsigned or invalid policies are rejected; signature failures increment security metrics.
 
 ## Response modes
 

@@ -200,6 +200,17 @@ public sealed class StartupSelfTest : IHostedService
             _logger.LogWarning(ex, "[StartupSelfTest] Policy key check FAILED");
         }
 
+        // Platform depth posture (informational — does not fail boot)
+        try
+        {
+            ReportPlatformDepth();
+            passed++;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[StartupSelfTest] Platform depth report skipped");
+        }
+
         if (failed == 0)
             _logger.LogInformation("[StartupSelfTest] All {Passed} checks PASSED", passed);
         else
@@ -207,6 +218,19 @@ public sealed class StartupSelfTest : IHostedService
                 passed, failed);
 
         return Task.CompletedTask;
+    }
+
+    private void ReportPlatformDepth()
+    {
+        var names = _engine.RegisteredMonitors.Select(m => m.PlatformName).ToHashSet(StringComparer.Ordinal);
+        _logger.LogInformation(
+            "[StartupSelfTest] Platform depth: monitors={Count} hasEbpf={Ebpf} hasEs={Es} hasFanotify={Fan} landlockEnv={Ll} esAuthEnv={Auth}",
+            names.Count,
+            names.Contains("LinuxEbpfExec") || names.Contains("LinuxEbpfFile") || names.Contains("LinuxEbpfNet"),
+            names.Contains("MacOSEndpointSecurity"),
+            names.Contains("LinuxFanotify"),
+            Environment.GetEnvironmentVariable("BEHAVEDR_LANDLOCK") == "1",
+            Environment.GetEnvironmentVariable("BEHAVEDR_ES_AUTH") == "1");
     }
 
     /// <summary>

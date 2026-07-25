@@ -6,7 +6,7 @@
 ;   Or use: installer\build.ps1 (recommended — handles version stamping automatically)
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.3.0"
+  #define MyAppVersion "0.3.1"
 #endif
 #ifndef PublishDir
   #define PublishDir "..\..\publish\agent-win-x64"

@@ -7,6 +7,7 @@ using Behavedr.Core.Models;
 using Behavedr.Core.Platform;
 using Behavedr.Core.Response;
 using Behavedr.Core.Telemetry;
+// LivePolicyState in Platform
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -23,8 +24,9 @@ public sealed class MonitoringService : BackgroundService
     private readonly OfflineBuffer _offlineBuffer;
     private readonly CommunicationConfig _commConfig;
     private readonly BehavedrMetrics _metrics;
+    private readonly LivePolicyState _livePolicy;
     private readonly ILogger<MonitoringService> _logger;
-    private readonly TimeSpan _interval;
+    private readonly int _defaultIntervalSeconds;
 
     public MonitoringService(
         DetectionEngine engine,
@@ -33,6 +35,7 @@ public sealed class MonitoringService : BackgroundService
         OfflineBuffer offlineBuffer,
         CommunicationConfig commConfig,
         BehavedrMetrics metrics,
+        LivePolicyState livePolicy,
         IConfiguration configuration,
         ILogger<MonitoringService> logger)
     {
@@ -42,15 +45,19 @@ public sealed class MonitoringService : BackgroundService
         _offlineBuffer = offlineBuffer;
         _commConfig = commConfig;
         _metrics = metrics;
+        _livePolicy = livePolicy;
         _logger = logger;
 
-        var seconds = configuration.GetValue("Agent:MonitoringIntervalSeconds", 5);
-        _interval = TimeSpan.FromSeconds(Math.Max(1, seconds));
+        _defaultIntervalSeconds = Math.Clamp(
+            configuration.GetValue("Agent:MonitoringIntervalSeconds", 5), 1, 60);
+        if (_livePolicy.MonitoringIntervalSeconds == 5 && _defaultIntervalSeconds != 5)
+            _livePolicy.MonitoringIntervalSeconds = _defaultIntervalSeconds;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Monitoring service started (interval: {Interval}s)", _interval.TotalSeconds);
+        _logger.LogInformation("Monitoring service started (interval: {Interval}s, live-policy aware)",
+            _livePolicy.MonitoringIntervalSeconds);
 
         // Register platform monitors (only if not already registered by DI/bootstrap)
         if (_engine.RegisteredMonitors.Count == 0)
@@ -65,13 +72,12 @@ public sealed class MonitoringService : BackgroundService
             _engine.RegisteredMonitors.Count,
             string.Join(", ", _engine.RegisteredMonitors.Select(m => m.PlatformName)));
 
-        using var timer = new PeriodicTimer(_interval);
-
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await timer.WaitForNextTickAsync(stoppingToken);
+                var delay = TimeSpan.FromSeconds(_livePolicy.MonitoringIntervalSeconds);
+                await Task.Delay(delay, stoppingToken);
                 await RunDetectionCycleAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

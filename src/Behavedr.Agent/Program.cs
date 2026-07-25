@@ -6,6 +6,7 @@ using Behavedr.Core.Response;
 using Behavedr.Core.Security;
 using Behavedr.Core.Update;
 using Behavedr.Core.Telemetry;
+// PolicyApplicator is in Communication
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -73,6 +74,8 @@ try
     builder.Services.AddSingleton<ScoringEngine>();
     builder.Services.AddSingleton<BehavioralCorrelationEngine>();
     builder.Services.AddSingleton<DetectionEngine>();
+    builder.Services.AddSingleton<LivePolicyState>();
+    builder.Services.AddSingleton<PolicyApplicator>();
 
     // v0.1.3: Response engine with process kill and file quarantine (C-1 fix)
     var responsePolicy = builder.Configuration

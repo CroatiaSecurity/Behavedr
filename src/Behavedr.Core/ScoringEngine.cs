@@ -9,15 +9,43 @@ using Behavedr.Core.Models;
 /// </summary>
 public class ScoringEngine
 {
-    private readonly ScoringConfig _config;
+    private ScoringConfig _config;
+    private readonly object _configLock = new();
 
     public ScoringEngine(ScoringConfig? config = null)
     {
         _config = config ?? ScoringConfig.Default;
     }
 
-    public double PresidentKillThreshold => _config.PresidentKillThreshold;
-    public double UserTargetedMultiplier => _config.UserTargetedMultiplier;
+    public double PresidentKillThreshold
+    {
+        get { lock (_configLock) return _config.PresidentKillThreshold; }
+    }
+
+    public double UserTargetedMultiplier
+    {
+        get { lock (_configLock) return _config.UserTargetedMultiplier; }
+    }
+
+    public ScoringConfig Config
+    {
+        get { lock (_configLock) return _config; }
+    }
+
+    /// <summary>Hot-apply scoring config from a signed policy update (v0.3.1).</summary>
+    public bool TryUpdateConfig(ScoringConfig config, out string error)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        if (!config.IsValid())
+        {
+            error = "ScoringConfig failed IsValid()";
+            return false;
+        }
+        lock (_configLock)
+            _config = config;
+        error = "";
+        return true;
+    }
 
     public double CalculateScore(DetectionEvent evt, List<Signal> signals)
     {
@@ -36,8 +64,12 @@ public class ScoringEngine
             baseScore += weight * confidence;
         }
 
+        double mult;
+        lock (_configLock)
+            mult = _config.UserTargetedMultiplier;
+
         if (evt.IsUserTargeted)
-            baseScore *= _config.UserTargetedMultiplier;
+            baseScore *= mult;
 
         // Do NOT hard-clamp to 100. Preserve raw score for fidelity — higher scores
         // indicate more concurrent threat signals and allow differentiation between
@@ -70,7 +102,10 @@ public class ScoringEngine
     public bool ShouldPresidentKill(double score, DetectionEvent evt)
     {
         ArgumentNullException.ThrowIfNull(evt);
-        return score > _config.PresidentKillThreshold && evt.IsUserTargeted;
+        double thr;
+        lock (_configLock)
+            thr = _config.PresidentKillThreshold;
+        return score > thr && evt.IsUserTargeted;
     }
 }
 

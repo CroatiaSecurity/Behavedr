@@ -8,23 +8,27 @@ using Microsoft.Extensions.Logging;
 /// Background service managing the agent-to-server communication lifecycle.
 /// Handles connection, heartbeats, offline buffer replay, and policy fetching.
 /// v0.1.3: Wires communication layer that was previously dead code (C-3 fix).
+/// v0.3.1: Applies signed policy updates via <see cref="PolicyApplicator"/>.
 /// </summary>
 public sealed class CommunicationService : BackgroundService
 {
     private readonly IBehavedrClient _client;
     private readonly OfflineBuffer _offlineBuffer;
     private readonly CommunicationConfig _config;
+    private readonly PolicyApplicator _policyApplicator;
     private readonly ILogger<CommunicationService> _logger;
 
     public CommunicationService(
         IBehavedrClient client,
         OfflineBuffer offlineBuffer,
         CommunicationConfig config,
+        PolicyApplicator policyApplicator,
         ILogger<CommunicationService> logger)
     {
         _client = client;
         _offlineBuffer = offlineBuffer;
         _config = config;
+        _policyApplicator = policyApplicator;
         _logger = logger;
     }
 
@@ -68,14 +72,23 @@ public sealed class CommunicationService : BackgroundService
                         _logger.LogInformation("Replayed {Count} buffered reports", replayed);
                 }
 
-                // Fetch policy updates periodically
+                // Fetch and apply signed policy updates
                 if (_client.IsConnected)
                 {
                     var policy = await _client.FetchPolicyAsync(stoppingToken);
                     if (policy is not null)
                     {
-                        _logger.LogInformation("Received policy update (issued: {IssuedAt})", policy.IssuedAt);
-                        // Policy application would go here in a future version
+                        if (_policyApplicator.TryApply(policy, out var err))
+                        {
+                            _logger.LogInformation(
+                                "Policy update applied (issued: {IssuedAt})", policy.IssuedAt);
+                        }
+                        else
+                        {
+                            _logger.LogWarning(
+                                "Policy update rejected: {Error} (issued: {IssuedAt})",
+                                err, policy.IssuedAt);
+                        }
                     }
                 }
             }

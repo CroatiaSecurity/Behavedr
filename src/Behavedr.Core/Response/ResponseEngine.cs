@@ -12,9 +12,10 @@ public class ResponseEngine
 {
     private readonly List<IResponseAction> _actions = new();
     private readonly ILogger<ResponseEngine> _logger;
-    private readonly ResponsePolicy _policy;
+    private ResponsePolicy _policy;
     private readonly ResponseAuditWriter _audit;
     private readonly Telemetry.BehavedrMetrics? _metrics;
+    private readonly object _policyLock = new();
 
     // Rate limiting: track recent response targets to prevent re-executing on same PID/path
     private readonly Dictionary<string, DateTime> _recentTargets = new();
@@ -37,7 +38,32 @@ public class ResponseEngine
     }
 
     public IReadOnlyList<IResponseAction> RegisteredActions => _actions;
-    public ResponsePolicy Policy => _policy;
+    public ResponsePolicy Policy
+    {
+        get { lock (_policyLock) return _policy; }
+    }
+
+    /// <summary>
+    /// Hot-apply a signed policy update (v0.3.1). Rejects invalid thresholds.
+    /// </summary>
+    public bool TryUpdatePolicy(ResponsePolicy policy, out string error)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        if (!policy.IsValid())
+        {
+            error = "ResponsePolicy failed IsValid()";
+            return false;
+        }
+        lock (_policyLock)
+        {
+            _policy = policy;
+        }
+        _logger.LogWarning(
+            "Response policy updated live: Mode={Mode}, Alert={Alert}, Respond={Respond}, MaxKills={Max}",
+            policy.Mode, policy.AlertThreshold, policy.ResponseThreshold, policy.MaxKillsPerMinute);
+        error = "";
+        return true;
+    }
 
     /// <summary>Register a response action.</summary>
     public void RegisterAction(IResponseAction action)
@@ -56,21 +82,24 @@ public class ResponseEngine
         ArgumentNullException.ThrowIfNull(result);
         var outcomes = new List<ResponseOutcome>();
 
+        ResponsePolicy policySnapshot;
+        lock (_policyLock) policySnapshot = _policy;
+
         // Determine response level based on score and policy
-        var level = DetermineResponseLevel(result);
+        var level = DetermineResponseLevel(result, policySnapshot);
 
         _logger.LogDebug("Detection score={Score:F1}, level={Level}, policy={PolicyMode}",
-            result.Score, level, _policy.Mode);
+            result.Score, level, policySnapshot.Mode);
 
         // Alert-only mode: log but don't act
-        if (_policy.Mode == ResponseMode.AlertOnly)
+        if (policySnapshot.Mode == ResponseMode.AlertOnly)
         {
             if (level >= ResponseLevel.Respond)
             {
                 _logger.LogWarning("ALERT (alert-only mode): {ProcessName} scored {Score:F1} — would trigger {Level}",
                     result.Event.ProcessName, result.Score, level);
                 outcomes.Add(ResponseOutcome.Skipped("policy", $"Alert-only mode active. Score={result.Score:F1}, level={level}"));
-                _audit.Append(result, outcomes, _policy.Mode.ToString());
+                _audit.Append(result, outcomes, policySnapshot.Mode.ToString());
             }
             return outcomes;
         }
@@ -111,13 +140,13 @@ public class ResponseEngine
             }
 
             // Kill budget (Sentinel MaxKillsPerMinute pattern)
-            if (IsKillClassAction(action) && !TryConsumeKillBudget())
+            if (IsKillClassAction(action) && !TryConsumeKillBudget(policySnapshot.MaxKillsPerMinute))
             {
                 _logger.LogWarning(
                     "Kill budget exhausted ({Max}/min) — demoting {Action} for {Process}",
-                    _policy.MaxKillsPerMinute, action.Name, result.Event.ProcessName);
+                    policySnapshot.MaxKillsPerMinute, action.Name, result.Event.ProcessName);
                 outcomes.Add(ResponseOutcome.Skipped(action.Name,
-                    $"Kill budget exhausted (max {_policy.MaxKillsPerMinute}/min)"));
+                    $"Kill budget exhausted (max {policySnapshot.MaxKillsPerMinute}/min)"));
                 continue;
             }
 
@@ -142,17 +171,16 @@ public class ResponseEngine
             }
         }
 
-        _audit.Append(result, outcomes, _policy.Mode.ToString());
+        _audit.Append(result, outcomes, policySnapshot.Mode.ToString());
         return outcomes;
     }
 
     private static bool IsKillClassAction(IResponseAction action) =>
         action is ProcessKillAction or AndroidResponseEngine;
 
-    private bool TryConsumeKillBudget()
+    private bool TryConsumeKillBudget(int maxKillsPerMinute)
     {
-        var max = _policy.MaxKillsPerMinute;
-        if (max <= 0) return true; // 0 = unlimited
+        if (maxKillsPerMinute <= 0) return true; // 0 = unlimited
 
         lock (_rateLimitLock)
         {
@@ -160,7 +188,7 @@ public class ResponseEngine
             while (_recentKills.Count > 0 && _recentKills.Peek() < cutoff)
                 _recentKills.Dequeue();
 
-            if (_recentKills.Count >= max)
+            if (_recentKills.Count >= maxKillsPerMinute)
                 return false;
 
             _recentKills.Enqueue(DateTime.UtcNow);
@@ -168,13 +196,13 @@ public class ResponseEngine
         }
     }
 
-    private ResponseLevel DetermineResponseLevel(DetectionResult result)
+    private static ResponseLevel DetermineResponseLevel(DetectionResult result, ResponsePolicy policy)
     {
         if (result.PresidentKill)
             return ResponseLevel.PresidentKill;
-        if (result.Score >= _policy.ResponseThreshold)
+        if (result.Score >= policy.ResponseThreshold)
             return ResponseLevel.Respond;
-        if (result.Score >= _policy.AlertThreshold)
+        if (result.Score >= policy.AlertThreshold)
             return ResponseLevel.Alert;
         return ResponseLevel.None;
     }

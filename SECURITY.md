@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.3.0   | Yes       |
-| < 0.3.0 | No        |
+| 0.3.1   | Yes       |
+| < 0.3.1 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
@@ -155,7 +155,7 @@ These are current, intentional, or residual limits — not a backlog disguised a
 
 - **No kernel-level visibility.** Kernel rootkits can hide from userland monitors. Operational “10/10” is defined as best-in-class userland + supply chain, not omnipotence against ring-0 adversaries.
 - **Native ETW requires elevation** (SYSTEM/admin). Falls back to WMI polling without it.
-- **macOS real-time:** EndpointSecurity client is implemented (`MacOSEndpointSecurityMonitor` + `libbehavedr_es.dylib`). Without Apple ES entitlement the client fails soft and **kqueue** remains active. NOTIFY-only (no AUTH block) in 0.3.0.
+- **macOS real-time:** EndpointSecurity client is implemented (`MacOSEndpointSecurityMonitor` + `libbehavedr_es.dylib`). Without Apple ES entitlement the client fails soft and **kqueue** remains active. Optional AUTH denylist via `BEHAVEDR_ES_AUTH=1`.
 - **Linux real-time:** eBPF exec path is implemented (`LinuxEbpfExecMonitor` + `native/linux/ebpf`). Without CAP_BPF / object file, **cn_proc** remains primary.
 - **Single-process agent architecture.** A successful privileged kill terminates protection until SCM/systemd/watchdog restart (seconds, not continuous multiproc resilience).
 - **Health-check auto-rollback** restores from `.previous` when post-update crypto health fails. It does **not** cover every possible failure mode (e.g. partial file locks on Windows may require manual recovery or reinstall).
