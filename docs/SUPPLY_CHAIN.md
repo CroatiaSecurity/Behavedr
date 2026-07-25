@@ -103,6 +103,23 @@ Two different trust layers. Do not conflate them.
 | **Update `.sig` (RSA-4096 PSS)** | Free self-generated keypair. Agent verifies with baked-in public key. | $0 | **Yes for auto-update.** Manual install of zips still works without signatures. |
 | **OS / store certs** | Authenticode (Windows), Apple Developer ID, Android Play/keystore | Paid / enrollment | **No.** Optional. Affects SmartScreen, Gatekeeper, Play trust only. |
 
+### Android “cert pins” (publisher only — not end users)
+
+A **cert pin** is the SHA-256 fingerprint of the certificate that signed your APK.
+It is **not** something users type in. Users only install the APK.
+
+| Who | Action |
+|-----|--------|
+| **End user** | Install APK (Play / sideload). Nothing else. |
+| **You (publisher)** | Optional: once you have a release keystore, paste its cert hash into `AndroidCertPins.BakedInPins` so fake APKs signed with other keys are rejected. |
+| **Default today** | Empty pin → **self-pin**: first run remembers the installed APK’s cert; if it later changes → repackage alert. |
+
+```bash
+# After you sign a release APK (publisher machine only):
+apksigner verify --print-certs Behavedr.apk
+# Copy the SHA-256, strip colons, put in AndroidCertPins.cs BakedInPins
+```
+
 ### If you have no commercial certificates
 
 That is fine for engineering and for many self-hosted deployments:

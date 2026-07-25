@@ -53,28 +53,70 @@ public sealed class AndroidUpdateSecurity
         ILogger? logger = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
-        // Prefer explicit arg, then env. Never treat PLACEHOLDER as a real pin.
+        // End users never set this. Order: ctor → vendor bake-in → env (MDM only).
         var pin = trustedKeyFingerprint
+                  ?? FirstVendorPin()
                   ?? Environment.GetEnvironmentVariable("BEHAVEDR_ANDROID_CERT_SHA256")
                   ?? "";
         if (pin.Contains("PLACEHOLDER", StringComparison.OrdinalIgnoreCase))
             pin = "";
-        // If env has a list, take first entry for update APK pin
         if (pin.Contains(','))
             pin = pin.Split(',')[0].Trim();
         _trustedSigningKeyFingerprint = pin.Replace(":", "", StringComparison.Ordinal)
             .Replace(" ", "", StringComparison.Ordinal)
-            .Trim();
+            .Trim()
+            .ToUpperInvariant();
+        // Zero-config: if no vendor pin, pin to the cert of the *currently installed* APK.
+        // Update APKs must be signed with the same key as what the user already runs.
+        if (string.IsNullOrEmpty(_trustedSigningKeyFingerprint))
+            _trustedSigningKeyFingerprint = TryGetInstalledApkCertFingerprint() ?? "";
         _primaryUpdateUrl = primaryUpdateUrl;
         _fallbackUpdateUrl = fallbackUpdateUrl;
         _logger = logger ?? NullLogger.Instance;
         if (string.IsNullOrEmpty(_trustedSigningKeyFingerprint))
-            _logger.LogWarning("[UpdateSecurity] No APK cert pin configured — update installs will be rejected");
+            _logger.LogWarning("[UpdateSecurity] Could not resolve APK cert for update pinning");
+        else
+            _logger.LogDebug("[UpdateSecurity] Update APKs must match cert pin (automatic, no user setup)");
     }
 
     public bool IsSignerPinConfigured =>
         !string.IsNullOrEmpty(_trustedSigningKeyFingerprint) &&
         !_trustedSigningKeyFingerprint.Contains("PLACEHOLDER", StringComparison.OrdinalIgnoreCase);
+
+    private static string? FirstVendorPin()
+    {
+        var pins = AndroidCertPins.VendorFingerprints;
+        return pins.Length > 0 ? pins[0] : null;
+    }
+
+    private string? TryGetInstalledApkCertFingerprint()
+    {
+        try
+        {
+            var pm = _context.PackageManager;
+            if (pm is null) return null;
+#pragma warning disable CA1416
+            if (Build.VERSION.SdkInt >= BuildVersionCodes.P)
+            {
+                var pkgInfo = pm.GetPackageInfo(_context.PackageName!,
+                    (PackageInfoFlags)((long)PackageInfoFlags.SigningCertificates));
+                var signingInfo = pkgInfo?.SigningInfo;
+                var signers = signingInfo?.HasMultipleSigners == true
+                    ? signingInfo.GetApkContentsSigners()?.ToArray()
+                    : signingInfo?.GetSigningCertificateHistory()?.ToArray();
+                var bytes = signers?.FirstOrDefault()?.ToByteArray();
+                if (bytes is null) return null;
+                return Convert.ToHexString(SHA256.HashData(bytes));
+            }
+#pragma warning restore CA1416
+#pragma warning disable CS0618, CA1422
+            var legacy = pm.GetPackageInfo(_context.PackageName!, PackageInfoFlags.Signatures);
+            var sig = legacy?.Signatures?.FirstOrDefault()?.ToByteArray();
+            return sig is null ? null : Convert.ToHexString(SHA256.HashData(sig));
+#pragma warning restore CS0618, CA1422
+        }
+        catch { return null; }
+    }
 
     /// <summary>
     /// Check for updates securely. Returns update info if available.
@@ -174,7 +216,7 @@ public sealed class AndroidUpdateSecurity
             if (!IsSignerPinConfigured)
             {
                 return UpdateVerificationResult.Failed(
-                    "Signer pin not configured (set BEHAVEDR_ANDROID_CERT_SHA256) — refusing update install");
+                    "Cannot verify update signer (no installed-app cert available)");
             }
 
             bool foundTrusted = false;
@@ -194,7 +236,8 @@ public sealed class AndroidUpdateSecurity
 
             if (!foundTrusted)
             {
-                return UpdateVerificationResult.Failed("APK signed with untrusted key");
+                return UpdateVerificationResult.Failed(
+                    "Update APK signed with different key than installed app — refused");
             }
 
             // 3. Version code anti-rollback

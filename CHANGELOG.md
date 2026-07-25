@@ -13,15 +13,17 @@
 - Agent **JSONL host fallback**: if dylib/`es_new_client` fails but
   `/var/run/behavedr/es.events` exists, consume host events (no orphan SE telemetry)
 
-#### Android supply chain (embarrassing PLACEHOLDER hole closed)
+#### Android supply chain (zero end-user config)
 - PLACEHOLDER strings **never** count as trusted certificates
-- Unconfigured pin → explicit `signer_pin_not_configured` signal (high on release builds)
-- Configure via `BEHAVEDR_ANDROID_CERT_SHA256` (comma-separated hex)
-- Update APK verify **refuses install** without a real pin
+- **Users only install the APK** — no env vars, no pins to type
+- Default: **self-pin** installed APK cert on first run; cert change → repackage alert
+- Optional publisher hard-pin later in `AndroidCertPins.BakedInPins` (your keystore, once)
+- Updates: new APK must match installed app cert (or baked publisher pin)
+- Metadata updates require real RSA-PSS (not “signature field present”)
 
 #### Housekeeping
 - `exec_trace.bpf.c` hard-errors if compiled (legacy / incompatible with loader)
-- Docs updated for packaging + JSONL path
+- Docs updated for packaging + JSONL path + what cert pins mean
 
 ## [0.3.4] — 2026-07-25
 

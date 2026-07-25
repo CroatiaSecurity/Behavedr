@@ -190,18 +190,20 @@ public class EpicCompletenessTests
     }
 
     [Fact]
-    public void AndroidSupplyChain_DoesNotTrustPlaceholder()
+    public void AndroidSupplyChain_ZeroConfigSelfPin_NoUserSetup()
     {
         var root = FindRepoRoot();
         var src = File.ReadAllText(Path.Combine(root,
             "src", "Behavedr.Mobile", "Platforms", "Android", "PlatformInjection", "SupplyChainVerifier.cs"));
         Assert.DoesNotContain("PLACEHOLDER_RELEASE_KEY", src, StringComparison.Ordinal);
-        Assert.Contains("signer_pin_not_configured", src, StringComparison.Ordinal);
-        Assert.Contains("BEHAVEDR_ANDROID_CERT_SHA256", src, StringComparison.Ordinal);
-        // Must never treat placeholder string as trusted match
+        Assert.Contains("Self-pinned", src, StringComparison.Ordinal);
+        Assert.Contains("PersistSelfPin", src, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "Contains(\"PLACEHOLDER_RELEASE_KEY_SHA256_FINGERPRINT_HERE\")",
             src, StringComparison.Ordinal);
+        var pins = File.ReadAllText(Path.Combine(root,
+            "src", "Behavedr.Mobile", "Platforms", "Android", "PlatformInjection", "AndroidCertPins.cs"));
+        Assert.Contains("not</b> an end-user setting", pins, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

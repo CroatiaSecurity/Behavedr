@@ -35,27 +35,22 @@ public sealed class SupplyChainVerifier
     private readonly ILogger _logger;
 
     /// <summary>
-    /// Expected signing certificate SHA-256 fingerprints (hex, no colons).
-    /// Configure via <c>BEHAVEDR_ANDROID_CERT_SHA256</c> (comma-separated) and/or
-    /// compile-time embeds below. Empty set = pin not configured (fail-closed signal).
-    /// Generate: <c>apksigner verify --print-certs app.apk</c> then strip colons.
+    /// Vendor (publisher) cert pins — NOT an end-user setting.
+    /// End users only install the APK. You bake pins once when you sign a release:
+    /// <c>dotnet build -p:BehavedrAndroidCertSha256=HEX...</c> or CI secret.
+    /// If no vendor pin is baked in, we self-pin the first-seen cert and alert on change
+    /// (repackage detection) without asking the user to configure anything.
     /// </summary>
-    private static readonly HashSet<string> TrustedCertFingerprints = LoadTrustedFingerprints();
+    private static readonly HashSet<string> VendorCertFingerprints = LoadVendorFingerprints();
 
-    private static HashSet<string> LoadTrustedFingerprints()
+    private static HashSet<string> LoadVendorFingerprints()
     {
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        // Optional compile-time pins (leave empty until you have real release certs).
-        // Do NOT put PLACEHOLDER strings here — they would look like trust and are rejected.
-        foreach (var builtIn in new[]
-        {
-            // "YOUR_RELEASE_CERT_SHA256_HEX",
-            // "YOUR_PLAY_UPLOAD_CERT_SHA256_HEX",
-        })
-        {
+        // Compile-time pin(s) from MSBuild (see Behavedr.Mobile.csproj)
+        foreach (var builtIn in AndroidCertPins.VendorFingerprints)
             AddFingerprint(set, builtIn);
-        }
 
+        // Optional device/enterprise override (MDM). End users never need this.
         var env = Environment.GetEnvironmentVariable("BEHAVEDR_ANDROID_CERT_SHA256");
         if (!string.IsNullOrWhiteSpace(env))
         {
@@ -71,7 +66,7 @@ public sealed class SupplyChainVerifier
         if (string.IsNullOrWhiteSpace(raw)) return;
         if (raw.Contains("PLACEHOLDER", StringComparison.OrdinalIgnoreCase)) return;
         var n = NormalizeFingerprint(raw);
-        if (n.Length >= 32) // SHA-256 hex is 64; allow shorter only if operator error but skip junk
+        if (n.Length >= 32)
             set.Add(n);
     }
 
@@ -81,7 +76,8 @@ public sealed class SupplyChainVerifier
            .Trim()
            .ToUpperInvariant();
 
-    public static bool IsSignerPinConfigured => TrustedCertFingerprints.Count > 0;
+    /// <summary>True when the publisher baked pins into this build (or MDM set env).</summary>
+    public static bool IsVendorPinConfigured => VendorCertFingerprints.Count > 0;
 
     // Trusted installer packages (sources allowed to install Behavedr)
     private static readonly HashSet<string> TrustedInstallers = new(StringComparer.OrdinalIgnoreCase)
@@ -211,8 +207,10 @@ public sealed class SupplyChainVerifier
     }
 
     /// <summary>
-    /// Fail-closed cert pin: PLACEHOLDER strings never count as trusted.
-    /// Unconfigured pin is a high-severity ops signal on non-debug builds.
+    /// Trust model (zero end-user config):
+    /// 1) If publisher baked vendor pins → APK cert must match (blocks fake APKs).
+    /// 2) Else self-pin first-seen cert on this device → later cert change = repackage.
+    /// Users never set pins; they only install your APK.
     /// </summary>
     private void EvaluateSignerTrust(Android.Content.PM.Signature[]? signers, List<Signal> signals, bool isDebuggable)
     {
@@ -222,36 +220,87 @@ public sealed class SupplyChainVerifier
             return;
         }
 
-        if (!IsSignerPinConfigured)
-        {
-            // Never pretend trust. Debug builds: warning only. Release: high weight.
-            var weight = isDebuggable ? 40 : 88;
-            signals.Add(new Signal(
-                "supply_chain:signer_pin_not_configured:set_BEHAVEDR_ANDROID_CERT_SHA256",
-                weight, isDebuggable ? 0.55 : 0.92));
-            _logger.LogWarning(
-                "[SupplyChain] No trusted cert fingerprints configured. " +
-                "Set BEHAVEDR_ANDROID_CERT_SHA256 or embed release pins. Pin not configured ≠ trusted.");
-            return;
-        }
-
-        bool foundTrusted = false;
+        string? currentFp = null;
         foreach (var sig in signers)
         {
             var certBytes = sig?.ToByteArray();
             if (certBytes is null) continue;
-            var fingerprint = NormalizeFingerprint(Convert.ToHexString(SHA256.HashData(certBytes)));
-            if (TrustedCertFingerprints.Contains(fingerprint))
-            {
-                foundTrusted = true;
-                break;
-            }
+            currentFp = NormalizeFingerprint(Convert.ToHexString(SHA256.HashData(certBytes)));
+            break;
+        }
+        if (currentFp is null)
+        {
+            signals.Add(new Signal("supply_chain:no_signers", 90, 0.95));
+            return;
         }
 
-        if (!foundTrusted)
+        if (IsVendorPinConfigured)
         {
-            signals.Add(new Signal("supply_chain:untrusted_signer", 95, 0.98));
-            _logger.LogCritical("[SupplyChain] APK signed with UNTRUSTED certificate — possible repackaging!");
+            if (!VendorCertFingerprints.Contains(currentFp))
+            {
+                signals.Add(new Signal("supply_chain:untrusted_signer", 95, 0.98));
+                _logger.LogCritical(
+                    "[SupplyChain] APK cert does not match publisher pin — possible repackaged APK");
+            }
+            else
+            {
+                _logger.LogDebug("[SupplyChain] Vendor cert pin matched");
+            }
+            // Still maintain self-pin as secondary (upgrade path / dual signers)
+            PersistSelfPin(currentFp, signals);
+            return;
+        }
+
+        // No vendor pin in this build: zero-config self-pin (works for "just install APK")
+        if (isDebuggable)
+        {
+            _logger.LogDebug(
+                "[SupplyChain] Debug build without vendor pin — self-pin only. " +
+                "Release builds should set -p:BehavedrAndroidCertSha256=… once per keystore.");
+        }
+        else
+        {
+            // One low-weight ops note for your console — not user-facing setup
+            _logger.LogInformation(
+                "[SupplyChain] No vendor pin baked into this APK; using device self-pin. " +
+                "To hard-pin your release keystore, rebuild with BehavedrAndroidCertSha256.");
+        }
+        PersistSelfPin(currentFp, signals);
+    }
+
+    private void PersistSelfPin(string currentFp, List<Signal> signals)
+    {
+        try
+        {
+            var pinFile = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "security", "apk_signer_pin.txt");
+            var dir = Path.GetDirectoryName(pinFile);
+            if (dir is not null) Directory.CreateDirectory(dir);
+
+            if (File.Exists(pinFile))
+            {
+                var stored = NormalizeFingerprint(File.ReadAllText(pinFile));
+                if (!string.IsNullOrEmpty(stored) &&
+                    !string.Equals(stored, currentFp, StringComparison.OrdinalIgnoreCase))
+                {
+                    signals.Add(new Signal("supply_chain:signer_changed:repackage_or_upgrade_key", 92, 0.96));
+                    _logger.LogCritical(
+                        "[SupplyChain] Signing certificate changed since first install — " +
+                        "possible repackaging (or intentional key rotation).");
+                    // Do not overwrite — keep original pin until operator clears app data
+                    return;
+                }
+            }
+            else
+            {
+                File.WriteAllText(pinFile, currentFp);
+                _logger.LogInformation("[SupplyChain] Self-pinned APK cert on first run (no user action)");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[SupplyChain] self-pin store failed");
         }
     }
 
