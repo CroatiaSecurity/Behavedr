@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.10] — 2026-07-25
+
+### Packaging, telemetry wiring, native soft-build
+
+#### Observability
+- **`SecurityTelemetry`** hooks for signature failure, isolation, platform soft-fail
+- Wired to `BehavedrMetrics` at agent host start
+- Update/policy verifiers + AutoUpdater (missing `.sig`) emit signature-failure metrics
+- Windows isolation reports isolation metric on successful block
+
+#### Packaging
+- **`packaging/unix/build-rpm.sh`** (rpmbuild)
+- Release workflow: best-effort `native/build-native.sh`, optional `.deb`/`.rpm`, bundle eBPF/ES artifacts into portable zips when present
+
+#### Windows
+- advfirewall isolation adds **inbound** block rule as well as outbound
+
+#### Tests
+- Security telemetry unit tests
+
 ## [0.2.9] — 2026-07-25
 
 ### Next depth layer (still 0.2.x)

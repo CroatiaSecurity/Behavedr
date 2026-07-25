@@ -1,6 +1,6 @@
 # Behavedr Operator Guide
 
-**Version:** 0.2.9  
+**Version:** 0.2.10  
 
 ## Response modes
 
@@ -20,7 +20,7 @@ Leave AlertOnly until you have baselined false positives for the environment.
 | President-kill | scoring config | Process kill class (desktop) |
 | `MaxKillsPerMinute` | 15 | Kill-storm budget |
 
-## Platform activation (0.2.9–0.2.9 depth)
+## Platform activation (0.2.10–0.2.10 depth)
 
 | Feature | Enable |
 |---------|--------|

@@ -146,6 +146,7 @@ public class AutoUpdater
             catch (HttpRequestException)
             {
                 _logger.LogCritical("SECURITY: No signature file available for update — rejecting");
+                Telemetry.SecurityTelemetry.ReportSignatureFailure();
                 CleanupTempFiles(tempPath, sigPath);
                 return false;
             }

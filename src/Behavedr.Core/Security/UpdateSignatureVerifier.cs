@@ -83,6 +83,7 @@ public static class UpdateSignatureVerifier
             else
             {
                 logger.LogCritical("SECURITY: Update signature verification FAILED for {File} — rejecting update", Path.GetFileName(filePath));
+                Telemetry.SecurityTelemetry.ReportSignatureFailure();
             }
 
             return isValid;
@@ -90,11 +91,13 @@ public static class UpdateSignatureVerifier
         catch (CryptographicException ex)
         {
             logger.LogCritical(ex, "SECURITY: Cryptographic error during signature verification — rejecting update");
+            Telemetry.SecurityTelemetry.ReportSignatureFailure();
             return false;
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Signature verification failed unexpectedly");
+            Telemetry.SecurityTelemetry.ReportSignatureFailure();
             return false;
         }
     }

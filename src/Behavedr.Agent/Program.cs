@@ -188,10 +188,15 @@ try
 
     var host = builder.Build();
 
+    // v0.2.10: security telemetry → OpenTelemetry metrics
+    var metrics = host.Services.GetRequiredService<BehavedrMetrics>();
+    SecurityTelemetry.OnSignatureFailure = metrics.RecordSignatureFailure;
+    SecurityTelemetry.OnIsolationAction = metrics.RecordIsolationAction;
+    SecurityTelemetry.OnPlatformSoftFail = metrics.RecordPlatformSoftFail;
+
     // v0.2.2: Register platform monitors before hosted services start (was deferred to
     // MonitoringService, so StartupSelfTest / early cycles could see zero monitors).
     var detectionEngine = host.Services.GetRequiredService<DetectionEngine>();
-    var metrics = host.Services.GetRequiredService<BehavedrMetrics>();
     if (detectionEngine.RegisteredMonitors.Count == 0)
     {
         foreach (var monitor in PlatformMonitors.Supported())

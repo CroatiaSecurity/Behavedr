@@ -31,13 +31,14 @@ macOS (launchd) — production
   Grant Full Disk Access to /opt/behavedr/Behavedr in System Settings → Privacy.
   Prefer a Developer ID signed + notarized build for Gatekeeper.
 
-v0.2.6 platform coverage
-------------------------
-  Linux: cn_proc, fanotify, kernel module load detection, auth log bursts,
-         nftables isolation, hardened systemd unit (CAP docs + optional IPAllow).
-  macOS: kqueue process events (200ms discovery), VNODE file watches on
-         LaunchDaemons/Agents/tmp, codesign self + persistence scan,
-         route/pf network isolation. Optional: pf-behavedr-block.conf anchor.
-  Windows (desktop packaging): see packaging/windows; verify-install-acls.ps1.
+v0.2.10 platform coverage
+-------------------------
+  Linux: cn_proc, fanotify (+ optional PERM), eBPF suite, Landlock (opt-in),
+         nftables, hardened systemd, deb/rpm scripts (build-deb.sh / build-rpm.sh).
+  macOS: kqueue, EndpointSecurity bridge (opt), VNODE, codesign, pf/route.
+  Optional artifacts in portable zip when CI produces them:
+    behavedr_exec.bpf.o, libbehavedr_es.dylib, pf-behavedr-block.conf
+
+  Native soft-build: native/build-native.sh
 
 GitHub: https://github.com/CroatiaSecurity/Behavedr

@@ -95,19 +95,26 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
         if (preferWfp && IPAddress.TryParse(ip, out var addr) && _wfp.BlockRemoteAddress(addr, $"Behavedr:{processName}"))
         {
             _logger.LogWarning("[WinNetIsolation] WFP blocked remote IP {Ip} ({Process})", ip, processName);
+            Telemetry.SecurityTelemetry.ReportIsolationAction();
             return true;
         }
 
         var safeName = $"BehavedrBlock_{ip.Replace(':', '_').Replace('.', '_')}";
-        var args =
+        var argsOut =
             $"advfirewall firewall add rule name=\"{safeName}\" " +
             $"dir=out action=block remoteip={ip} enable=yes " +
             $"description=\"Behavedr isolation for {Sanitize(processName)}\"";
+        var argsIn =
+            $"advfirewall firewall add rule name=\"{safeName}_in\" " +
+            $"dir=in action=block remoteip={ip} enable=yes " +
+            $"description=\"Behavedr isolation inbound for {Sanitize(processName)}\"";
 
-        var ok = await RunNetshAsync(args, ct);
+        var ok = await RunNetshAsync(argsOut, ct);
+        _ = await RunNetshAsync(argsIn, ct); // best-effort inbound
         if (ok)
         {
             _logger.LogWarning("[WinNetIsolation] advfirewall blocked remote IP {Ip} ({Process})", ip, processName);
+            Telemetry.SecurityTelemetry.ReportIsolationAction();
             return true;
         }
 

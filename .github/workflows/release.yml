@@ -202,6 +202,29 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw "signtool failed for installer" }
         Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
 
+    - name: Best-effort native depth artifacts
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set +e
+        chmod +x native/build-native.sh packaging/unix/build-deb.sh packaging/unix/build-rpm.sh 2>/dev/null
+        ./native/build-native.sh dist/native
+        # Copy any produced natives next to agent for packaging
+        if [ -d dist/native ]; then
+          cp -v dist/native/* publish/agent-${{ matrix.rid }}/ 2>/dev/null || true
+          mkdir -p dist/native-out
+          cp -v dist/native/* dist/native-out/ 2>/dev/null || true
+        fi
+        # Optional Linux packages (soft-fail)
+        if [ "${{ runner.os }}" = "Linux" ]; then
+          ./packaging/unix/build-deb.sh "${{ steps.ver.outputs.version }}" "publish/agent-${{ matrix.rid }}" \
+            && mv -v behavedr_*.deb dist/ 2>/dev/null || echo "deb build skipped/failed"
+          command -v rpmbuild >/dev/null && \
+            ./packaging/unix/build-rpm.sh "${{ steps.ver.outputs.version }}" "publish/agent-${{ matrix.rid }}" \
+            && mv -v *.rpm dist/ 2>/dev/null || echo "rpm build skipped/failed"
+        fi
+        exit 0
+
     - name: Stage portable package (Unix)
       if: runner.os != 'Windows'
       shell: bash
@@ -216,6 +239,12 @@ jobs:
         chmod +x "$STAGE/Behavedr"
         [ -d "$SRC/Assets" ] && cp -r "$SRC/Assets" "$STAGE/" || true
         cp packaging/unix/README.txt "$STAGE/"
+        # Bundle optional depth artifacts when present
+        for f in behavedr_exec.bpf.o libbehavedr_es.dylib pf-behavedr-block.conf; do
+          [ -f "$SRC/$f" ] && cp -v "$SRC/$f" "$STAGE/" || true
+          [ -f "packaging/unix/$f" ] && cp -v "packaging/unix/$f" "$STAGE/" || true
+          [ -f "dist/native/$f" ] && cp -v "dist/native/$f" "$STAGE/" || true
+        done
         (cd "$STAGE" && zip -r "../../Behavedr-Portable-${VER}-${RID}.zip" .)
         ls -la "$STAGE"
 
@@ -226,6 +255,9 @@ jobs:
         path: |
           Behavedr-Portable-*.zip
           dist/windows/Behavedr-Setup-*.exe
+          dist/*.deb
+          dist/*.rpm
+          dist/native-out/*
         if-no-files-found: error
 
   android:

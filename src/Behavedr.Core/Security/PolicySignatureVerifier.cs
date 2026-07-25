@@ -90,18 +90,23 @@ public static class PolicySignatureVerifier
                 RSASignaturePadding.Pss);
 
             if (!valid)
+            {
                 logger.LogCritical("SECURITY: Policy signature verification FAILED — rejecting policy");
+                Telemetry.SecurityTelemetry.ReportSignatureFailure();
+            }
 
             return valid;
         }
         catch (CryptographicException ex)
         {
             logger.LogCritical(ex, "SECURITY: Cryptographic error during policy signature verification");
+            Telemetry.SecurityTelemetry.ReportSignatureFailure();
             return false;
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Policy signature verification failed unexpectedly");
+            Telemetry.SecurityTelemetry.ReportSignatureFailure();
             return false;
         }
     }
