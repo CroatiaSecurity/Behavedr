@@ -41,6 +41,13 @@ public class FileQuarantineAction : IResponseAction
         {
             if (ct.IsCancellationRequested) break;
 
+            if (ResponseSafety.ShouldRefuseQuarantine(filePath, out var refuse))
+            {
+                _logger.LogWarning("Refusing quarantine {File}: {Reason}", filePath, refuse);
+                errors.Add($"{filePath}: safety:{refuse}");
+                continue;
+            }
+
             try
             {
                 var outcome = await QuarantineFileAsync(filePath, result, ct);

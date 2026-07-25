@@ -8,32 +8,13 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>
-/// Response action that terminates a malicious process.
-/// Only executes when the detection result meets president-kill criteria.
+/// Terminates a process when president-kill criteria are met.
+/// Hard rails: never kill self, parent, agent install image, or path-verified OS processes.
+/// Spoofed names under Temp do not receive protection.
 /// </summary>
 public class ProcessKillAction : IResponseAction
 {
     private readonly ILogger<ProcessKillAction> _logger;
-
-    // Processes that must NEVER be killed (system stability)
-    private static readonly HashSet<string> ProtectedProcesses = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "system", "idle", "csrss", "wininit", "winlogon", "lsass", "services",
-        "smss", "svchost", "dwm", "explorer", "init", "systemd", "launchd",
-        "kernel_task", "loginwindow", "behavedr",
-    };
-
-    // SECURITY: Protected process check is path-verified. An attacker naming malware
-    // "explorer.exe" in a temp directory will NOT be protected from kill.
-    private static readonly string WinDir =
-        Environment.GetFolderPath(Environment.SpecialFolder.Windows).TrimEnd('\\') + "\\";
-
-    private static readonly string[] UnixSystemPrefixes =
-    {
-        "/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
-        "/usr/libexec/", "/System/", "/Library/Apple/",
-        "/lib/", "/lib64/", "/usr/lib/",
-    };
 
     public ProcessKillAction(ILogger<ProcessKillAction>? logger = null)
     {
@@ -44,90 +25,29 @@ public class ProcessKillAction : IResponseAction
     public bool IsSupported => OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS();
 
     /// <summary>
-    /// Execute process kill response action.
-    /// V-1 DOCUMENTED: A TOCTOU race exists between path verification and the kill call.
-    /// Between reading MainModule.FileName and calling proc.Kill(), the process could be
-    /// replaced via PID reuse. The process name re-verification check (comparing ProcessName
-    /// before kill) mitigates this partially but a sub-millisecond race window remains.
-    /// This is inherent to userland process management and accepted as residual risk.
+    /// V-1: residual TOCTOU between path check and kill (mitigated with pidfd on Linux).
     /// </summary>
     public Task<ResponseOutcome> ExecuteAsync(DetectionResult result, CancellationToken ct = default)
     {
-        var processName = result.Event.ProcessName;
+        var processName = result.Event.ProcessName ?? "";
         var processId = result.Event.ProcessId;
 
-        // Safety check: never kill protected system processes (path-verified)
-        if (ProtectedProcesses.Contains(processName))
-        {
-            // HARDENING: Only protect if the binary is actually from a system path.
-            // An attacker naming malware "explorer.exe" in Temp will NOT be protected.
-            // RT-4 FIX: If we cannot verify the process path (e.g., restricted DACL),
-            // we do NOT grant protection. Only truly low PIDs (kernel/system) get
-            // unconditional protection. This prevents kill-immunity via DACL + name spoofing.
-            bool isLegitimateSystemProcess = false;
-            if (int.TryParse(processId, out var checkPid))
-            {
-                // PIDs 0-4 are always system-critical (System Idle, System, smss early)
-                if (checkPid <= 4)
-                {
-                    isLegitimateSystemProcess = true;
-                }
-                else
-                {
-                    try
-                    {
-                        using var checkProc = Process.GetProcessById(checkPid);
-                        var imagePath = checkProc.MainModule?.FileName
-                            ?? TryResolveUnixExe(checkPid);
-                        isLegitimateSystemProcess = imagePath != null && IsSystemImagePath(imagePath);
-                    }
-                    catch
-                    {
-                        // RT-4: Cannot verify process path — do NOT grant protection.
-                        // An attacker using restrictive DACLs to block verification
-                        // should not gain kill immunity. Fail-open for defense.
-                        // NOTE: TOCTOU race exists between this check and the kill call
-                        // (see V-1 documentation). This is inherent to userland process mgmt.
-                        isLegitimateSystemProcess = false;
-                        _logger.LogWarning(
-                            "Cannot verify image path for protected-name process '{Process}' (PID {Pid}) — " +
-                            "NOT granting kill immunity (possible DACL evasion)",
-                            processName, checkPid);
-                    }
-                }
-            }
-            else
-            {
-                isLegitimateSystemProcess = false;
-            }
-
-            if (isLegitimateSystemProcess)
-            {
-                _logger.LogWarning("Refusing to kill protected process: {Process}", processName);
-                return Task.FromResult(ResponseOutcome.Skipped(Name, $"Protected process: {processName}"));
-            }
-            // Not from system path — fall through to kill
-            _logger.LogWarning("Process '{Process}' matches protected name but is NOT from system path — allowing kill", processName);
-        }
-
-        // Safety check: never kill our own process
-        if (processId == Environment.ProcessId.ToString())
-        {
-            return Task.FromResult(ResponseOutcome.Skipped(Name, "Cannot kill own process"));
-        }
-
-        // Attempt to find and kill the process
         if (!int.TryParse(processId, out var pid))
-        {
             return Task.FromResult(ResponseOutcome.Failed(Name, $"Invalid process ID: {processId}"));
+
+        if (ResponseSafety.ShouldRefuseKill(pid, processName, out var refuseReason))
+        {
+            _logger.LogWarning("Refusing kill PID {Pid} ({Name}): {Reason}", pid, processName, refuseReason);
+            return Task.FromResult(ResponseOutcome.Skipped(Name, $"Safety: {refuseReason}"));
         }
 
         try
         {
             var process = Process.GetProcessById(pid);
 
-            // Double-check the process name matches what we detected
-            if (!process.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(processName) &&
+                !process.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase) &&
+                !process.ProcessName.Equals(Path.GetFileNameWithoutExtension(processName), StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogWarning("PID {Pid} no longer matches expected process {Expected}, now {Actual}",
                     pid, processName, process.ProcessName);
@@ -135,30 +55,40 @@ public class ProcessKillAction : IResponseAction
                     $"PID reused: expected {processName}, found {process.ProcessName}"));
             }
 
-            // Linux: Use pidfd for race-free process kill (eliminates TOCTOU PID reuse)
+            // Re-check safety with live image path
+            try
+            {
+                var livePath = process.MainModule?.FileName;
+                if (ResponseSafety.IsOwnAgentImage(livePath) ||
+                    (livePath is not null && ResponseSafety.IsOsSystemImagePath(livePath) &&
+                     ResponseSafety.ShouldRefuseKill(pid, process.ProcessName, out _)))
+                {
+                    return Task.FromResult(ResponseOutcome.Skipped(Name, "Safety: live image re-check"));
+                }
+            }
+            catch { /* access denied — continue with name/pid safety already applied */ }
+
             if (OperatingSystem.IsLinux())
             {
-                var pidfdResult = TryKillViaPidfd(pid, processName, result.Score);
+                var pidfdResult = TryKillViaPidfd(pid, process.ProcessName, result.Score);
                 if (pidfdResult is not null)
                     return Task.FromResult(pidfdResult);
-                // pidfd unavailable — fall through to standard kill
             }
 
-            // macOS: Verify process path before kill to narrow TOCTOU window (RT-7 fix)
             if (OperatingSystem.IsMacOS())
             {
-                var verifyResult = VerifyMacOSProcessBeforeKill(pid, processName);
+                var verifyResult = VerifyMacOSProcessBeforeKill(pid, process.ProcessName);
                 if (verifyResult is not null)
                     return Task.FromResult(verifyResult);
             }
 
-            // Windows: re-check name + image immediately before Kill to shrink PID-reuse window
             if (OperatingSystem.IsWindows())
             {
                 try
                 {
                     process.Refresh();
-                    if (!process.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrEmpty(processName) &&
+                        !process.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase))
                     {
                         return Task.FromResult(ResponseOutcome.Skipped(Name,
                             $"PID reused before kill: expected {processName}, found {process.ProcessName}"));
@@ -171,22 +101,23 @@ public class ProcessKillAction : IResponseAction
                 }
             }
 
+            // Final self-check immediately before kill
+            if (pid == Environment.ProcessId)
+                return Task.FromResult(ResponseOutcome.Skipped(Name, "Safety: own process"));
+
             _logger.LogWarning("KILLING process: {Process} (PID {Pid}) — score={Score:F1}",
-                processName, pid, result.Score);
+                process.ProcessName, pid, result.Score);
 
             process.Kill(entireProcessTree: true);
 
-            // Wait briefly for process to exit
             if (process.WaitForExit(3000))
             {
                 return Task.FromResult(ResponseOutcome.Ok(Name,
-                    $"Killed {processName} (PID {pid})"));
+                    $"Killed {process.ProcessName} (PID {pid})"));
             }
-            else
-            {
-                return Task.FromResult(ResponseOutcome.Ok(Name,
-                    $"Kill signal sent to {processName} (PID {pid}), still exiting"));
-            }
+
+            return Task.FromResult(ResponseOutcome.Ok(Name,
+                $"Kill signal sent to {process.ProcessName} (PID {pid}), still exiting"));
         }
         catch (ArgumentException)
         {
@@ -210,70 +141,57 @@ public class ProcessKillAction : IResponseAction
         }
     }
 
-    /// <summary>
-    /// Kill a process using pidfd_open + pidfd_send_signal (Linux 5.1+).
-    /// This is race-free: pidfd references the exact process instance, not a reusable PID number.
-    /// If the PID has been reused between detection and kill, pidfd_open returns a handle to
-    /// the new (innocent) process, but we verify /proc/PID/exe before sending the signal.
-    /// Returns null if pidfd is unavailable (older kernel) — caller falls back to Process.Kill().
-    /// </summary>
     [SupportedOSPlatform("linux")]
     private ResponseOutcome? TryKillViaPidfd(int pid, string processName, double score)
     {
         try
         {
-            // Verify /proc/PID/exe before opening pidfd
+            if (ResponseSafety.ShouldRefuseKill(pid, processName, out var why))
+                return ResponseOutcome.Skipped(Name, $"Safety: {why}");
+
             var exePath = $"/proc/{pid}/exe";
             string? resolvedPath = null;
             try
             {
                 resolvedPath = File.ResolveLinkTarget(exePath, returnFinalTarget: true)?.ToString();
             }
-            catch { }
+            catch { /* ignore */ }
 
-            // If we can resolve exe and it's a system binary, re-verify process name
-            if (resolvedPath is not null)
+            if (ResponseSafety.IsOwnAgentImage(resolvedPath))
+                return ResponseOutcome.Skipped(Name, "Safety: agent image via /proc/exe");
+
+            if (resolvedPath is not null && ResponseSafety.IsOsSystemImagePath(resolvedPath))
             {
-                var exeName = Path.GetFileNameWithoutExtension(resolvedPath);
-                if (!exeName.Contains(processName, StringComparison.OrdinalIgnoreCase) &&
-                    !processName.Contains(exeName, StringComparison.OrdinalIgnoreCase))
-                {
-                    _logger.LogWarning(
-                        "[pidfd] PID {Pid} exe={Exe} doesn't match expected {Expected} — aborting kill (PID reuse?)",
-                        pid, resolvedPath, processName);
-                    return ResponseOutcome.Skipped(Name,
-                        $"PID reuse detected via /proc/PID/exe: expected {processName}, got {resolvedPath}");
-                }
+                // Only refuse if name is also protected family
+                if (ResponseSafety.ShouldRefuseKill(pid, Path.GetFileNameWithoutExtension(resolvedPath), out var r2))
+                    return ResponseOutcome.Skipped(Name, $"Safety: {r2}");
             }
 
-            // pidfd_open(pid, 0) — returns a file descriptor referencing this exact process
             var pidfd = syscall_pidfd_open(434, pid, 0);
             if (pidfd < 0)
-            {
-                return null; // Fall back to standard kill
-            }
+                return null;
 
             try
             {
+                // Re-check PID did not become us
+                if (pid == Environment.ProcessId)
+                    return ResponseOutcome.Skipped(Name, "Safety: own process");
+
                 _logger.LogWarning(
                     "KILLING process via pidfd: {Process} (PID {Pid}) — score={Score:F1}",
                     processName, pid, score);
 
-                // pidfd_send_signal(pidfd, SIGKILL, NULL, 0)
                 const int SIGKILL = 9;
                 var result = syscall_pidfd_send_signal(424, pidfd, SIGKILL, IntPtr.Zero, 0);
-
                 if (result == 0)
                 {
                     return ResponseOutcome.Ok(Name,
                         $"Killed {processName} (PID {pid}) via pidfd (race-free)");
                 }
-                else
-                {
-                    var errno = Marshal.GetLastWin32Error();
-                    return ResponseOutcome.Failed(Name,
-                        $"pidfd_send_signal failed for {processName} (errno {errno})");
-                }
+
+                var errno = Marshal.GetLastWin32Error();
+                return ResponseOutcome.Failed(Name,
+                    $"pidfd_send_signal failed for {processName} (errno {errno})");
             }
             finally
             {
@@ -287,7 +205,6 @@ public class ProcessKillAction : IResponseAction
         }
     }
 
-    // P/Invoke: Linux pidfd syscalls (kernel 5.1+, x86_64 syscall numbers)
     [DllImport("libc", EntryPoint = "syscall", SetLastError = true)]
     private static extern int syscall_pidfd_open(long sysno, int pid, uint flags);
 
@@ -297,84 +214,39 @@ public class ProcessKillAction : IResponseAction
     [DllImport("libc", EntryPoint = "close")]
     private static extern int libc_close(int fd);
 
-    /// <summary>
-    /// RT-7 FIX: Verify process identity on macOS using proc_pidpath before kill.
-    /// macOS lacks pidfd, so we use proc_pidpath() from libproc.dylib to verify
-    /// the executable path matches expected process name. This narrows the TOCTOU
-    /// window to microseconds and adds a second verification dimension.
-    /// Returns a skip/fail outcome if verification fails, null to proceed with kill.
-    /// </summary>
     [SupportedOSPlatform("macos")]
     private ResponseOutcome? VerifyMacOSProcessBeforeKill(int pid, string processName)
     {
         try
         {
-            var pathBuf = new byte[4096]; // PROC_PIDPATHINFO_MAXSIZE
+            if (ResponseSafety.ShouldRefuseKill(pid, processName, out var why))
+                return ResponseOutcome.Skipped(Name, $"Safety: {why}");
+
+            var pathBuf = new byte[4096];
             var pathLen = proc_pidpath(pid, pathBuf, (uint)pathBuf.Length);
             if (pathLen <= 0)
-            {
-                // Cannot verify — log warning but allow kill (fail-open for defense)
-                _logger.LogDebug("[macOS] Cannot verify process path for PID {Pid} via proc_pidpath", pid);
                 return null;
-            }
 
             var processPath = System.Text.Encoding.UTF8.GetString(pathBuf, 0, pathLen);
-            var exeName = Path.GetFileNameWithoutExtension(processPath);
+            if (ResponseSafety.IsOwnAgentImage(processPath))
+                return ResponseOutcome.Skipped(Name, "Safety: agent image via proc_pidpath");
 
-            // Verify the executable name matches what we expect
+            var exeName = Path.GetFileNameWithoutExtension(processPath);
             if (!exeName.Contains(processName, StringComparison.OrdinalIgnoreCase) &&
                 !processName.Contains(exeName, StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogWarning(
-                    "[macOS] PID {Pid} path={Path} doesn't match expected {Expected} — aborting kill (PID reuse?)",
-                    pid, processPath, processName);
                 return ResponseOutcome.Skipped(Name,
                     $"PID reuse detected via proc_pidpath: expected {processName}, got {processPath}");
             }
 
-            return null; // Verification passed — proceed with kill
+            return null;
         }
         catch
         {
-            return null; // Cannot verify — proceed with kill (fail-open)
+            return null;
         }
     }
 
-    /// <summary>
-    /// macOS libproc: proc_pidpath returns the full path of the executable for a PID.
-    /// Returns the number of bytes written to buffer, or 0 on failure.
-    /// </summary>
     [DllImport("libproc.dylib", EntryPoint = "proc_pidpath")]
     private static extern int proc_pidpath(int pid, byte[] buffer, uint buffersize);
-
-    private static bool IsSystemImagePath(string imagePath)
-    {
-        if (imagePath.Contains("Behavedr", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        if (OperatingSystem.IsWindows())
-            return imagePath.StartsWith(WinDir, StringComparison.OrdinalIgnoreCase);
-
-        var normalized = imagePath.Replace('\\', '/');
-        foreach (var prefix in UnixSystemPrefixes)
-        {
-            if (normalized.StartsWith(prefix, StringComparison.Ordinal))
-                return true;
-        }
-        return false;
-    }
-
-    private static string? TryResolveUnixExe(int pid)
-    {
-        if (!OperatingSystem.IsLinux())
-            return null;
-        try
-        {
-            return File.ResolveLinkTarget($"/proc/{pid}/exe", returnFinalTarget: true)?.ToString();
-        }
-        catch
-        {
-            return null;
-        }
-    }
 }

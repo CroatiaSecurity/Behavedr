@@ -48,15 +48,16 @@ static char g_events_path[512] = "/var/run/behavedr/es.events";
 
 static void on_sig(int s) { (void)s; g_stop = 1; }
 
+/* Staging-path denylist — rename-resistant; never deny /opt/behavedr */
 static int path_is_exec_denylisted(const char *path)
 {
     if (!path || !path[0]) return 0;
+    if (strncmp(path, "/opt/behavedr/", 14) == 0) return 0;
     if (strncmp(path, "/tmp/", 5) == 0) return 1;
     if (strncmp(path, "/private/tmp/", 13) == 0) return 1;
     if (strncmp(path, "/var/tmp/", 9) == 0) return 1;
-    if (strstr(path, "mimikatz") != NULL) return 1;
-    if (strstr(path, "meterpreter") != NULL) return 1;
-    if (strstr(path, "sliver") != NULL) return 1;
+    if (strncmp(path, "/dev/shm/", 9) == 0) return 1;
+    if (strstr(path, "/Users/Shared/") != NULL) return 1;
     return 0;
 }
 

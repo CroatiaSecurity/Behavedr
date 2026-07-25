@@ -49,13 +49,6 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
     public bool IsSupported => OperatingSystem.IsMacOS();
     public bool IsActive => _active;
 
-    private static readonly HashSet<string> OffensiveTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "mimikatz", "meterpreter", "empire", "sliver", "cobalt",
-        "chisel", "ligolo", "socat", "ncat", "linpeas",
-        "swiftbelt", "bifrost",
-    };
-
     public MacOSEndpointSecurityMonitor(ILogger<MacOSEndpointSecurityMonitor>? logger = null)
     {
         _logger = logger ?? NullLogger<MacOSEndpointSecurityMonitor>.Instance;
@@ -214,11 +207,15 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
                 $"es_{e.Kind}:{e.ProcessName}:pid:{e.Pid}:{Truncate(e.Path, 80)}",
                 baseWeight, 0.88));
 
-            if (e.Kind is "exec" or "auth_exec" &&
-                OffensiveTools.Any(t => e.ProcessName.Contains(t, StringComparison.OrdinalIgnoreCase) ||
-                                        e.Path.Contains(t, StringComparison.OrdinalIgnoreCase)))
+            if (e.Kind is "exec" or "auth_exec" or "auth_denied")
             {
-                signals.Add(new Signal($"es_offensive_tool:{e.ProcessName}:pid:{e.Pid}", 93, 0.96));
+                var off = ThreatHeuristics.Evaluate(e.ProcessName, e.Path);
+                if (off is { } o)
+                {
+                    signals.Add(new Signal(
+                        $"es_offensive:{o.Tag}:{o.Detail}:pid:{e.Pid}",
+                        o.Weight, o.Confidence));
+                }
             }
 
             if (e.Kind == "auth_denied")

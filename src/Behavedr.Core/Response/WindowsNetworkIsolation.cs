@@ -148,6 +148,12 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
 
     private async Task<ResponseOutcome> BlockProcessImageAsync(string imagePath, string processName, CancellationToken ct)
     {
+        if (ResponseSafety.ShouldRefuseAppNetworkBlock(imagePath, out var refuse))
+        {
+            _logger.LogWarning("[WinNetIsolation] Refusing app block {Path}: {Reason}", imagePath, refuse);
+            return ResponseOutcome.Skipped(Name, $"Safety: {refuse}");
+        }
+
         if (_fwCom.IsAvailable && _fwCom.BlockApplication(imagePath, $"Behavedr process {processName}"))
         {
             Telemetry.SecurityTelemetry.ReportIsolationAction();

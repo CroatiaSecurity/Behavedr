@@ -1,6 +1,6 @@
 # Behavedr — Threat Model
 
-Version: 0.3.5
+Version: 0.3.6
 Last updated: 2026-07-25
 Classification: Public
 
@@ -159,6 +159,17 @@ Behavedr is a userland behavioral endpoint detection and response (EDR) agent. I
 | Tamper with installer / release zip | T1195.002 | Per-asset `.sig` + `SHA256SUMS` on release; optional Authenticode/codesign/keystore when secrets configured (see docs/SUPPLY_CHAIN.md) |
 | Inject malicious policy | T1195.002 | RSA-PSS policy verification via `PolicySignatureVerifier` (distinct path; key dual-use until rotation) |
 
+### T-4b: Weaponize response / rename tools (0.3.6)
+
+| Attack | Mitigation |
+|--------|------------|
+| Rename malware to `explorer` / `lsass` to gain kill immunity | Protection only if **image path is OS system directory** — Temp spoof is killable |
+| Path contains `Behavedr` under Temp to fake agent | Agent image check is install-root + binary name only, not substring anywhere |
+| Force agent to kill itself / quarantine itself | `ResponseSafety` refuses own PID, parent PID, agent install binaries |
+| Force agent to firewall-block itself | App network block refuses agent + OS system images |
+| Flood kills via low signed-policy thresholds | Active policy requires ResponseThreshold ≥ 40; MaxKillsPerMinute ≤ 60 |
+| Rely on tool name lists after reading source | Name-only signals are low weight; staging paths (`/tmp`, Temp, Downloads) remain high weight |
+
 ### T-4: Attacker exploits the agent itself
 
 | Technique | MITRE | Mitigation |
@@ -201,7 +212,8 @@ Behavedr is a userland behavioral endpoint detection and response (EDR) agent. I
 | Driver / BYOVD monitoring | DriverLoadMonitor (registry, services, name/hash heuristics) | Userland only; not a kernel filter driver |
 | Input validation | Centralized SecurityValidation class | Path traversal, injection prevention |
 | Replay prevention | Boot nonce + sequence number + per-report nonce | Server validates monotonicity |
-| Response safety | Path-verified protected process list; kill budget + rate limiting | MaxKillsPerMinute + cooldown |
+| Response safety | `ResponseSafety`: refuse self/parent/agent image; OS protected names only if system path; no `Temp\Behavedr_*` immunity; quarantine/net block rails; kill budget cap ≤60/min | Unit tests + path verification |
+| Rename-resistant heuristics | `ThreatHeuristics`: name-only = low weight; staging path + executable = high weight | Rename alone does not clear path risk |
 
 ---
 

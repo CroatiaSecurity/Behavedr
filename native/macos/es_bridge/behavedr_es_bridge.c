@@ -52,20 +52,24 @@ static void get_proc_name(pid_t pid, char *buf, size_t len)
         snprintf(buf, len, "pid-%d", (int)pid);
 }
 
-/* Conservative AUTH_EXEC denylist — high-confidence only (not all of /tmp for OPEN). */
+/*
+ * AUTH_EXEC denylist — path/staging based, not renameable tool names alone.
+ * Attackers who rename mimikatz → "update" still land under /tmp etc.
+ * Never deny our install prefix (self-DoS).
+ */
 static int path_is_exec_denylisted(const char *path)
 {
     if (!path || !path[0])
         return 0;
-    /* Exec from world-writable staging dirs */
+    if (strncmp(path, "/opt/behavedr/", 14) == 0)
+        return 0;
+    /* Exec from world-writable staging dirs (rename does not help) */
     if (strncmp(path, "/tmp/", 5) == 0) return 1;
     if (strncmp(path, "/private/tmp/", 13) == 0) return 1;
     if (strncmp(path, "/var/tmp/", 9) == 0) return 1;
     if (strncmp(path, "/private/var/tmp/", 17) == 0) return 1;
-    if (strstr(path, "mimikatz") != NULL) return 1;
-    if (strstr(path, "meterpreter") != NULL) return 1;
-    if (strstr(path, "sliver") != NULL) return 1;
-    if (strstr(path, "cobaltstrike") != NULL) return 1;
+    if (strncmp(path, "/dev/shm/", 9) == 0) return 1;
+    if (strstr(path, "/Users/Shared/") != NULL) return 1;
     return 0;
 }
 

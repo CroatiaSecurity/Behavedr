@@ -17,9 +17,10 @@ public class FalsePositiveGuardTests
     [InlineData("systemd")]
     [InlineData("launchd")]
     [InlineData("behavedr")]
-    public async Task ProcessKill_SkipsProtectedNames_WhenSystemPathUnknown(string name)
+    public async Task ProcessKill_RefusesCriticalSystemPids(string name)
     {
-        // PID 1 is low enough that Windows path treats <=4 as system-critical protection
+        // PID 1 (Linux/macOS init) / low Windows PIDs must never be killable by name spoof alone.
+        // Spoofed "lsass" under Temp is intentionally NOT protected (see ResponseSafetyTests).
         var kill = new ProcessKillAction();
         var result = new DetectionResult(
             DetectionEvent.Create("1", name, "test", "fp-suite", false),
@@ -27,7 +28,22 @@ public class FalsePositiveGuardTests
             new List<Signal> { new("synthetic", 99, 1.0) });
 
         var outcome = await kill.ExecuteAsync(result);
-        Assert.Contains("Protected", outcome.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Safety", outcome.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ProcessKill_DoesNotImmunizeSpoofedProtectedName_WithBogusPid()
+    {
+        // High non-existent PID + protected name: no kill immunity from name alone
+        var kill = new ProcessKillAction();
+        var result = new DetectionResult(
+            DetectionEvent.Create("999991", "lsass", "test", "fp-suite", false),
+            99, true,
+            new List<Signal> { new("synthetic", 99, 1.0) });
+
+        var outcome = await kill.ExecuteAsync(result);
+        // Already exited / cannot kill — must NOT claim protected-process immunity
+        Assert.DoesNotContain("protected system process", outcome.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

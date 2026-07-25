@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.3.6] — 2026-07-25
+
+### Anti-bypass & self-harm rails (rename-aware)
+
+Attackers who read the threat model / source should not get easy wins:
+
+#### Response safety (`ResponseSafety`)
+- Never kill own process, service parent, or agent install binaries
+- Never protect spoofed names (`explorer.exe` under Temp) — path-verified OS only
+- Removed “any path containing Behavedr” immunity (`Temp\Behavedr_evil.exe` is fair game)
+- Refuse quarantine of agent binary / system paths
+- Refuse firewall block of agent or OS system images
+
+#### Detection (`ThreatHeuristics`)
+- Known tool **name alone** = low weight (rename softens this path)
+- **Staging path + executable** = high weight (rename does not help)
+- Staging + known name = highest
+
+#### AUTH denylist (macOS ES)
+- Path/staging only (`/tmp`, `/dev/shm`, Shared) — not tool-name substrings
+- Never deny `/opt/behavedr/`
+
+#### Policy
+- `MaxKillsPerMinute` capped at 60; Active mode requires `ResponseThreshold >= 40`
+
 ## [0.3.5] — 2026-07-25
 
 ### Field packaging + integrity honesty

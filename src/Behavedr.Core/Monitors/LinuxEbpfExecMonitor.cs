@@ -18,15 +18,6 @@ public sealed class LinuxEbpfExecMonitor : IPlatformMonitor, IDisposable
     private bool _initialized;
     private bool _active;
 
-    private static readonly HashSet<string> OffensiveTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "mimikatz", "meterpreter", "empire", "sliver", "cobalt",
-        "chisel", "ligolo", "socat", "ncat", "linpeas",
-        "crackmapexec", "impacket", "bloodhound", "rubeus",
-        "hashcat", "john", "hydra", "gobuster", "ffuf",
-        "nuclei", "sqlmap", "responder", "proxychains",
-    };
-
     public string PlatformName => "LinuxEbpfExec";
     public bool IsSupported => OperatingSystem.IsLinux();
     public bool IsActive => _active;
@@ -67,14 +58,15 @@ public sealed class LinuxEbpfExecMonitor : IPlatformMonitor, IDisposable
             var comm = string.IsNullOrEmpty(e.Comm) ? "unknown" : e.Comm;
             var pathPart = string.IsNullOrEmpty(e.Path) ? "" : $":{Truncate(e.Path, 64)}";
 
-            // Low-weight telemetry; high weight only for offensive tools
+            // Low-weight exec telemetry (renames don't erase path heuristics)
             signals.Add(new Signal($"ebpf_exec:{comm}:pid:{e.Pid}{pathPart}", 18, 0.55));
 
-            if (OffensiveTools.Any(t =>
-                    comm.Contains(t, StringComparison.OrdinalIgnoreCase) ||
-                    e.Path.Contains(t, StringComparison.OrdinalIgnoreCase)))
+            var off = ThreatHeuristics.Evaluate(comm, e.Path);
+            if (off is { } o)
             {
-                signals.Add(new Signal($"ebpf_offensive_tool:{comm}:pid:{e.Pid}", 92, 0.95));
+                signals.Add(new Signal(
+                    $"ebpf_offensive:{o.Tag}:{o.Detail}:pid:{e.Pid}",
+                    o.Weight, o.Confidence));
             }
         }
 

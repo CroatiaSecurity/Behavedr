@@ -239,10 +239,16 @@ public record ResponsePolicy
 
     public static ResponsePolicy Default => new();
 
+    /// <summary>
+    /// Reject policies that would disable safety budgets or set absurd kill rates
+    /// (signed-policy still cannot ask for unlimited kill-storms).
+    /// </summary>
     public bool IsValid() =>
         AlertThreshold > 0.0 && AlertThreshold <= 100.0 &&
         ResponseThreshold > AlertThreshold && ResponseThreshold <= 100.0 &&
-        MaxKillsPerMinute >= 0;
+        MaxKillsPerMinute >= 0 && MaxKillsPerMinute <= 60 &&
+        // Active mode must not set response so low that any noise kills
+        (Mode != ResponseMode.Active || ResponseThreshold >= 40.0);
 }
 
 public enum ResponseMode
