@@ -1,133 +1,406 @@
 namespace Behavedr.Core.Monitors;
 
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using System.Text.RegularExpressions;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>
-/// Production helper to load Behavedr eBPF objects and dump event maps via bpftool (0.3.2).
-/// Keeps managed code free of fragile inline bytecode while supporting field installs.
+/// Production eBPF object lifecycle for Behavedr (0.3.3).
+/// Loads CO-RE objects via bpftool, opens pinned maps with <c>bpf(BPF_OBJ_GET)</c>,
+/// and reads the <c>events</c> array map with <c>BPF_MAP_LOOKUP_ELEM</c>.
+/// Layout of events must match native/linux/ebpf/behavedr_suite.bpf.c (144 bytes).
 /// </summary>
 [SupportedOSPlatform("linux")]
-public sealed class LinuxEbpfLoader
+public sealed class LinuxEbpfLoader : IDisposable
 {
     public const string DefaultPinDir = "/sys/fs/bpf/behavedr";
     public const string DefaultObjectName = "behavedr_exec.bpf.o";
+    public const int MaxSlots = 256;
+    public const int EventSize = 144; // 4*u32 + comm[16] + path[112]
 
     private readonly ILogger _logger;
+    private int _eventsMapFd = -1;
+    private int _cursorMapFd = -1;
+    private uint _lastSeenCursor;
+    private bool _cursorSeeded;
+    private bool _loaded;
 
-    public LinuxEbpfLoader(ILogger? logger = null)
+    public bool IsLoaded => _loaded;
+    public string? LoadedObjectPath { get; private set; }
+    public string PinDir { get; }
+
+    public LinuxEbpfLoader(ILogger? logger = null, string? pinDir = null)
     {
         _logger = logger ?? NullLogger.Instance;
+        PinDir = pinDir ?? DefaultPinDir;
     }
 
     public string? FindObject()
     {
-        foreach (var dir in new[]
-                 {
-                     AppContext.BaseDirectory,
-                     Path.Combine(AppContext.BaseDirectory, "ebpf"),
-                     "/opt/behavedr",
-                     "/opt/behavedr/ebpf",
-                     Directory.GetCurrentDirectory(),
-                     Path.Combine(Directory.GetCurrentDirectory(), "native", "linux", "ebpf"),
-                 })
+        foreach (var dir in CandidateDirs())
         {
-            var p = Path.Combine(dir, DefaultObjectName);
-            if (File.Exists(p)) return p;
-            // suite object alternate name
-            p = Path.Combine(dir, "behavedr_suite.bpf.o");
-            if (File.Exists(p)) return p;
+            foreach (var name in new[] { DefaultObjectName, "behavedr_suite.bpf.o" })
+            {
+                var p = Path.Combine(dir, name);
+                if (File.Exists(p))
+                    return Path.GetFullPath(p);
+            }
         }
         return null;
     }
 
-    public bool TryLoadAll(string objectPath, string pinDir = DefaultPinDir)
+    /// <summary>
+    /// Load object, pin under PinDir, open map FDs. Returns false on any hard failure.
+    /// </summary>
+    public bool TryLoad(string? objectPath = null)
     {
+        if (_loaded)
+            return true;
+
+        objectPath ??= FindObject();
+        if (objectPath is null)
+        {
+            _logger.LogWarning("[eBPF] No object file found (expected {Name} under agent dir or /opt/behavedr)", DefaultObjectName);
+            return false;
+        }
+
+        if (!HasBpftool())
+        {
+            _logger.LogWarning("[eBPF] bpftool not found — cannot load object {Path}", objectPath);
+            return false;
+        }
+
         try
         {
-            Directory.CreateDirectory(pinDir);
-            // Clear prior pins best-effort
-            Run("rm", $"-rf {pinDir}/*");
+            Directory.CreateDirectory(PinDir);
+            ClearPinDir();
 
-            var rc = Run("bpftool", $"prog loadall \"{objectPath}\" {pinDir} type tracing");
+            // Prefer autoattach + pinmaps (libbpf / modern bpftool). Fall back stepwise.
+            var rc = RunBpftool($"prog loadall \"{objectPath}\" {PinDir} autoattach pinmaps {PinDir}");
             if (rc != 0)
-                rc = Run("bpftool", $"prog loadall \"{objectPath}\" {pinDir}");
+                rc = RunBpftool($"prog loadall \"{objectPath}\" {PinDir} pinmaps {PinDir}");
+            if (rc != 0)
+                rc = RunBpftool($"prog loadall \"{objectPath}\" {PinDir} type tracing pinmaps {PinDir}");
+            if (rc != 0)
+                rc = RunBpftool($"prog loadall \"{objectPath}\" {PinDir}");
             if (rc != 0)
             {
-                _logger.LogWarning("[eBPF] bpftool prog loadall failed rc={Rc}", rc);
+                _logger.LogError("[eBPF] bpftool prog loadall failed rc={Rc} for {Obj}", rc, objectPath);
                 return false;
             }
 
-            // Attach common tracepoints if not auto-attached
-            TryAttach(pinDir, "sched_process_exec", "sched", "sched_process_exec");
-            TryAttach(pinDir, "sys_enter_openat", "syscalls", "sys_enter_openat");
-            TryAttach(pinDir, "sys_enter_connect", "syscalls", "sys_enter_connect");
+            // Explicit attach when autoattach did not bind (idempotent failures OK)
+            AttachPinnedPrograms();
 
-            _logger.LogInformation("[eBPF] Loaded object {Obj} into {Pin}", objectPath, pinDir);
+            if (!OpenPinnedMaps())
+                return false;
+
+            // Seed cursor so we only observe NEW events after attach (no stale scan flood)
+            if (_cursorMapFd >= 0 && MapLookupU32(_cursorMapFd, 0, out var cur))
+            {
+                _lastSeenCursor = cur;
+                _cursorSeeded = true;
+            }
+
+            _loaded = true;
+            LoadedObjectPath = objectPath;
+            _logger.LogInformation(
+                "[eBPF] Loaded {Obj}; events_fd={Efd} cursor_fd={Cfd} pin={Pin} cursor={Cur}",
+                objectPath, _eventsMapFd, _cursorMapFd, PinDir, _lastSeenCursor);
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[eBPF] load failed");
+            _logger.LogError(ex, "[eBPF] Load failed");
+            Dispose();
             return false;
         }
     }
 
     /// <summary>
-    /// Dump array map "events" (hex) into structured records via bpftool JSON if available.
+    /// Read new events since last poll by walking array slots from previous cursor.
     /// </summary>
-    public IReadOnlyList<EbpfMapEvent> DumpEvents(string pinDir = DefaultPinDir)
+    public IReadOnlyList<EbpfMapEvent> DrainNewEvents()
     {
         var list = new List<EbpfMapEvent>();
-        var mapPin = Path.Combine(pinDir, "events");
-        if (!File.Exists(mapPin) && !Directory.Exists(pinDir))
+        if (!_loaded || _eventsMapFd < 0)
             return list;
 
-        // bpftool map dump pinned /sys/fs/bpf/behavedr/events
-        var (rc, stdout) = RunCapture("bpftool", $"map dump pinned {mapPin}");
-        if (rc != 0 || string.IsNullOrWhiteSpace(stdout))
+        uint cursor = _lastSeenCursor;
+        if (_cursorMapFd >= 0)
         {
-            // try name lookup
-            (rc, stdout) = RunCapture("bpftool", "map dump name events");
-            if (rc != 0 || string.IsNullOrWhiteSpace(stdout))
-                return list;
+            if (!MapLookupU32(_cursorMapFd, 0, out cursor))
+                cursor = _lastSeenCursor;
         }
 
-        // Parse loosely: look for "comm" style hex dumps or key/value pairs
-        // Fallback: any line with hex value bytes → synthetic event
-        foreach (Match m in Regex.Matches(stdout, @"key:\s*(\d+)\s+value:\s*([0-9a-fA-F\s]+)"))
+        if (!_cursorSeeded)
         {
-            var key = int.Parse(m.Groups[1].Value);
-            var hex = Regex.Replace(m.Groups[2].Value, @"\s+", "");
-            if (hex.Length < 16) continue;
-            try
-            {
-                var bytes = Convert.FromHexString(hex.Length % 2 == 0 ? hex : hex + "0");
-                if (bytes.Length < 16) continue;
-                var kind = BitConverter.ToUInt32(bytes, 0);
-                var pid = BitConverter.ToUInt32(bytes, 4);
-                var tgid = BitConverter.ToUInt32(bytes, 8);
-                var comm = System.Text.Encoding.ASCII.GetString(bytes, 16, Math.Min(16, bytes.Length - 16)).TrimEnd('\0');
-                list.Add(new EbpfMapEvent((int)kind, (int)pid, (int)tgid, comm, key));
-            }
-            catch { /* parse skip */ }
+            _lastSeenCursor = cursor;
+            _cursorSeeded = true;
+            return list;
         }
 
+        uint start = _lastSeenCursor;
+        uint end = cursor;
+        if (end == start)
+            return list;
+
+        // Free-running cursor (uint wrap OK). Under pressure we may skip events.
+        uint count = end - start;
+        if (count > MaxSlots)
+        {
+            start = end - MaxSlots;
+            count = MaxSlots;
+        }
+
+        for (uint i = 0; i < count; i++)
+        {
+            uint slot = (start + i) % MaxSlots;
+            if (TryReadSlot(slot, out var ev) && ev.Pid != 0)
+                list.Add(ev);
+        }
+
+        _lastSeenCursor = end;
         return list;
     }
 
-    private void TryAttach(string pinDir, string progHint, string cat, string name)
+    public void Dispose()
     {
-        // Find any pinned prog and try attach — best effort
-        if (!Directory.Exists(pinDir)) return;
-        foreach (var f in Directory.EnumerateFiles(pinDir))
+        if (_eventsMapFd >= 0) { close(_eventsMapFd); _eventsMapFd = -1; }
+        if (_cursorMapFd >= 0) { close(_cursorMapFd); _cursorMapFd = -1; }
+        _loaded = false;
+    }
+
+    private bool OpenPinnedMaps()
+    {
+        var eventsPin = FindPinnedName(PinDir, "events") ?? Path.Combine(PinDir, "events");
+        var cursorPin = FindPinnedName(PinDir, "cursor") ?? Path.Combine(PinDir, "cursor");
+
+        _eventsMapFd = BpfObjGet(eventsPin);
+        if (_eventsMapFd < 0)
+            _eventsMapFd = BpfObjGet(Path.Combine(PinDir, "maps", "events"));
+        if (_eventsMapFd < 0)
         {
-            Run("bpftool", $"prog attach pinned {f} tracepoint {cat} {name}");
+            _logger.LogError("[eBPF] Cannot open pinned events map (errno {E}). Pins under {Pin}: {List}",
+                Marshal.GetLastPInvokeError(), PinDir, ListPins(PinDir));
+            return false;
         }
-        _ = progHint;
+
+        _cursorMapFd = BpfObjGet(cursorPin);
+        if (_cursorMapFd < 0)
+            _cursorMapFd = BpfObjGet(Path.Combine(PinDir, "maps", "cursor"));
+        if (_cursorMapFd < 0)
+            _logger.LogWarning("[eBPF] cursor map not pinned — will only detect non-empty slots opportunistically");
+
+        return true;
+    }
+
+    private void AttachPinnedPrograms()
+    {
+        if (!Directory.Exists(PinDir))
+            return;
+
+        // Map known program file names → tracepoint attach targets
+        var targets = new Dictionary<string, (string cat, string name)>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["handle_exec"] = ("sched", "sched_process_exec"),
+            ["handle_openat"] = ("syscalls", "sys_enter_openat"),
+            ["handle_connect"] = ("syscalls", "sys_enter_connect"),
+            // section-style pin names some bpftool versions use
+            ["tp_sched_sched_process_exec"] = ("sched", "sched_process_exec"),
+            ["tp_syscalls_sys_enter_openat"] = ("syscalls", "sys_enter_openat"),
+            ["tp_syscalls_sys_enter_connect"] = ("syscalls", "sys_enter_connect"),
+        };
+
+        foreach (var entry in EnumeratePinFiles(PinDir))
+        {
+            var baseName = Path.GetFileName(entry);
+            if (baseName is "events" or "cursor" or "maps")
+                continue;
+            if (!targets.TryGetValue(baseName, out var tp))
+            {
+                // Heuristic: name contains exec/openat/connect
+                if (baseName.Contains("exec", StringComparison.OrdinalIgnoreCase))
+                    tp = ("sched", "sched_process_exec");
+                else if (baseName.Contains("openat", StringComparison.OrdinalIgnoreCase))
+                    tp = ("syscalls", "sys_enter_openat");
+                else if (baseName.Contains("connect", StringComparison.OrdinalIgnoreCase))
+                    tp = ("syscalls", "sys_enter_connect");
+                else
+                    continue;
+            }
+
+            // bpftool prog attach pinned <path> tracepoint <category> <name>
+            var rc = RunBpftool($"prog attach pinned \"{entry}\" tracepoint {tp.cat} {tp.name}");
+            if (rc == 0)
+                _logger.LogDebug("[eBPF] Attached {Prog} → {Cat}/{Name}", baseName, tp.cat, tp.name);
+        }
+    }
+
+    private void ClearPinDir()
+    {
+        try
+        {
+            if (!Directory.Exists(PinDir))
+                return;
+            foreach (var f in Directory.EnumerateFileSystemEntries(PinDir))
+            {
+                try
+                {
+                    if (Directory.Exists(f))
+                        Directory.Delete(f, recursive: true);
+                    else
+                        File.Delete(f);
+                }
+                catch
+                {
+                    // busy pin — continue; loadall may still work
+                }
+            }
+        }
+        catch
+        {
+            // empty / missing is fine
+        }
+    }
+
+    private bool TryReadSlot(uint slot, out EbpfMapEvent ev)
+    {
+        ev = default;
+        var keyBytes = BitConverter.GetBytes(slot);
+        var val = new byte[EventSize];
+        var keyPin = GCHandle.Alloc(keyBytes, GCHandleType.Pinned);
+        var valPin = GCHandle.Alloc(val, GCHandleType.Pinned);
+        try
+        {
+            var attr = new BpfAttrMapElem
+            {
+                map_fd = (uint)_eventsMapFd,
+                key = (ulong)keyPin.AddrOfPinnedObject(),
+                value = (ulong)valPin.AddrOfPinnedObject(),
+                flags = 0,
+            };
+            if (Bpf(BPF_MAP_LOOKUP_ELEM, ref attr) != 0)
+                return false;
+
+            // Layout: kind@0 pid@4 tgid@8 pad@12 comm@16 path@32
+            var kind = BitConverter.ToUInt32(val, 0);
+            var pid = BitConverter.ToUInt32(val, 4);
+            var tgid = BitConverter.ToUInt32(val, 8);
+            var comm = Encoding.ASCII.GetString(val, 16, 16).TrimEnd('\0');
+            var path = Encoding.UTF8.GetString(val, 32, 112).TrimEnd('\0');
+            ev = new EbpfMapEvent((int)kind, (int)pid, (int)tgid, comm, path, (int)slot);
+            return true;
+        }
+        finally
+        {
+            keyPin.Free();
+            valPin.Free();
+        }
+    }
+
+    private static bool MapLookupU32(int mapFd, uint key, out uint value)
+    {
+        value = 0;
+        var keyBytes = BitConverter.GetBytes(key);
+        var valBytes = new byte[4];
+        var keyPin = GCHandle.Alloc(keyBytes, GCHandleType.Pinned);
+        var valPin = GCHandle.Alloc(valBytes, GCHandleType.Pinned);
+        try
+        {
+            var attr = new BpfAttrMapElem
+            {
+                map_fd = (uint)mapFd,
+                key = (ulong)keyPin.AddrOfPinnedObject(),
+                value = (ulong)valPin.AddrOfPinnedObject(),
+            };
+            if (Bpf(BPF_MAP_LOOKUP_ELEM, ref attr) != 0)
+                return false;
+            value = BitConverter.ToUInt32(valBytes, 0);
+            return true;
+        }
+        finally
+        {
+            keyPin.Free();
+            valPin.Free();
+        }
+    }
+
+    private static IEnumerable<string> CandidateDirs()
+    {
+        yield return AppContext.BaseDirectory;
+        yield return Path.Combine(AppContext.BaseDirectory, "ebpf");
+        yield return "/opt/behavedr";
+        yield return "/opt/behavedr/ebpf";
+        yield return Directory.GetCurrentDirectory();
+        yield return Path.Combine(Directory.GetCurrentDirectory(), "native", "linux", "ebpf");
+    }
+
+    private static string? FindPinnedName(string root, string name)
+    {
+        try
+        {
+            foreach (var f in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                if (string.Equals(Path.GetFileName(f), name, StringComparison.Ordinal))
+                    return f;
+            }
+        }
+        catch { /* ignore */ }
+        return null;
+    }
+
+    private static IEnumerable<string> EnumeratePinFiles(string root)
+    {
+        if (!Directory.Exists(root))
+            yield break;
+        IEnumerable<string> entries;
+        try { entries = Directory.EnumerateFileSystemEntries(root); }
+        catch { yield break; }
+
+        foreach (var e in entries)
+        {
+            if (Directory.Exists(e))
+            {
+                // nested maps/progs dirs
+                IEnumerable<string> nested;
+                try { nested = Directory.EnumerateFiles(e); }
+                catch { continue; }
+                foreach (var n in nested)
+                    yield return n;
+            }
+            else
+            {
+                yield return e;
+            }
+        }
+    }
+
+    private static string ListPins(string root)
+    {
+        try
+        {
+            if (!Directory.Exists(root)) return "(missing)";
+            return string.Join(", ", Directory.EnumerateFileSystemEntries(root).Select(Path.GetFileName).Take(20));
+        }
+        catch { return "(error)"; }
+    }
+
+    private static bool HasBpftool() =>
+        File.Exists("/usr/sbin/bpftool") ||
+        File.Exists("/usr/bin/bpftool") ||
+        Run("which", "bpftool") == 0;
+
+    private static int RunBpftool(string args)
+    {
+        if (File.Exists("/usr/sbin/bpftool"))
+            return Run("/usr/sbin/bpftool", args);
+        if (File.Exists("/usr/bin/bpftool"))
+            return Run("/usr/bin/bpftool", args);
+        return Run("bpftool", args);
     }
 
     private static int Run(string file, string args)
@@ -136,40 +409,116 @@ public sealed class LinuxEbpfLoader
         {
             using var p = Process.Start(new ProcessStartInfo
             {
-                FileName = "/bin/sh",
-                Arguments = $"-c \"{file} {args} 2>/dev/null\"",
+                FileName = file,
+                Arguments = args,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
             });
             if (p is null) return -1;
-            if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } return -1; }
+            if (!p.WaitForExit(45000))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                return -1;
+            }
             return p.ExitCode;
         }
-        catch { return -1; }
+        catch
+        {
+            // Fallback through shell when PATH resolution needed
+            try
+            {
+                using var p = Process.Start(new ProcessStartInfo
+                {
+                    FileName = "/bin/sh",
+                    Arguments = $"-c \"{Escape(file)} {args}\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                });
+                if (p is null) return -1;
+                if (!p.WaitForExit(45000))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                    return -1;
+                }
+                return p.ExitCode;
+            }
+            catch { return -1; }
+        }
     }
 
-    private static (int rc, string stdout) RunCapture(string file, string args)
+    private static string Escape(string s) => s.Replace("\"", "\\\"");
+
+    // --- bpf() syscalls ---
+
+    private const int BPF_MAP_LOOKUP_ELEM = 1;
+    private const int BPF_OBJ_GET = 7;
+
+    private static int SysBpfNumber =>
+        RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.Arm64 => 280,
+            Architecture.Arm => 386,
+            _ => 321, // x86_64
+        };
+
+    private static int BpfObjGet(string path)
     {
+        if (string.IsNullOrEmpty(path))
+            return -1;
+        // pinned BPF objects are special files; File.Exists is true for map pins
+        var pathBytes = Encoding.UTF8.GetBytes(path + "\0");
+        var pin = GCHandle.Alloc(pathBytes, GCHandleType.Pinned);
         try
         {
-            using var p = Process.Start(new ProcessStartInfo
+            var attr = new BpfAttrObj
             {
-                FileName = "/bin/sh",
-                Arguments = $"-c \"{file} {args} 2>/dev/null\"",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            });
-            if (p is null) return (-1, "");
-            var stdout = p.StandardOutput.ReadToEnd();
-            if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } return (-1, ""); }
-            return (p.ExitCode, stdout);
+                pathname = (ulong)pin.AddrOfPinnedObject(),
+                bpf_fd = 0,
+                file_flags = 0,
+            };
+            var fd = (int)syscall(SysBpfNumber, BPF_OBJ_GET, ref attr, (ulong)Marshal.SizeOf<BpfAttrObj>());
+            return fd;
         }
-        catch { return (-1, ""); }
+        finally { pin.Free(); }
     }
 
-    public readonly record struct EbpfMapEvent(int Kind, int Pid, int Tgid, string Comm, int Slot);
+    private static int Bpf(int cmd, ref BpfAttrMapElem attr) =>
+        (int)syscall_map(SysBpfNumber, cmd, ref attr, (ulong)Marshal.SizeOf<BpfAttrMapElem>());
+
+    /// <summary>
+    /// bpf_attr for MAP_*_ELEM: map_fd (u32) + pad + key/value/flags as aligned u64.
+    /// Matches linux/bpf.h union bpf_attr layout for map commands.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, Pack = 8)]
+    private struct BpfAttrMapElem
+    {
+        public uint map_fd;
+        public uint pad;
+        public ulong key;
+        public ulong value;
+        public ulong flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 8)]
+    private struct BpfAttrObj
+    {
+        public ulong pathname;
+        public uint bpf_fd;
+        public uint file_flags;
+    }
+
+    [DllImport("libc", EntryPoint = "syscall", SetLastError = true)]
+    private static extern long syscall(long n, int cmd, ref BpfAttrObj attr, ulong size);
+
+    [DllImport("libc", EntryPoint = "syscall", SetLastError = true)]
+    private static extern long syscall_map(long n, int cmd, ref BpfAttrMapElem attr, ulong size);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int close(int fd);
+
+    public readonly record struct EbpfMapEvent(int Kind, int Pid, int Tgid, string Comm, string Path, int Slot);
 }

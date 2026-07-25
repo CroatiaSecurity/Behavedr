@@ -1,6 +1,6 @@
 # Behavedr Operator Guide
 
-**Version:** 0.3.2  
+**Version:** 0.3.3  
 
 ## Live policy (0.3.2+)
 

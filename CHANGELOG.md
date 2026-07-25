@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.3.3] — 2026-07-25
+
+### Proper epic implementations (no scaffolds)
+
+#### Linux eBPF (production)
+- **`behavedr_suite.bpf.c`**: real exec filename (kernel), openat path, connect peer as `ip:port` / compact IPv6
+- **`LinuxEbpfLoader`**: `bpftool loadall` + autoattach/pinmaps fallbacks; **bpf(BPF_OBJ_GET)** + **MAP_LOOKUP_ELEM**; cursor seeding; x64/arm64 syscalls; correct `bpf_attr` padding
+- **`LinuxEbpfSuite`**: process-wide shared session (one load, one poller); exec/file/net drain by kind
+- Monitors consume suite kinds; file/net keep `/proc` secondary only when suite inactive
+- Removed fake inline bytecode path entirely
+
+#### macOS EndpointSecurity (production)
+- Bridge: SPSC ring with acquire/release, `behavedr_es_poll`, AUTH deny **only** when auth mode on + denylist, stats, mute-self
+- Managed monitor polls native ring (no GC callback from ES)
+- **System Extension host**: real ES client, AUTH, JSONL publisher to `/var/run/behavedr/es.events` (not a stub)
+
+#### Windows isolation (production)
+- **Primary:** `WindowsFirewallEngine` (HNetCfg.FwPolicy2 COM) — IP in/out + app block + managed-rule removal helper
+- **Secondary:** `WindowsWfpEngine` dual-layer ALE V4/V6 with tracked condition memory
+- **Tertiary:** netsh
+- Isolation metrics on all success paths
+
+#### Docs / tests
+- `docs/EPICS_STATUS.md` honest field-activation matrix
+- Epic completeness tests assert production markers (no placeholder SE, bpf syscalls, COM-first isolation)
+
 ## [0.3.2] — 2026-07-25
 
 ### Close remaining platform epics (code + field-activation path)

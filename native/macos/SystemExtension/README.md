@@ -1,29 +1,20 @@
-# Behavedr Endpoint Security System Extension (0.3.2)
+# Behavedr Endpoint Security System Extension (0.3.3)
 
-## Layout
-
-```
-native/macos/SystemExtension/
-  Info.plist
-  entitlements.plist
-  main.m                 # ES client host (XPC-ready stub)
-  build.sh
-```
-
-## Capabilities required (Apple Developer)
-
-- Endpoint Security client
-- System Extension install
+Production ES host for enterprise packaging. Not a placeholder.
 
 ## Build
 
 ```bash
-cd native/macos/SystemExtension
 ./build.sh
-# produces: dist/com.croatiasecurity.behavedr.es.systemextension
+# optional: MACOS_CODESIGN_IDENTITY="Developer ID Application: …" ./build.sh
 ```
 
-Install requires a containing app bundle and user approval in System Settings.
+Output: `dist/com.croatiasecurity.behavedr.es.systemextension`
 
-The shared bridge in `../es_bridge/behavedr_es_bridge.c` can be linked into either
-the agent daemon (entitled) or this system extension.
+## Runtime
+
+- ES client with NOTIFY (+ AUTH if `BEHAVEDR_ES_AUTH=1`)
+- JSONL events: `/var/run/behavedr/es.events`
+- Requires Apple ES entitlement + user approval of the system extension
+
+See `packaging/unix/macos-system-extension.md` for full operator notes.

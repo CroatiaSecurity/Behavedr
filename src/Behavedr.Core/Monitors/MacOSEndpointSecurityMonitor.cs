@@ -9,16 +9,10 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>
-/// macOS EndpointSecurity.framework client (platform epic).
-///
-/// Subscribes to NOTIFY_EXEC / NOTIFY_FORK / NOTIFY_EXIT when:
-/// - Running as root
-/// - EndpointSecurity.framework is present
-/// - Process holds <c>com.apple.developer.endpoint-security.client</c> (or is in early-boot/dev context)
-///
-/// Without the entitlement, <see cref="TryConnect"/> fails closed and
-/// <see cref="MacOSKqueueMonitor"/> remains the userland path.
-/// Packaging: see packaging/unix/macos-endpointsecurity.md
+/// macOS EndpointSecurity client (production, 0.3.3).
+/// Uses libbehavedr_es.dylib which owns the ES callback thread and a ring buffer.
+/// Managed code polls via <c>behavedr_es_poll</c> (no GC-sensitive callbacks from ES).
+/// Soft-fails without entitlement/dylib; <see cref="MacOSKqueueMonitor"/> remains primary.
 /// </summary>
 [SupportedOSPlatform("macos")]
 public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
@@ -26,19 +20,28 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
     private readonly ILogger<MacOSEndpointSecurityMonitor> _logger;
     private readonly object _lock = new();
     private readonly Queue<EsEvent> _events = new();
-    private const int MaxEvents = 500;
+    private const int MaxEvents = 2000;
 
     private IntPtr _client = IntPtr.Zero;
+    private IntPtr _lib = IntPtr.Zero;
     private bool _active;
     private bool _initialized;
-    private Thread? _pump;
+    private Thread? _pollThread;
     private volatile bool _stop;
+
+    private BehavedrEsCreate? _create;
+    private BehavedrEsSubscribe? _subscribe;
+    private BehavedrEsPoll? _poll;
+    private BehavedrEsDelete? _delete;
+    private BehavedrEsSetAuth? _setAuth;
+    private BehavedrEsPending? _pending;
+    public string ActiveMode => _active ? "poll-ring-bridge" : "inactive";
 
     private static readonly HashSet<string> OffensiveTools = new(StringComparer.OrdinalIgnoreCase)
     {
         "mimikatz", "meterpreter", "empire", "sliver", "cobalt",
         "chisel", "ligolo", "socat", "ncat", "linpeas",
-        "swiftbelt", "bifrost", "osascript", "python",
+        "swiftbelt", "bifrost",
     };
 
     public string PlatformName => "MacOSEndpointSecurity";
@@ -54,74 +57,72 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
     {
         if (_initialized) return _active;
         _initialized = true;
-
-        if (!OperatingSystem.IsMacOS())
-            return false;
-
-        if (!File.Exists("/System/Library/Frameworks/EndpointSecurity.framework/EndpointSecurity") &&
-            !File.Exists("/System/Library/Frameworks/EndpointSecurity.framework/Versions/Current/EndpointSecurity"))
-        {
-            _logger.LogWarning("[ES] EndpointSecurity.framework not found");
-            return false;
-        }
+        if (!OperatingSystem.IsMacOS()) return false;
 
         try
         {
-            // es_new_client requires a block callback — on .NET we use a native helper if present,
-            // otherwise dlopen + es_new_client with a static unmanaged callback.
-            if (!NativeEs.TryCreateClient(OnEsMessage, out _client, out var err))
+            if (!TryBindLibrary(out var err))
             {
-                _logger.LogWarning(
-                    "[ES] es_new_client failed ({Err}). Need root + endpoint-security client entitlement. " +
-                    "kqueue path remains active. See packaging/unix/macos-endpointsecurity.md",
-                    err);
+                Telemetry.SecurityTelemetry.ReportPlatformSoftFail("endpointsecurity");
+                _logger.LogWarning("[ES] {Err}. kqueue remains primary. See packaging/unix/macos-endpointsecurity.md", err);
                 return false;
             }
 
-            // NOTIFY for telemetry; AUTH for high-value paths when entitlements allow (0.2.8)
+            int rc = _create!(out _client);
+            if (rc != 0 || _client == IntPtr.Zero)
+            {
+                Telemetry.SecurityTelemetry.ReportPlatformSoftFail("endpointsecurity");
+                _logger.LogWarning(
+                    "[ES] es_new_client failed rc={Rc}. Need root + ES client entitlement.", rc);
+                return false;
+            }
+
+            var authMode = string.Equals(
+                Environment.GetEnvironmentVariable("BEHAVEDR_ES_AUTH"), "1", StringComparison.Ordinal);
+            _setAuth?.Invoke(authMode ? 1 : 0);
+
             var events = new List<uint>
             {
                 ES_EVENT_TYPE_NOTIFY_EXEC,
                 ES_EVENT_TYPE_NOTIFY_FORK,
                 ES_EVENT_TYPE_NOTIFY_EXIT,
                 ES_EVENT_TYPE_NOTIFY_OPEN,
+                ES_EVENT_TYPE_NOTIFY_CREATE,
+                ES_EVENT_TYPE_NOTIFY_WRITE,
+                ES_EVENT_TYPE_NOTIFY_RENAME,
             };
-
-            // Optional AUTH mode via env BEHAVEDR_ES_AUTH=1 (requires full ES capability)
-            var authMode = string.Equals(
-                Environment.GetEnvironmentVariable("BEHAVEDR_ES_AUTH"), "1", StringComparison.Ordinal);
             if (authMode)
             {
                 events.Add(ES_EVENT_TYPE_AUTH_EXEC);
                 events.Add(ES_EVENT_TYPE_AUTH_OPEN);
-                _logger.LogWarning("[ES] AUTH mode requested (BEHAVEDR_ES_AUTH=1) — will deny only denylist paths");
+                _logger.LogWarning("[ES] AUTH mode enabled (conservative denylist)");
             }
 
-            if (!NativeEs.TrySubscribe(_client, events.ToArray(), out err))
+            rc = _subscribe!(_client, events.ToArray(), events.Count);
+            if (rc != 0)
             {
-                _logger.LogWarning("[ES] es_subscribe failed ({Err})", err);
-                NativeEs.DeleteClient(_client);
+                _logger.LogWarning("[ES] es_subscribe failed rc={Rc}", rc);
+                _delete!(_client);
                 _client = IntPtr.Zero;
                 return false;
             }
 
             _active = true;
             _stop = false;
-            _pump = new Thread(PumpLoop) { IsBackground = true, Name = "Behavedr-ES-pump" };
-            _pump.Start();
-            _logger.LogInformation(
-                "[ES] EndpointSecurity client subscribed (NOTIFY{Auth})",
-                authMode ? "+AUTH" : "");
+            _pollThread = new Thread(PollLoop)
+            {
+                IsBackground = true,
+                Name = "Behavedr-ES-poll",
+            };
+            _pollThread.Start();
+            _logger.LogInformation("[ES] Active — poll mode, events={Count}, auth={Auth}",
+                events.Count, authMode);
             return true;
-        }
-        catch (DllNotFoundException)
-        {
-            _logger.LogWarning("[ES] Failed to load EndpointSecurity — framework missing or wrong arch");
-            return false;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[ES] Connect failed");
+            _logger.LogError(ex, "[ES] Connect failed");
+            Telemetry.SecurityTelemetry.ReportPlatformSoftFail("endpointsecurity");
             return false;
         }
     }
@@ -148,28 +149,23 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
         foreach (var e in batch)
         {
             signals.Add(new Signal(
-                $"es_{e.Kind}:{e.ProcessName}:pid:{e.Pid}",
-                e.Kind == "exec" ? 40 : 25,
-                0.85));
+                $"es_{e.Kind}:{e.ProcessName}:pid:{e.Pid}:{Truncate(e.Path, 80)}",
+                e.Kind is "exec" or "auth_exec" or "auth_denied" ? 45 : 30,
+                0.88));
 
-            if (e.Kind == "exec" &&
-                OffensiveTools.Any(t => e.ProcessName.Contains(t, StringComparison.OrdinalIgnoreCase)))
+            if (e.Kind is "exec" or "auth_exec" &&
+                OffensiveTools.Any(t => e.ProcessName.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                                        e.Path.Contains(t, StringComparison.OrdinalIgnoreCase)))
             {
-                signals.Add(new Signal(
-                    $"es_offensive_tool:{e.ProcessName}:pid:{e.Pid}",
-                    92, 0.95));
+                signals.Add(new Signal($"es_offensive_tool:{e.ProcessName}:pid:{e.Pid}", 93, 0.96));
             }
 
-            if (e.Kind == "open" && IsSensitivePath(e.Path))
-            {
-                signals.Add(new Signal(
-                    $"es_sensitive_open:{e.ProcessName}:pid:{e.Pid}:{Truncate(e.Path, 80)}",
-                    70, 0.8));
-            }
+            if (e.Kind == "auth_denied")
+                signals.Add(new Signal($"es_auth_denied:{e.ProcessName}:pid:{e.Pid}:{Truncate(e.Path, 64)}", 90, 0.95));
         }
 
         if (batch.Count > 0)
-            signals.Add(new Signal($"es_event_batch:{batch.Count}", 15, 0.6));
+            signals.Add(new Signal($"es_batch:{batch.Count}", 12, 0.5));
 
         return Task.FromResult<IEnumerable<Signal>>(signals);
     }
@@ -177,176 +173,146 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
     public void Dispose()
     {
         _stop = true;
-        try { _pump?.Join(500); } catch { }
-        if (_client != IntPtr.Zero)
+        try { _pollThread?.Join(1000); } catch { }
+        if (_client != IntPtr.Zero && _delete is not null)
         {
-            NativeEs.DeleteClient(_client);
+            try { _delete(_client); } catch { }
             _client = IntPtr.Zero;
         }
         _active = false;
     }
 
-    private void OnEsMessage(string kind, int pid, string processName, string path)
+    private void PollLoop()
     {
-        lock (_lock)
+        var kind = new byte[32];
+        var name = new byte[64];
+        var path = new byte[512];
+        while (!_stop)
         {
-            _events.Enqueue(new EsEvent(kind, pid, processName, path));
-            while (_events.Count > MaxEvents)
-                _events.Dequeue();
+            try
+            {
+                int n = 0;
+                while (n++ < 200 && _poll is not null)
+                {
+                    int rc = _poll(kind, kind.Length, out int pid, name, name.Length, path, path.Length);
+                    if (rc <= 0) break;
+                    var ev = new EsEvent(
+                        CString(kind),
+                        pid,
+                        CString(name),
+                        CString(path));
+                    lock (_lock)
+                    {
+                        _events.Enqueue(ev);
+                        while (_events.Count > MaxEvents)
+                            _events.Dequeue();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[ES] poll error");
+            }
+            Thread.Sleep(25);
         }
     }
 
-    private void PumpLoop()
+    private bool TryBindLibrary(out string error)
     {
-        // EndpointSecurity delivers via callback; pump keeps process responsive
-        while (!_stop)
-            Thread.Sleep(200);
+        error = "";
+        foreach (var path in LibraryCandidates())
+        {
+            if (!File.Exists(path)) continue;
+            _lib = dlopen(path, RTLD_NOW);
+            if (_lib == IntPtr.Zero) continue;
+
+            _create = Load<BehavedrEsCreate>("behavedr_es_create");
+            _subscribe = Load<BehavedrEsSubscribe>("behavedr_es_subscribe");
+            _poll = Load<BehavedrEsPoll>("behavedr_es_poll");
+            _delete = Load<BehavedrEsDelete>("behavedr_es_delete");
+            _setAuth = LoadOptional<BehavedrEsSetAuth>("behavedr_es_set_auth_mode");
+            _pending = LoadOptional<BehavedrEsPending>("behavedr_es_pending");
+
+            if (_create is null || _subscribe is null || _poll is null || _delete is null)
+            {
+                error = $"incomplete ABI in {path} (need create/subscribe/poll/delete)";
+                try { /* leave lib open for next candidate */ } catch { /* ignore */ }
+                continue;
+            }
+            _logger.LogInformation("[ES] Bound library {Path} (poll ABI, optional set_auth/pending present={Auth}/{Pend})",
+                path, _setAuth is not null, _pending is not null);
+            return true;
+        }
+        error = "libbehavedr_es.dylib not found or incomplete (build native/macos/es_bridge)";
+        return false;
     }
 
-    private static bool IsSensitivePath(string path)
+    private T? Load<T>(string symbol) where T : Delegate
     {
-        if (string.IsNullOrEmpty(path)) return false;
-        return path.Contains("/Library/LaunchDaemons", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("/Library/LaunchAgents", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("/etc/", StringComparison.Ordinal)
-            || path.Contains("shadow", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("Authorization", StringComparison.OrdinalIgnoreCase);
+        var sym = dlsym(_lib, symbol);
+        return sym == IntPtr.Zero ? null : Marshal.GetDelegateForFunctionPointer<T>(sym);
+    }
+
+    private T? LoadOptional<T>(string symbol) where T : Delegate => Load<T>(symbol);
+
+    private static IEnumerable<string> LibraryCandidates()
+    {
+        yield return Path.Combine(AppContext.BaseDirectory, "libbehavedr_es.dylib");
+        yield return "/opt/behavedr/libbehavedr_es.dylib";
+        yield return Path.Combine(Directory.GetCurrentDirectory(), "libbehavedr_es.dylib");
+        yield return Path.Combine(Directory.GetCurrentDirectory(), "native", "macos", "es_bridge", "libbehavedr_es.dylib");
+    }
+
+    private static string CString(byte[] buf)
+    {
+        var n = Array.IndexOf(buf, (byte)0);
+        if (n < 0) n = buf.Length;
+        return Encoding.UTF8.GetString(buf, 0, n);
     }
 
     private static string Truncate(string s, int n) =>
-        s.Length <= n ? s : s[..n];
+        string.IsNullOrEmpty(s) ? "" : s.Length <= n ? s : s[..n];
 
-    // Event type constants from ESMessage.h (values stable across recent SDKs)
+    // ES event type constants (stable across recent SDKs)
     private const uint ES_EVENT_TYPE_AUTH_EXEC = 8;
     private const uint ES_EVENT_TYPE_NOTIFY_EXEC = 9;
     private const uint ES_EVENT_TYPE_NOTIFY_OPEN = 10;
     private const uint ES_EVENT_TYPE_AUTH_OPEN = 11;
     private const uint ES_EVENT_TYPE_NOTIFY_FORK = 13;
     private const uint ES_EVENT_TYPE_NOTIFY_EXIT = 14;
+    private const uint ES_EVENT_TYPE_NOTIFY_CREATE = 16;
+    private const uint ES_EVENT_TYPE_NOTIFY_WRITE = 25;
+    private const uint ES_EVENT_TYPE_NOTIFY_RENAME = 27;
 
     private readonly record struct EsEvent(string Kind, int Pid, string ProcessName, string Path);
 
-    /// <summary>
-    /// Thin P/Invoke + optional native shim. When full block-based es_new_client
-    /// cannot be expressed from pure C#, we dlsym a helper exported from a small
-    /// dylib <c>libbehavedr_es.dylib</c> if present; otherwise attempt framework
-    /// symbols with a Cdecl stub (may fail without helper — then kqueue stays primary).
-    /// </summary>
-    private static class NativeEs
-    {
-        public static bool TryCreateClient(Action<string, int, string, string> callback, out IntPtr client, out string error)
-        {
-            client = IntPtr.Zero;
-            error = "";
+    private const int RTLD_NOW = 2;
 
-            // Prefer helper dylib that owns the Objective-C/block bridge
-            if (File.Exists(HelperPath) || File.Exists(Path.Combine(AppContext.BaseDirectory, "libbehavedr_es.dylib")))
-            {
-                try
-                {
-                    var path = File.Exists(HelperPath) ? HelperPath : Path.Combine(AppContext.BaseDirectory, "libbehavedr_es.dylib");
-                    var lib = dlopen(path, RTLD_NOW);
-                    if (lib != IntPtr.Zero)
-                    {
-                        var sym = dlsym(lib, "behavedr_es_create");
-                        if (sym != IntPtr.Zero)
-                        {
-                            var create = Marshal.GetDelegateForFunctionPointer<BehavedrEsCreate>(sym);
-                            // Store callback in static for native to call via reverse P/Invoke
-                            s_callback = callback;
-                            int rc = create(OnNativeEvent, out client);
-                            if (rc == 0 && client != IntPtr.Zero)
-                                return true;
-                            error = $"behavedr_es_create rc={rc}";
-                            return false;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    error = ex.Message;
-                }
-            }
+    [DllImport("libSystem.B.dylib")]
+    private static extern IntPtr dlopen(string path, int mode);
 
-            // Without helper, mark unavailable with actionable error
-            error = "libbehavedr_es.dylib not loaded (build native/macos/es_bridge)";
-            return false;
-        }
+    [DllImport("libSystem.B.dylib")]
+    private static extern IntPtr dlsym(IntPtr handle, string symbol);
 
-        public static bool TrySubscribe(IntPtr client, uint[] events, out string error)
-        {
-            error = "";
-            try
-            {
-                if (File.Exists(HelperPath) || File.Exists(Path.Combine(AppContext.BaseDirectory, "libbehavedr_es.dylib")))
-                {
-                    var path = File.Exists(HelperPath) ? HelperPath : Path.Combine(AppContext.BaseDirectory, "libbehavedr_es.dylib");
-                    var lib = dlopen(path, RTLD_NOW);
-                    var sym = dlsym(lib, "behavedr_es_subscribe");
-                    if (sym != IntPtr.Zero)
-                    {
-                        var sub = Marshal.GetDelegateForFunctionPointer<BehavedrEsSubscribe>(sym);
-                        int rc = sub(client, events, events.Length);
-                        if (rc == 0) return true;
-                        error = $"subscribe rc={rc}";
-                        return false;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                error = ex.Message;
-                return false;
-            }
-            error = "subscribe symbol missing";
-            return false;
-        }
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int BehavedrEsCreate(out IntPtr client);
 
-        public static void DeleteClient(IntPtr client)
-        {
-            try
-            {
-                var path = File.Exists(HelperPath) ? HelperPath : Path.Combine(AppContext.BaseDirectory, "libbehavedr_es.dylib");
-                if (!File.Exists(path)) return;
-                var lib = dlopen(path, RTLD_NOW);
-                var sym = dlsym(lib, "behavedr_es_delete");
-                if (sym == IntPtr.Zero) return;
-                var del = Marshal.GetDelegateForFunctionPointer<BehavedrEsDelete>(sym);
-                del(client);
-            }
-            catch { }
-        }
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int BehavedrEsSubscribe(IntPtr client, uint[] events, int count);
 
-        private static string HelperPath => "/opt/behavedr/libbehavedr_es.dylib";
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int BehavedrEsPoll(
+        byte[] kind, int kindLen,
+        out int pid,
+        byte[] name, int nameLen,
+        byte[] path, int pathLen);
 
-        private static Action<string, int, string, string>? s_callback;
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void BehavedrEsDelete(IntPtr client);
 
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        private delegate void NativeEventCb(IntPtr kind, int pid, IntPtr processName, IntPtr path);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int BehavedrEsSetAuth(int enabled);
 
-        private static readonly NativeEventCb OnNativeEvent = static (k, pid, n, p) =>
-        {
-            var kind = Marshal.PtrToStringUTF8(k) ?? "event";
-            var name = Marshal.PtrToStringUTF8(n) ?? "";
-            var path = Marshal.PtrToStringUTF8(p) ?? "";
-            s_callback?.Invoke(kind, pid, name, path);
-        };
-
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        private delegate int BehavedrEsCreate(NativeEventCb cb, out IntPtr client);
-
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        private delegate int BehavedrEsSubscribe(IntPtr client, uint[] events, int count);
-
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        private delegate void BehavedrEsDelete(IntPtr client);
-
-        private const int RTLD_NOW = 2;
-
-        [DllImport("libSystem.B.dylib")]
-        private static extern IntPtr dlopen(string path, int mode);
-
-        [DllImport("libSystem.B.dylib")]
-        private static extern IntPtr dlsym(IntPtr handle, string symbol);
-    }
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int BehavedrEsPending();
 }

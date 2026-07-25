@@ -89,8 +89,9 @@ public class PlatformEpicTests
     public void NativeEpicArtifacts_PresentInTree()
     {
         var root = FindRepoRoot();
-        Assert.True(File.Exists(Path.Combine(root, "native", "linux", "ebpf", "exec_trace.bpf.c")));
+        Assert.True(File.Exists(Path.Combine(root, "native", "linux", "ebpf", "behavedr_suite.bpf.c")));
         Assert.True(File.Exists(Path.Combine(root, "native", "macos", "es_bridge", "behavedr_es_bridge.c")));
+        Assert.True(File.Exists(Path.Combine(root, "native", "macos", "SystemExtension", "main.m")));
         Assert.True(File.Exists(Path.Combine(root, "packaging", "unix", "macos-endpointsecurity.md")));
     }
 

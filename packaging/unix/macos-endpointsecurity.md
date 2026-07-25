@@ -1,23 +1,28 @@
-# macOS EndpointSecurity packaging
+# macOS EndpointSecurity packaging (0.3.3 production)
 
-Behavedr v0.2.7+ can consume **EndpointSecurity.framework** when the native bridge
-and entitlements are present. Without them, **kqueue** remains the real-time path.
+Behavedr uses a **native ring-buffer bridge** (`libbehavedr_es.dylib`). The managed
+monitor **polls** events; the ES callback never calls into the GC.
+
+Without the dylib + entitlement, **kqueue** remains the real-time path.
 
 ## Components
 
 | Piece | Path |
 |-------|------|
-| Managed monitor | `MacOSEndpointSecurityMonitor` |
-| Native bridge | `native/macos/es_bridge/behavedr_es_bridge.c` → `libbehavedr_es.dylib` |
-| Install location | `/opt/behavedr/libbehavedr_es.dylib` (or next to agent) |
+| Managed monitor | `MacOSEndpointSecurityMonitor` (poll ABI) |
+| Native bridge | `native/macos/es_bridge/behavedr_es_bridge.c` |
+| System Extension host | `native/macos/SystemExtension/` |
+| Install dylib | `/opt/behavedr/libbehavedr_es.dylib` |
 
 ## Build bridge
 
 ```bash
-clang -dynamiclib -o libbehavedr_es.dylib native/macos/es_bridge/behavedr_es_bridge.c \
+clang -dynamiclib -O2 -o libbehavedr_es.dylib native/macos/es_bridge/behavedr_es_bridge.c \
   -framework EndpointSecurity -framework CoreFoundation
+install_name_tool -id @rpath/libbehavedr_es.dylib libbehavedr_es.dylib
 sudo mkdir -p /opt/behavedr
 sudo cp libbehavedr_es.dylib /opt/behavedr/
+# Sign dylib + agent with ES client entitlement
 ```
 
 ## Entitlement
@@ -53,11 +58,17 @@ The bridge API (`behavedr_es_*`) is intentionally small so it can live in the ex
 Agent log on success:
 
 ```
-[ES] EndpointSecurity client subscribed (EXEC/FORK/EXIT/OPEN)
+[ES] Active — poll mode, events=…, auth=…
 ```
 
-On failure (no entitlement):
+On failure (no entitlement / no dylib):
 
 ```
 [ES] es_new_client failed … kqueue path remains active
+```
+
+or
+
+```
+[ES] libbehavedr_es.dylib not found … kqueue remains primary
 ```

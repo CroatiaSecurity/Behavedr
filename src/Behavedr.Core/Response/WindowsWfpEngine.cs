@@ -8,9 +8,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>
 /// User-mode Windows Filtering Platform (WFP) engine for network isolation.
-/// Uses fwpuclnt.dll filter APIs — real WFP layers, not netsh text wrapping.
-/// Does <b>not</b> require a callout driver or WHQL signing; callout drivers
-/// remain optional for deep packet inspection beyond block/permit.
+/// Uses fwpuclnt.dll filter APIs — real WFP layers at ALE_AUTH_CONNECT / ALE_AUTH_RECV_ACCEPT.
+/// Does <b>not</b> require a callout driver or WHQL signing.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class WindowsWfpEngine : IDisposable
@@ -18,11 +17,12 @@ public sealed class WindowsWfpEngine : IDisposable
     private readonly ILogger _logger;
     private IntPtr _engine = IntPtr.Zero;
     private readonly List<Guid> _filterIds = new();
+    private readonly List<IntPtr> _ownedNative = new(); // condition value buffers
     private readonly object _lock = new();
     private bool _disposed;
     private const int MaxFilters = 100;
 
-    // Sub-layer GUID for Behavedr (stable, project-specific)
+    // Stable project sub-layer
     private static readonly Guid BehavedrSubLayerKey = new("A7C4E8F1-2B3D-4E5F-9A0B-1C2D3E4F5A6C");
     private static readonly Guid FwpmLayerAleAuthConnectV4 = new("c38d57d1-05a7-4c33-904f-7fbceee60e82");
     private static readonly Guid FwpmLayerAleAuthConnectV6 = new("4a72393b-319f-44bc-84c3-ba54dcb3b6b4");
@@ -38,7 +38,6 @@ public sealed class WindowsWfpEngine : IDisposable
         _logger = logger ?? NullLogger.Instance;
     }
 
-    /// <summary>Open the WFP filter engine and ensure our sub-layer exists.</summary>
     public bool TryOpen()
     {
         if (_engine != IntPtr.Zero)
@@ -81,7 +80,6 @@ public sealed class WindowsWfpEngine : IDisposable
         }
 
         bool isV6 = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6;
-        // Dual-layer isolation (0.3.2)
         bool outOk = AddBlockFilter(
             address, isV6,
             isV6 ? FwpmLayerAleAuthConnectV6 : FwpmLayerAleAuthConnectV4,
@@ -108,16 +106,21 @@ public sealed class WindowsWfpEngine : IDisposable
         IntPtr namePtr = IntPtr.Zero;
         IntPtr descPtr = IntPtr.Zero;
         IntPtr condPtr = IntPtr.Zero;
+        IntPtr condValueNative = IntPtr.Zero;
         try
         {
             namePtr = Marshal.StringToHGlobalUni($"Behavedr block {address}");
             descPtr = Marshal.StringToHGlobalUni(comment.Length > 200 ? comment[..200] : comment);
 
+            condValueNative = AllocConditionValue(address, isV6, out var condValue);
+            if (condValueNative == IntPtr.Zero && isV6)
+                return false;
+
             var condition = new FWPM_FILTER_CONDITION0
             {
                 fieldKey = condField,
                 matchType = FWP_MATCH_EQUAL,
-                conditionValue = BuildAddrValue(address, isV6),
+                conditionValue = condValue,
             };
             condPtr = Marshal.AllocHGlobal(Marshal.SizeOf<FWPM_FILTER_CONDITION0>());
             Marshal.StructureToPtr(condition, condPtr, false);
@@ -131,7 +134,7 @@ public sealed class WindowsWfpEngine : IDisposable
                 providerData = default,
                 layerKey = layerKey,
                 subLayerKey = BehavedrSubLayerKey,
-                weight = new FWP_VALUE0 { type = FWP_UINT8, uint32 = 0x0F },
+                weight = new FWP_VALUE0 { type = FWP_UINT8, anon = new FWP_VALUE0_UNION { uint8 = 0x0F } },
                 numFilterConditions = 1,
                 filterCondition = condPtr,
                 action = new FWPM_ACTION0 { type = FWP_ACTION_BLOCK, filterType = Guid.Empty },
@@ -146,10 +149,26 @@ public sealed class WindowsWfpEngine : IDisposable
 
             uint hr = FwpmFilterAdd0(_engine, filterPtr, IntPtr.Zero, out _);
             if (hr != 0)
+            {
+                _logger.LogDebug("[WFP] FwpmFilterAdd0 failed 0x{Hr:X8} layer={Layer}", hr, layerKey);
+                // free cond value only on failure; on success keep for filter lifetime
+                if (condValueNative != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(condValueNative);
+                    condValueNative = IntPtr.Zero;
+                }
                 return false;
+            }
 
             lock (_lock)
+            {
                 _filterIds.Add(filterKey);
+                if (condValueNative != IntPtr.Zero)
+                {
+                    _ownedNative.Add(condValueNative);
+                    condValueNative = IntPtr.Zero; // ownership transferred
+                }
+            }
             return true;
         }
         finally
@@ -158,6 +177,43 @@ public sealed class WindowsWfpEngine : IDisposable
             if (condPtr != IntPtr.Zero) Marshal.FreeHGlobal(condPtr);
             if (namePtr != IntPtr.Zero) Marshal.FreeHGlobal(namePtr);
             if (descPtr != IntPtr.Zero) Marshal.FreeHGlobal(descPtr);
+            if (condValueNative != IntPtr.Zero) Marshal.FreeHGlobal(condValueNative);
+        }
+    }
+
+    private static IntPtr AllocConditionValue(IPAddress address, bool isV6, out FWP_CONDITION_VALUE0 value)
+    {
+        if (!isV6)
+        {
+            var bytes = address.GetAddressBytes();
+            // host-order uint for FWP_V4_ADDR_AND_MASK.addr
+            uint addr = (uint)(bytes[0] << 24 | bytes[1] << 16 | bytes[2] << 8 | bytes[3]);
+            var v4 = new FWP_V4_ADDR_AND_MASK { addr = addr, mask = 0xFFFFFFFF };
+            IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf<FWP_V4_ADDR_AND_MASK>());
+            Marshal.StructureToPtr(v4, p, false);
+            value = new FWP_CONDITION_VALUE0
+            {
+                type = FWP_V4_ADDR_MASK,
+                anon = new FWP_CONDITION_VALUE0_UNION { pointer = p },
+            };
+            return p;
+        }
+        else
+        {
+            // FWP_V6_ADDR_AND_MASK: 16-byte addr + prefixLength
+            var bytes = address.GetAddressBytes();
+            int size = 16 + 1 + 3; // addr + prefix + pad
+            IntPtr p = Marshal.AllocHGlobal(size);
+            // zero
+            for (int i = 0; i < size; i++) Marshal.WriteByte(p, i, 0);
+            Marshal.Copy(bytes, 0, p, Math.Min(16, bytes.Length));
+            Marshal.WriteByte(p, 16, 128); // /128 exact host
+            value = new FWP_CONDITION_VALUE0
+            {
+                type = FWP_V6_ADDR_MASK,
+                anon = new FWP_CONDITION_VALUE0_UNION { pointer = p },
+            };
+            return p;
         }
     }
 
@@ -167,7 +223,10 @@ public sealed class WindowsWfpEngine : IDisposable
         _disposed = true;
 
         if (_engine == IntPtr.Zero)
+        {
+            FreeOwned();
             return;
+        }
 
         lock (_lock)
         {
@@ -178,13 +237,26 @@ public sealed class WindowsWfpEngine : IDisposable
                     var key = id;
                     FwpmFilterDeleteByKey0(_engine, ref key);
                 }
-                catch { /* best-effort cleanup */ }
+                catch { /* best-effort */ }
             }
             _filterIds.Clear();
         }
 
         FwpmEngineClose0(_engine);
         _engine = IntPtr.Zero;
+        FreeOwned();
+    }
+
+    private void FreeOwned()
+    {
+        lock (_lock)
+        {
+            foreach (var p in _ownedNative)
+            {
+                try { Marshal.FreeHGlobal(p); } catch { /* ignore */ }
+            }
+            _ownedNative.Clear();
+        }
     }
 
     private void EnsureSubLayer()
@@ -200,13 +272,13 @@ public sealed class WindowsWfpEngine : IDisposable
                 flags = 0,
                 providerKey = IntPtr.Zero,
                 providerData = default,
-                weight = 0x8000, // mid-high priority
+                weight = 0x8000,
             };
             IntPtr subPtr = Marshal.AllocHGlobal(Marshal.SizeOf<FWPM_SUBLAYER0>());
             try
             {
                 Marshal.StructureToPtr(sub, subPtr, false);
-                // Already exists → ignore error
+                // Already exists → ignore error (FWP_E_ALREADY_EXISTS)
                 FwpmSubLayerAdd0(_engine, subPtr, IntPtr.Zero);
             }
             finally
@@ -221,49 +293,13 @@ public sealed class WindowsWfpEngine : IDisposable
         }
     }
 
-    private static FWP_CONDITION_VALUE0 BuildAddrValue(IPAddress address, bool isV6)
-    {
-        if (!isV6)
-        {
-            var bytes = address.GetAddressBytes();
-            // FWP_UINT32 expects host-order? Docs: network byte order for addresses in FWP_BYTE_ARRAY16;
-            // For V4 address condition FWP_V4_ADDR_AND_MASK is preferred.
-            uint addr = (uint)(bytes[0] << 24 | bytes[1] << 16 | bytes[2] << 8 | bytes[3]);
-            var v4 = new FWP_V4_ADDR_AND_MASK { addr = addr, mask = 0xFFFFFFFF };
-            IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf<FWP_V4_ADDR_AND_MASK>());
-            Marshal.StructureToPtr(v4, p, false);
-            // Note: intentional leak for filter lifetime; cleaned when process exits.
-            // Production hardening could track and free on filter delete.
-            return new FWP_CONDITION_VALUE0
-            {
-                type = FWP_V4_ADDR_MASK,
-                uint32 = 0,
-                pointer = p,
-            };
-        }
-        else
-        {
-            var bytes = address.GetAddressBytes();
-            IntPtr p = Marshal.AllocHGlobal(16);
-            Marshal.Copy(bytes, 0, p, Math.Min(16, bytes.Length));
-            // Simplified: store pointer as byte array16 condition
-            return new FWP_CONDITION_VALUE0
-            {
-                type = FWP_BYTE_ARRAY16_TYPE,
-                uint32 = 0,
-                pointer = p,
-            };
-        }
-    }
-
     // --- P/Invoke (fwpuclnt.dll) ---
 
     private const uint RPC_C_AUTHN_WINNT = 10;
     private const ushort FWP_EMPTY = 0;
     private const ushort FWP_UINT8 = 1;
-    private const ushort FWP_UINT32 = 4;
-    private const ushort FWP_BYTE_ARRAY16_TYPE = 11;
     private const ushort FWP_V4_ADDR_MASK = 12;
+    private const ushort FWP_V6_ADDR_MASK = 13;
     private const uint FWP_MATCH_EQUAL = 0;
     // FWP_ACTION_BLOCK | FWP_ACTION_FLAG_TERMINATING
     private const uint FWP_ACTION_BLOCK = 0x00001001;
@@ -282,11 +318,21 @@ public sealed class WindowsWfpEngine : IDisposable
         public IntPtr data;
     }
 
+    [StructLayout(LayoutKind.Explicit, Size = 8)]
+    private struct FWP_VALUE0_UNION
+    {
+        [FieldOffset(0)] public byte uint8;
+        [FieldOffset(0)] public uint uint32;
+        [FieldOffset(0)] public IntPtr pointer;
+    }
+
+    // FWP_DATA_TYPE is 4 bytes; union follows (aligned)
     [StructLayout(LayoutKind.Sequential)]
     private struct FWP_VALUE0
     {
         public ushort type;
-        public uint uint32; // simplified union
+        public ushort reserved;
+        public FWP_VALUE0_UNION anon;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -296,20 +342,19 @@ public sealed class WindowsWfpEngine : IDisposable
         public uint mask;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct FWP_V6_ADDR_AND_MASK
+    [StructLayout(LayoutKind.Explicit, Size = 8)]
+    private struct FWP_CONDITION_VALUE0_UNION
     {
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
-        public byte[] addr;
-        public byte prefixLength;
+        [FieldOffset(0)] public uint uint32;
+        [FieldOffset(0)] public IntPtr pointer;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FWP_CONDITION_VALUE0
     {
         public ushort type;
-        public uint uint32;
-        public IntPtr pointer;
+        public ushort reserved;
+        public FWP_CONDITION_VALUE0_UNION anon;
     }
 
     [StructLayout(LayoutKind.Sequential)]

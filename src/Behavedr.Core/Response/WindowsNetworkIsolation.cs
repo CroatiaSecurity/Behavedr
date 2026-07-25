@@ -9,21 +9,21 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>
-/// Userland Windows network isolation via Windows Firewall (advfirewall).
-/// Blocks observed C2 / remote IPs and optionally outbound traffic for a process image path.
-/// Not a WFP callout driver — suitable for userland EDR without kernel signing.
-/// Requires elevation (SYSTEM service context).
+/// Windows network isolation (0.3.3 production path).
+/// Order: Firewall COM (HNetCfg) → direct WFP engine → netsh advfirewall.
+/// All three ultimately use WFP BFE; COM is the most reliable user-mode API.
+/// No callout driver required.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposable
 {
     private readonly ILogger<WindowsNetworkIsolation> _logger;
+    private readonly WindowsFirewallEngine _fwCom;
     private readonly WindowsWfpEngine _wfp;
     private readonly HashSet<string> _blockedIps = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
     private const int MaxRules = 100;
 
-    // Public DNS — never blackhole (same policy as macOS isolation)
     private static readonly HashSet<string> NeverBlock = new(StringComparer.OrdinalIgnoreCase)
     {
         "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9",
@@ -36,10 +36,15 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
     public WindowsNetworkIsolation(ILogger<WindowsNetworkIsolation>? logger = null)
     {
         _logger = logger ?? NullLogger<WindowsNetworkIsolation>.Instance;
+        _fwCom = new WindowsFirewallEngine(_logger);
         _wfp = new WindowsWfpEngine(_logger);
     }
 
-    public void Dispose() => _wfp.Dispose();
+    public void Dispose()
+    {
+        _fwCom.Dispose();
+        _wfp.Dispose();
+    }
 
     public async Task<ResponseOutcome> ExecuteAsync(DetectionResult result, CancellationToken ct = default)
     {
@@ -49,7 +54,6 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
         var ips = ExtractRemoteIps(result);
         if (ips.Count == 0)
         {
-            // Fall back: block outbound for process image if we can resolve it
             if (int.TryParse(result.Event.ProcessId, out var pid) && pid > 4)
             {
                 var image = TryGetProcessImage(pid);
@@ -69,36 +73,56 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
 
         return blocked > 0
             ? ResponseOutcome.Ok(Name, $"Blocked {blocked} remote IP(s) for {result.Event.ProcessName}")
-            : ResponseOutcome.Skipped(Name, "No new IPs blocked (limit, DNS protect, or netsh failure)");
+            : ResponseOutcome.Skipped(Name, "No new IPs blocked (limit, protect-list, or elevation missing)");
     }
 
-    private async Task<bool> BlockIpAsync(string ip, string processName, CancellationToken ct)
+    private Task<bool> BlockIpAsync(string ip, string processName, CancellationToken ct)
     {
+        _ = ct;
         if (NeverBlock.Contains(ip) || IsPrivateOrLinkLocal(ip))
-            return false;
+            return Task.FromResult(false);
 
         lock (_lock)
         {
             if (_blockedIps.Count >= MaxRules)
             {
                 _logger.LogWarning("[WinNetIsolation] Rule limit {Max} reached", MaxRules);
-                return false;
+                return Task.FromResult(false);
             }
             if (!_blockedIps.Add(ip))
-                return false;
+                return Task.FromResult(false);
         }
 
-        // Prefer real WFP filter engine; fall back to advfirewall (also WFP-backed) via netsh.
+        if (!IPAddress.TryParse(ip, out var addr))
+        {
+            lock (_lock) _blockedIps.Remove(ip);
+            return Task.FromResult(false);
+        }
+
+        var comment = $"Behavedr isolation for {Sanitize(processName)}";
+
+        // 1) Firewall COM (production primary)
+        if (_fwCom.IsAvailable && _fwCom.BlockRemoteAddress(addr, comment))
+        {
+            Telemetry.SecurityTelemetry.ReportIsolationAction();
+            return Task.FromResult(true);
+        }
+
+        // 2) Direct WFP filter engine
         var preferWfp = !string.Equals(
             Environment.GetEnvironmentVariable("BEHAVEDR_PREFER_WFP"), "0", StringComparison.Ordinal);
-
-        if (preferWfp && IPAddress.TryParse(ip, out var addr) && _wfp.BlockRemoteAddress(addr, $"Behavedr:{processName}"))
+        if (preferWfp && _wfp.BlockRemoteAddress(addr, comment))
         {
-            _logger.LogWarning("[WinNetIsolation] WFP blocked remote IP {Ip} ({Process})", ip, processName);
             Telemetry.SecurityTelemetry.ReportIsolationAction();
-            return true;
+            return Task.FromResult(true);
         }
 
+        // 3) netsh last resort
+        return BlockIpNetshAsync(ip, processName, ct);
+    }
+
+    private async Task<bool> BlockIpNetshAsync(string ip, string processName, CancellationToken ct)
+    {
         var safeName = $"BehavedrBlock_{ip.Replace(':', '_').Replace('.', '_')}";
         var argsOut =
             $"advfirewall firewall add rule name=\"{safeName}\" " +
@@ -110,10 +134,10 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
             $"description=\"Behavedr isolation inbound for {Sanitize(processName)}\"";
 
         var ok = await RunNetshAsync(argsOut, ct);
-        _ = await RunNetshAsync(argsIn, ct); // best-effort inbound
+        _ = await RunNetshAsync(argsIn, ct);
         if (ok)
         {
-            _logger.LogWarning("[WinNetIsolation] advfirewall blocked remote IP {Ip} ({Process})", ip, processName);
+            _logger.LogWarning("[WinNetIsolation] netsh blocked {Ip}", ip);
             Telemetry.SecurityTelemetry.ReportIsolationAction();
             return true;
         }
@@ -124,6 +148,12 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
 
     private async Task<ResponseOutcome> BlockProcessImageAsync(string imagePath, string processName, CancellationToken ct)
     {
+        if (_fwCom.IsAvailable && _fwCom.BlockApplication(imagePath, $"Behavedr process {processName}"))
+        {
+            Telemetry.SecurityTelemetry.ReportIsolationAction();
+            return ResponseOutcome.Ok(Name, $"Blocked outbound for {processName} image (FwCOM)");
+        }
+
         var hash = Math.Abs(imagePath.GetHashCode(StringComparison.OrdinalIgnoreCase));
         var ruleName = $"BehavedrBlockProg_{hash:X8}";
         var args =
@@ -132,9 +162,12 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
             $"description=\"Behavedr process isolation for {Sanitize(processName)}\"";
 
         var ok = await RunNetshAsync(args, ct);
-        return ok
-            ? ResponseOutcome.Ok(Name, $"Blocked outbound for {processName} image")
-            : ResponseOutcome.Failed(Name, "netsh process block failed (need elevation?)");
+        if (ok)
+        {
+            Telemetry.SecurityTelemetry.ReportIsolationAction();
+            return ResponseOutcome.Ok(Name, $"Blocked outbound for {processName} image (netsh)");
+        }
+        return ResponseOutcome.Failed(Name, "process image block failed (need elevation?)");
     }
 
     private static async Task<bool> RunNetshAsync(string arguments, CancellationToken ct)
@@ -172,10 +205,8 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
             foreach (Match m in ipv4.Matches(signal.Type ?? ""))
                 found.Add(m.Value);
         }
-        // Also scan process path / command line style fields on the event if present
         foreach (Match m in ipv4.Matches(result.Event.ProcessName ?? ""))
             found.Add(m.Value);
-
         return found.ToList();
     }
 
@@ -186,10 +217,7 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
             using var p = Process.GetProcessById(pid);
             return p.MainModule?.FileName;
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
     }
 
     private static bool IsPrivateOrLinkLocal(string ip)
@@ -197,7 +225,7 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
         if (!IPAddress.TryParse(ip, out var addr))
             return true;
         var b = addr.GetAddressBytes();
-        if (b.Length != 4) return false; // allow blocking public IPv6-ish strings carefully
+        if (b.Length != 4) return false;
         if (b[0] == 10) return true;
         if (b[0] == 127) return true;
         if (b[0] == 192 && b[1] == 168) return true;
