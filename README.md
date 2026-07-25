@@ -4,6 +4,8 @@ Behavioral endpoint detection and response agent. Monitors process activity, net
 
 **Current version: 0.2.7**
 
+Versioning: every release is the **next patch** on `0.2.x` (e.g. `0.2.8`), regardless of how large the change is. Feature depth is described in the changelog, not in major/minor jumps. See [docs/RELEASE.md](docs/RELEASE.md) §0.
+
 ## Platforms
 
 | Platform | Status |

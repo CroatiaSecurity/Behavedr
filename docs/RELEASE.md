@@ -1,16 +1,32 @@
 # Behavedr Release Procedure
 
-**Applies to:** 0.2.4 and later  
+**Applies to:** 0.2.x and later  
 **Last updated:** 2026-07-25  
 
 This is the operational runbook for cutting a Behavedr release. Follow it in order. Do not skip verification steps to “save time.”
 
 ---
 
+## 0. Version numbering policy
+
+**Always ship as the next small patch on the current line** (e.g. `0.2.7` → `0.2.8` → `0.2.9` → `0.2.10`).
+
+| Do | Do not |
+|----|--------|
+| Bump patch by +1 for every release | Jump to `0.3`, `0.4`, `0.5` for “epic” or marketing milestones |
+| Put large platform work in the **changelog body** | Encode feature size in the major/minor number |
+| Keep `0.2.x` until an intentional product-line break is decided separately | Rename releases after tags exist |
+
+Scope of the change (eBPF, EndpointSecurity, WFP, full rewrites) does **not** change the numbering rule. Huge work still ships as the next patch. Operators and auto-update compare versions numerically; steady increments avoid artificial “major” gates.
+
+When the patch component grows large (`0.2.99`), continue (`0.2.100`) or only then discuss a deliberate minor bump for product reasons — never because the work felt big.
+
+---
+
 ## 1. Preconditions
 
 - [ ] All intended changes are on `main` and green on desktop CI.
-- [ ] `Directory.Build.props` version matches the intended release (e.g. `0.2.4`).
+- [ ] `Directory.Build.props` version matches the intended release (next patch, e.g. `0.2.8`).
 - [ ] `CHANGELOG.md` has a dated section for that version (not only `Unreleased`).
 - [ ] `SECURITY.md` supported-versions table lists the new version.
 - [ ] `THREAT_MODEL.md` version header matches.
