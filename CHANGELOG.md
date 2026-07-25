@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.7] — 2026-07-25
+
+### ABI verification + isolation self-DoS fixes
+
+- Documented fanotify / cn_proc constants against Linux uapi headers (`docs/PLATFORM_ABI.md`)
+- Fanotify PERM: never deny `/opt/behavedr`; staging-path deny is rename-resistant
+- Fanotify signals use `ThreatHeuristics` (not name lists alone)
+- Linux network isolation: refuse self/agent; never UID-isolate the agent’s own UID
+- Syscall numbers already centralized in 0.3.6 (`LinuxSyscallNumbers`)
+
 ## [0.3.6] — 2026-07-25
 
 ### Anti-bypass & self-harm rails (rename-aware)

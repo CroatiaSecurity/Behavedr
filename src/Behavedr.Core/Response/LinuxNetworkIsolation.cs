@@ -65,8 +65,22 @@ public class LinuxNetworkIsolation : IResponseAction
         }
 
         var processId = result.Event.ProcessId;
-        if (!int.TryParse(processId, out var pid) || pid <= 4)
+        if (!int.TryParse(processId, out var pid) || pid <= 0)
             return ResponseOutcome.Skipped(Name, $"Invalid PID for isolation: {processId}");
+
+        // Never isolate self / agent image (would cut off agent C2 and self-heal)
+        if (ResponseSafety.ShouldRefuseKill(pid, result.Event.ProcessName ?? "", out var safety) ||
+            pid == Environment.ProcessId)
+            return ResponseOutcome.Skipped(Name, $"Safety: {safety}");
+
+        try
+        {
+            using var p = Process.GetProcessById(pid);
+            var img = p.MainModule?.FileName;
+            if (ResponseSafety.IsOwnAgentImage(img))
+                return ResponseOutcome.Skipped(Name, "Safety: agent image");
+        }
+        catch { /* path may be inaccessible */ }
 
         // Ensure our nftables table exists
         if (!_tableCreated)
@@ -80,12 +94,14 @@ public class LinuxNetworkIsolation : IResponseAction
             return ResponseOutcome.Failed(Name, $"Cannot determine UID for PID {pid}");
 
         // Don't isolate root (UID 0) by UID — too broad. Instead block specific IPs.
-        if (uid == 0)
+        // Don't isolate by UID if that UID is the agent process user (self-DoS).
+        var agentUid = GetProcessUid(Environment.ProcessId);
+        if (uid == 0 || (agentUid >= 0 && uid == agentUid))
         {
             return await IsolateByDestination(result, pid, ct);
         }
 
-        // Non-root: isolate by UID (drops all network for that user)
+        // Non-root different from agent: isolate by UID
         return await IsolateByUid(uid, pid, result.Event.ProcessName, ct);
     }
 

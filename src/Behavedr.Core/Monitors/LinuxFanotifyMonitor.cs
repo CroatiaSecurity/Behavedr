@@ -232,6 +232,7 @@ public class LinuxFanotifyMonitor : IPlatformMonitor
     {
         // Skip our own process and trusted paths
         if (evt.Pid == Environment.ProcessId) return;
+        if (Response.ResponseSafety.IsOwnAgentImage(evt.FilePath)) return;
 
         if (evt.FilePath.EndsWith(":DENIED", StringComparison.Ordinal))
         {
@@ -244,16 +245,16 @@ public class LinuxFanotifyMonitor : IPlatformMonitor
         if (TrustedExecPaths.Any(p => evt.FilePath.StartsWith(p, StringComparison.Ordinal)))
             return;
 
-        // Execution from suspicious paths
-        if (SuspiciousExecPaths.Any(p => evt.FilePath.StartsWith(p, StringComparison.Ordinal)))
+        // Rename-resistant heuristics (staging path beats tool name alone)
+        var off = ThreatHeuristics.Evaluate(Path.GetFileName(evt.FilePath), evt.FilePath);
+        if (off is { } o)
         {
-            var fileName = Path.GetFileName(evt.FilePath);
             signals.Add(new Signal(
-                $"exec_from_suspicious_path:{fileName}:{evt.FilePath}:pid:{evt.Pid}",
-                62, 0.72));
+                $"fanotify_offensive:{o.Tag}:{o.Detail}:pid:{evt.Pid}",
+                o.Weight, o.Confidence));
         }
 
-        // Execution of hidden files (dotfiles)
+        // Execution of hidden files (dotfiles) outside trusted paths
         var name = Path.GetFileName(evt.FilePath);
         if (name.StartsWith('.') && !name.StartsWith("..", StringComparison.Ordinal))
         {
@@ -289,22 +290,18 @@ public class LinuxFanotifyMonitor : IPlatformMonitor
     {
         if (string.IsNullOrEmpty(filePath))
             return true;
+        // Never block our own install (self-DoS)
+        if (Response.ResponseSafety.IsOwnAgentImage(filePath) ||
+            filePath.StartsWith("/opt/behavedr/", StringComparison.Ordinal))
+            return true;
         if (TrustedExecPaths.Any(p => filePath.StartsWith(p, StringComparison.Ordinal)))
             return true;
         if (filePath.Contains("memfd:", StringComparison.Ordinal) ||
             filePath.Contains("(deleted)", StringComparison.Ordinal))
             return false;
-        if (SuspiciousExecPaths.Any(p => filePath.StartsWith(p, StringComparison.Ordinal)))
-        {
-            // Deny only clearly dropper-like names under suspicious roots
-            var name = Path.GetFileName(filePath);
-            if (name.StartsWith('.') || name.EndsWith(".elf", StringComparison.OrdinalIgnoreCase))
-                return false;
-            // tmp binaries with no extension still high risk
-            if (filePath.StartsWith("/tmp/", StringComparison.Ordinal) ||
-                filePath.StartsWith("/dev/shm/", StringComparison.Ordinal))
-                return false;
-        }
+        // Staging paths — deny exec regardless of binary name (rename-resistant)
+        if (ThreatHeuristics.IsStagingPath(filePath) && ThreatHeuristics.LooksLikeExecutableName(filePath))
+            return false;
         return true;
     }
 

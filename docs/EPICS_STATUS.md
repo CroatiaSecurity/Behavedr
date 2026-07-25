@@ -1,4 +1,4 @@
-# Platform epics — honest status (0.3.6)
+# Platform epics — honest status (0.3.7)
 
 Source of truth for **production code** vs **field activation**. No marketing.
 
@@ -17,6 +17,12 @@ Source of truth for **production code** vs **field activation**. No marketing.
 | iOS full EDR | **No** (Apple policy) | Companion only | MDM + NE product SKU |
 | Kernel callout / rootkit win | **No** | N/A | Out of scope (userland EDR) |
 | OS Authenticode/notarize | Hooks only | No | Paid certs |
+
+## What 0.3.7 added
+
+- fanotify / cn_proc ABI documented from kernel uapi (no guessed flags)
+- Linux isolation never UID-blocks the agent user; fanotify never denies agent install path  
+- Fanotify + eBPF/ES continue rename-aware `ThreatHeuristics`
 
 ## What 0.3.6 added
 
