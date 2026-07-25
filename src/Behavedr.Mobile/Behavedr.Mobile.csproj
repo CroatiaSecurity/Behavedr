@@ -12,15 +12,13 @@
 
     <ApplicationTitle>Behavedr</ApplicationTitle>
     <ApplicationId>com.croatiasecurity.behavedr</ApplicationId>
-    <ApplicationDisplayVersion>0.3.5</ApplicationDisplayVersion>
+    <ApplicationDisplayVersion>0.3.9</ApplicationDisplayVersion>
     <ApplicationVersion>21</ApplicationVersion>
 
-    <!--
-      Publisher APK cert pin (NOT for end users). Optional but recommended for release.
-      Hex SHA-256 of your release signing cert, no colons. Comma-separate for Play upload key.
-      apksigner verify --print-certs app.apk
-      -p:BehavedrAndroidCertSha256=AABB... or env BEHAVEDR_ANDROID_CERT_SHA256 at build time.
-    -->
+    <!-- Publisher APK cert pin (not end users). Optional for release.
+         Hex SHA256 of release signing cert, no colons. Comma-separate for Play upload key.
+         Use apksigner verify print-certs, then MSBuild property BehavedrAndroidCertSha256
+         or env BEHAVEDR_ANDROID_CERT_SHA256 at build time. -->
     <BehavedrAndroidCertSha256 Condition="'$(BehavedrAndroidCertSha256)' == ''">$(BEHAVEDR_ANDROID_CERT_SHA256)</BehavedrAndroidCertSha256>
     <BehavedrAndroidCertSha256 Condition="'$(BehavedrAndroidCertSha256)' == ''"></BehavedrAndroidCertSha256>
 

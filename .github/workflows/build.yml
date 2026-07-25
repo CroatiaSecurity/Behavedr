@@ -45,14 +45,14 @@ jobs:
         set -euo pipefail
         # Fail the build if any restored package is known-vulnerable at moderate+ severity.
         # Uses the NuGet vulnerability database via the .NET SDK.
+        # Note: do not match bare "Low" without word boundaries — "following" contains "low".
         echo "Scanning Agent project for vulnerable packages..."
         if ! dotnet list src/Behavedr.Agent/Behavedr.Agent.csproj package --vulnerable --include-transitive 2>&1 | tee vuln-agent.txt; then
           echo "::error::dotnet list package --vulnerable failed for Agent"
           exit 1
         fi
         if grep -Eiq 'has the following vulnerable packages|Severity' vuln-agent.txt; then
-          # SDK prints a table when vulnerabilities exist
-          if grep -Eiq 'Critical|High|Moderate|Low' vuln-agent.txt; then
+          if grep -Eiq '\b(Critical|High|Moderate|Low)\b' vuln-agent.txt; then
             echo "::error::Vulnerable NuGet packages detected in Agent dependency graph"
             cat vuln-agent.txt
             exit 1
@@ -63,10 +63,12 @@ jobs:
           echo "::error::dotnet list package --vulnerable failed for Tests"
           exit 1
         fi
-        if grep -Eiq 'Critical|High|Moderate|Low' vuln-tests.txt; then
-          echo "::error::Vulnerable NuGet packages detected in Tests dependency graph"
-          cat vuln-tests.txt
-          exit 1
+        if grep -Eiq 'has the following vulnerable packages|Severity' vuln-tests.txt; then
+          if grep -Eiq '\b(Critical|High|Moderate|Low)\b' vuln-tests.txt; then
+            echo "::error::Vulnerable NuGet packages detected in Tests dependency graph"
+            cat vuln-tests.txt
+            exit 1
+          fi
         fi
         echo "No known vulnerable packages reported."
 
