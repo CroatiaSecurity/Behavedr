@@ -103,7 +103,7 @@ public class BehavedrForegroundService : Service
 
         // Stagger first cycle slightly so providers warm up
         try { await Task.Delay(TimeSpan.FromSeconds(2), ct); }
-        catch (OperationCanceledException) { return; }
+        catch (System.OperationCanceledException) { return; }
 
         while (!ct.IsCancellationRequested)
         {
@@ -119,7 +119,7 @@ public class BehavedrForegroundService : Service
 
                 await AndroidAgentRuntime.RunDetectionCycleAsync(ct);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (System.OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 return;
             }
@@ -132,7 +132,7 @@ public class BehavedrForegroundService : Service
             {
                 await Task.Delay(interval, ct);
             }
-            catch (OperationCanceledException)
+            catch (System.OperationCanceledException)
             {
                 return;
             }

@@ -43,7 +43,7 @@ public class AgentPage : ContentPage
                 {
                     await monitor.GetSignalsAsync(cts.Token);
                 }
-                catch (OperationCanceledException)
+                catch (System.OperationCanceledException)
                 {
                     return;
                 }
