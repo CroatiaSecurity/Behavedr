@@ -102,6 +102,15 @@ public class AutoUpdater
 
         try
         {
+            // Anti-downgrade: reject packages that would roll the agent back
+            if (!IsNewerVersion(update.Version, _currentVersion))
+            {
+                _logger.LogCritical(
+                    "SECURITY: Rejecting update v{Version} — not newer than current {Current} (anti-downgrade)",
+                    update.Version, _currentVersion);
+                return false;
+            }
+
             var tempPath = Path.Combine(Path.GetTempPath(), $"behavedr-update-{update.Version}.zip");
             var sigPath = tempPath + ".sig";
 

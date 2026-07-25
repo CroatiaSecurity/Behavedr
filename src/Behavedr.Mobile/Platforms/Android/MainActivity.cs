@@ -9,19 +9,12 @@ using Environment = System.Environment;
 namespace Behavedr.Mobile;
 
 /// <summary>
-/// Launcher activity — zero visuals. Initializes all Android platform security
-/// components, starts the foreground monitoring service, and immediately moves
-/// to background. The user only sees the app icon.
+/// Launcher activity — zero visuals. Initializes Android platform security
+/// components, starts the foreground monitoring service, and moves to background.
 ///
-/// Initialization order (critical for security):
-/// 1. Register Android Keystore bridge (before any key operations)
-/// 2. Run supply chain verification (detect repackaging/sideloading)
-/// 3. Start foreground service (continuous monitoring)
-/// 4. Schedule WorkManager watchdog (persistence)
-/// 5. Request battery optimization whitelist (Doze bypass)
-/// 6. Initialize platform signal provider (native API bridge)
-/// 7. Start Play Integrity attestation (device verification)
-/// 8. Move to background
+/// v0.2.2: All detection/response lives in <see cref="AndroidAgentRuntime"/> +
+/// <see cref="BehavedrForegroundService"/>. Activity no longer creates orphan
+/// signal providers that never reached the engine.
 /// </summary>
 [Activity(
     Theme = "@android:style/Theme.NoDisplay",
@@ -36,86 +29,76 @@ namespace Behavedr.Mobile;
         | ConfigChanges.Density)]
 public class MainActivity : MauiAppCompatActivity
 {
-    private AndroidPlatformSignalProvider? _platformSignalProvider;
-    private PlayIntegrityAttestor? _playIntegrityAttestor;
-
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         base.OnCreate(savedInstanceState);
 
-        // === PHASE 1: Critical security initialization ===
-
-        // 1. Register Android Keystore bridge — MUST be first
-        //    This connects Core's KeyProtection to hardware-backed crypto
+        // 1. Keystore bridge (also done in Application.OnCreate)
         KeystoreBridgeRegistration.Register();
 
-        // 2. Supply chain verification — detect repackaging/tampering early
-        var supplyChainVerifier = new SupplyChainVerifier(ApplicationContext!);
-        var scSignals = supplyChainVerifier.Verify();
-        if (scSignals.Any(s => s.Weight >= 90))
+        // 2. Shared agent runtime (engine + response + injection token)
+        AndroidAgentRuntime.EnsureInitialized();
+
+        // 3. Supply chain verification — inject critical signals into engine
+        try
         {
-            // Critical supply chain failure — log and continue monitoring
-            // (we still want to report the compromise to server)
-            WriteForensicLog("SUPPLY_CHAIN_CRITICAL: " +
-                string.Join(", ", scSignals.Where(s => s.Weight >= 90).Select(s => s.Type)));
+            var supplyChainVerifier = new SupplyChainVerifier(ApplicationContext!);
+            var scSignals = supplyChainVerifier.Verify();
+            if (scSignals.Count > 0)
+            {
+                AndroidAgentRuntime.InjectSignals(scSignals);
+                if (scSignals.Any(s => s.Weight >= 90))
+                {
+                    WriteForensicLog("SUPPLY_CHAIN_CRITICAL: " +
+                        string.Join(", ", scSignals.Where(s => s.Weight >= 90).Select(s => s.Type)));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteForensicLog("SUPPLY_CHAIN_ERROR: " + ex.Message);
         }
 
-        // === PHASE 2: Service persistence ===
+        // 4. Update rollback detection
+        try
+        {
+            var updateSecurity = new AndroidUpdateSecurity(ApplicationContext!);
+            var updateSignals = updateSecurity.DetectRollback();
+            if (updateSignals.Count > 0)
+            {
+                AndroidAgentRuntime.InjectSignals(updateSignals);
+                WriteForensicLog("UPDATE_ROLLBACK: " +
+                    string.Join(", ", updateSignals.Select(s => s.Type)));
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteForensicLog("UPDATE_SECURITY_ERROR: " + ex.Message);
+        }
 
-        // 3. Start the foreground monitoring service
+        // 5. Start foreground monitoring service (owns signal provider + detection loop)
         var serviceIntent = new Intent(this, typeof(BehavedrForegroundService));
         if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
-        {
             StartForegroundService(serviceIntent);
-        }
         else
-        {
             StartService(serviceIntent);
-        }
 
-        // 4. Schedule WorkManager watchdog (ensures service restarts if killed)
+        // 6. JobScheduler watchdog
         WorkManagerWatchdog.Schedule(ApplicationContext!);
 
-        // === PHASE 3: Platform optimizations ===
-
-        // 5. Request battery optimization whitelist (Doze bypass)
-        var batteryManager = new BatteryOptimizationManager(ApplicationContext!);
-        if (!batteryManager.IsWhitelisted)
+        // 7. Battery optimization whitelist (best-effort UI prompt)
+        try
         {
-            batteryManager.RequestWhitelist(this);
+            var batteryManager = new BatteryOptimizationManager(ApplicationContext!);
+            if (!batteryManager.IsWhitelisted)
+                batteryManager.RequestWhitelist(this);
+        }
+        catch
+        {
+            // OEM may block the intent
         }
 
-        // === PHASE 4: Platform signal injection ===
-
-        // 6. Initialize platform signal provider
-        //    This bridges native Android APIs (UsageStats, PackageManager, etc.) into Core
-        _platformSignalProvider = new AndroidPlatformSignalProvider(Application!);
-        _platformSignalProvider.Start();
-
-        // 7. Start Play Integrity attestation (periodic device verification)
-        _playIntegrityAttestor = new PlayIntegrityAttestor(ApplicationContext!);
-        _playIntegrityAttestor.Start();
-
-        // === PHASE 5: Update security ===
-
-        // Check for rollback attacks
-        var updateSecurity = new AndroidUpdateSecurity(ApplicationContext!);
-        var updateSignals = updateSecurity.DetectRollback();
-        if (updateSignals.Count > 0)
-        {
-            WriteForensicLog("UPDATE_ROLLBACK: " +
-                string.Join(", ", updateSignals.Select(s => s.Type)));
-        }
-
-        // === Done — move to background ===
         MoveTaskToBack(true);
-    }
-
-    protected override void OnDestroy()
-    {
-        _platformSignalProvider?.Dispose();
-        _playIntegrityAttestor?.Dispose();
-        base.OnDestroy();
     }
 
     private static void WriteForensicLog(string message)

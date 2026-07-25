@@ -118,6 +118,9 @@ try
     // Agent self-protection service
     builder.Services.AddHostedService<SelfProtectionService>();
 
+    // v0.2.2: Startup self-test (Sentinel pattern)
+    builder.Services.AddHostedService<StartupSelfTest>();
+
     // Agent watchdog service (mutual monitoring, last-gasp logging)
     builder.Services.AddHostedService<AgentWatchdog>();
 
@@ -145,10 +148,21 @@ try
 
     var host = builder.Build();
 
+    // v0.2.2: Register platform monitors before hosted services start (was deferred to
+    // MonitoringService, so StartupSelfTest / early cycles could see zero monitors).
+    var detectionEngine = host.Services.GetRequiredService<DetectionEngine>();
+    if (detectionEngine.RegisteredMonitors.Count == 0)
+    {
+        foreach (var monitor in PlatformMonitors.Supported())
+            detectionEngine.RegisterMonitor(monitor);
+    }
+
     // v0.1.3: Register response actions after build (C-1 fix)
     var responseEngine = host.Services.GetRequiredService<ResponseEngine>();
     responseEngine.RegisterAction(host.Services.GetRequiredService<ProcessKillAction>());
     responseEngine.RegisterAction(host.Services.GetRequiredService<FileQuarantineAction>());
+    // v0.2.2 fix: IsolationResponseEngine was DI-registered but never wired into ResponseEngine
+    responseEngine.RegisterAction(host.Services.GetRequiredService<IsolationResponseEngine>());
 
     // v0.2.0: Register Linux network isolation response action
     if (OperatingSystem.IsLinux())

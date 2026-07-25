@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.2.0   | Yes       |
-| < 0.2.0 | No        |
+| 0.2.2   | Yes       |
+| < 0.2.2 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
@@ -79,7 +79,7 @@ We will credit reporters in release notes unless anonymity is preferred. We do n
 | Config value encryption | AES-256-GCM (cross-platform) / DPAPI (Windows) | 256-bit | DPAPI uses LocalMachine scope |
 | macOS key storage | Keychain Services (System Keychain) | 256-bit | Via `security` CLI; backed by Secure Enclave on Apple Silicon |
 
-### Self-Protection Mechanisms (v0.1.6)
+### Self-Protection Mechanisms (v0.2.2)
 
 | Mechanism | Check Interval | Description |
 |-----------|---------------|-------------|

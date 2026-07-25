@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.2.2] — 2026-07-25
+
+### Production Hardening — Android Pipeline Fix + Sentinel Imports
+
+Critical Android production bugfix: the foreground service previously called
+`GetSignalsAsync` and discarded results (no scoring, no response), and
+`MainActivity` built platform signal providers with `androidMonitor=null` so
+injected signals never reached the detection engine.
+
+#### Critical fixes
+
+- **`AndroidAgentRuntime`**: Process-wide shared `DetectionEngine`, `ResponseEngine`,
+  authenticated `AndroidMonitor` injection token. Single source of truth for service + UI.
+- **`BehavedrForegroundService`**: Full detect → score → attribute → respond cycle;
+  wires `AndroidPlatformSignalProvider` and Play Integrity cache into the shared monitor.
+- **`MainActivity`**: Injects supply-chain and update-rollback signals into the runtime;
+  no longer creates orphan providers that never connected to the engine.
+- **`IsolationResponseEngine`**: Was registered in DI but never `RegisterAction`'d — wired.
+- **Desktop monitor registration**: Monitors now register at host build (before hosted
+  services), not only inside `MonitoringService` (fixes empty-monitor races).
+
+#### Sentinel imports (Windows + cross-cutting)
+
+- **`DriverLoadMonitor`**: BYOVD detection (registry, Event 7045, LOLDrivers names/hashes,
+  user-writable `.sys` drops) — ported from Sentinel patterns.
+- **`MaxKillsPerMinute`** (default 15) on `ResponsePolicy` / `ResponseEngine` kill budget.
+- **`StartupSelfTest`**: Pre-flight crypto, key, monitor, response, directory, signing-key checks.
+
+#### Other hardening
+
+- AutoUpdater **anti-downgrade** in `ApplyUpdateAsync`.
+- Security unit tests: SecureEnvelope integrity, path validation, kill budget, signing key.
+- Version sync: product **0.2.2**, iOS `Info.plist`, Inno Setup, SBOM version from props.
+- README platform status honesty (iOS Preview; Android DO note).
+
 ## [0.2.1] — 2026-07-22
 
 ### Android Security — Near-Complete Platform Parity (6.7/10 → 9.1/10)

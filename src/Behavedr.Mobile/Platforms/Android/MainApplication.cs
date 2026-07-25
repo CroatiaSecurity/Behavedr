@@ -30,6 +30,9 @@ public class MainApplication : MauiApplication
         // This ensures hardware-backed keys are available for all components
         KeystoreBridgeRegistration.Register();
 
+        // Shared detection/response runtime before any Activity/Service work
+        AndroidAgentRuntime.EnsureInitialized();
+
         // Schedule watchdog at application level (survives if Activity is never started)
         WorkManagerWatchdog.Schedule(this);
     }

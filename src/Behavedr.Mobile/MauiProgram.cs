@@ -27,23 +27,54 @@ public static class MauiProgram
 #if ANDROID
     private static void RegisterAndroidServices(IServiceCollection services)
     {
-        // Platform signal provider (UsageStats, PackageManager, Lifecycle, Settings)
-        services.AddSingleton<PlatformInjection.AndroidPlatformSignalProvider>();
+        // Ensure process-wide runtime exists before any service resolution
+        AndroidAgentRuntime.EnsureInitialized();
 
-        // Play Integrity attestation
-        services.AddSingleton<PlatformInjection.PlayIntegrityAttestor>();
+        // Factory registrations that bind to the shared AndroidMonitor / injection token
+        services.AddSingleton(_ =>
+        {
+            var ctx = Android.App.Application.Context
+                ?? throw new InvalidOperationException("Android Application.Context is null");
+            return new PlatformInjection.AndroidPlatformSignalProvider(
+                ctx,
+                AndroidAgentRuntime.AndroidMonitor,
+                injectionToken: AndroidAgentRuntime.InjectionToken);
+        });
 
-        // Battery optimization manager
-        services.AddSingleton<PlatformInjection.BatteryOptimizationManager>();
+        services.AddSingleton(sp =>
+        {
+            var ctx = Android.App.Application.Context
+                ?? throw new InvalidOperationException("Android Application.Context is null");
+            return new PlatformInjection.PlayIntegrityAttestor(ctx);
+        });
 
-        // Device Owner / DPM manager
-        services.AddSingleton<PlatformInjection.DeviceOwnerManager>();
+        services.AddSingleton(_ =>
+        {
+            var ctx = Android.App.Application.Context
+                ?? throw new InvalidOperationException("Android Application.Context is null");
+            return new PlatformInjection.BatteryOptimizationManager(ctx);
+        });
 
-        // Supply chain verifier
-        services.AddSingleton<PlatformInjection.SupplyChainVerifier>();
+        services.AddSingleton(_ =>
+        {
+            var ctx = Android.App.Application.Context
+                ?? throw new InvalidOperationException("Android Application.Context is null");
+            return new PlatformInjection.DeviceOwnerManager(ctx);
+        });
 
-        // Update security
-        services.AddSingleton<PlatformInjection.AndroidUpdateSecurity>();
+        services.AddSingleton(_ =>
+        {
+            var ctx = Android.App.Application.Context
+                ?? throw new InvalidOperationException("Android Application.Context is null");
+            return new PlatformInjection.SupplyChainVerifier(ctx);
+        });
+
+        services.AddSingleton(_ =>
+        {
+            var ctx = Android.App.Application.Context
+                ?? throw new InvalidOperationException("Android Application.Context is null");
+            return new PlatformInjection.AndroidUpdateSecurity(ctx);
+        });
     }
 #endif
 }

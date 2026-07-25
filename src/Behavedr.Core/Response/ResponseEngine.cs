@@ -19,6 +19,9 @@ public class ResponseEngine
     private readonly TimeSpan _cooldownPeriod = TimeSpan.FromSeconds(60);
     private readonly object _rateLimitLock = new();
 
+    // v0.2.2 (from Sentinel): global kill budget per rolling minute to stop kill-storms / FP weaponization
+    private readonly Queue<DateTime> _recentKills = new();
+
     public ResponseEngine(ResponsePolicy? policy = null, ILogger<ResponseEngine>? logger = null)
     {
         _policy = policy ?? ResponsePolicy.Default;
@@ -90,11 +93,22 @@ public class ResponseEngine
             if (ct.IsCancellationRequested) break;
             if (!action.IsSupported) continue;
 
-            // President Kill: execute all actions
-            // High: execute non-destructive actions only
+            // President Kill: ProcessKillAction only at president threshold.
+            // AndroidResponseEngine runs at Respond+ (mobile has no separate quarantine action).
             if (level < ResponseLevel.PresidentKill && action is ProcessKillAction)
             {
                 outcomes.Add(ResponseOutcome.Skipped(action.Name, "Score below president-kill threshold"));
+                continue;
+            }
+
+            // Kill budget (Sentinel MaxKillsPerMinute pattern)
+            if (IsKillClassAction(action) && !TryConsumeKillBudget())
+            {
+                _logger.LogWarning(
+                    "Kill budget exhausted ({Max}/min) — demoting {Action} for {Process}",
+                    _policy.MaxKillsPerMinute, action.Name, result.Event.ProcessName);
+                outcomes.Add(ResponseOutcome.Skipped(action.Name,
+                    $"Kill budget exhausted (max {_policy.MaxKillsPerMinute}/min)"));
                 continue;
             }
 
@@ -117,6 +131,28 @@ public class ResponseEngine
         }
 
         return outcomes;
+    }
+
+    private static bool IsKillClassAction(IResponseAction action) =>
+        action is ProcessKillAction or AndroidResponseEngine;
+
+    private bool TryConsumeKillBudget()
+    {
+        var max = _policy.MaxKillsPerMinute;
+        if (max <= 0) return true; // 0 = unlimited
+
+        lock (_rateLimitLock)
+        {
+            var cutoff = DateTime.UtcNow.AddMinutes(-1);
+            while (_recentKills.Count > 0 && _recentKills.Peek() < cutoff)
+                _recentKills.Dequeue();
+
+            if (_recentKills.Count >= max)
+                return false;
+
+            _recentKills.Enqueue(DateTime.UtcNow);
+            return true;
+        }
     }
 
     private ResponseLevel DetermineResponseLevel(DetectionResult result)
@@ -154,11 +190,18 @@ public record ResponsePolicy
     /// <summary>Path for quarantined files.</summary>
     public string QuarantinePath { get; init; } = "quarantine";
 
+    /// <summary>
+    /// Max kill-class actions per rolling minute (0 = unlimited).
+    /// From Sentinel 1.6.0 kill-storm mitigation.
+    /// </summary>
+    public int MaxKillsPerMinute { get; init; } = 15;
+
     public static ResponsePolicy Default => new();
 
     public bool IsValid() =>
         AlertThreshold > 0.0 && AlertThreshold <= 100.0 &&
-        ResponseThreshold > AlertThreshold && ResponseThreshold <= 100.0;
+        ResponseThreshold > AlertThreshold && ResponseThreshold <= 100.0 &&
+        MaxKillsPerMinute >= 0;
 }
 
 public enum ResponseMode

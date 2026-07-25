@@ -45,14 +45,18 @@ public sealed class AndroidPlatformSignalProvider : IDisposable
     public AndroidPlatformSignalProvider(
         Context context,
         AndroidMonitor? androidMonitor = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        string? injectionToken = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _logger = logger ?? NullLogger.Instance;
-        _androidMonitor = androidMonitor;
-        _injectionToken = Guid.NewGuid().ToString("N");
+        // Prefer shared runtime monitor so signals reach the live engine (v0.2.2)
+        _androidMonitor = androidMonitor ?? AndroidAgentRuntime.AndroidMonitor;
+        // Prefer shared runtime token — never mint a second token that invalidates the runtime
+        _injectionToken = injectionToken
+            ?? (AndroidAgentRuntime.IsInitialized ? AndroidAgentRuntime.InjectionToken : Guid.NewGuid().ToString("N"));
 
-        if (_androidMonitor is not null)
+        if (_androidMonitor is not null && !string.IsNullOrEmpty(_injectionToken))
             _androidMonitor.SetInjectionToken(_injectionToken);
 
         _lifecycleHandler = new LifecycleCallbackHandler(_logger);
@@ -92,9 +96,14 @@ public sealed class AndroidPlatformSignalProvider : IDisposable
             ScanNetworkState(signals);
             ScanLifecycleAnomalies(signals);
 
-            if (signals.Count > 0 && _androidMonitor is not null)
+            if (signals.Count > 0)
             {
-                _androidMonitor.InjectPlatformSignals(signals, _injectionToken);
+                // Prefer process-wide runtime so inject works even if monitor ref is stale
+                if (AndroidAgentRuntime.IsInitialized)
+                    AndroidAgentRuntime.InjectSignals(signals);
+                else if (_androidMonitor is not null)
+                    _androidMonitor.InjectPlatformSignals(signals, _injectionToken);
+
                 _logger.LogDebug("[PlatformSignalProvider] Injected {Count} platform signals", signals.Count);
             }
         }

@@ -15,8 +15,8 @@ using Microsoft.Extensions.Logging;
 ///   Key is NOT on the filesystem and cannot be read via /proc or disk access.
 ///   Falls back to file-permission (chmod 600) if keyring is unavailable (containers).
 ///
-/// macOS: File-permission-based (chmod 600) with machine-id binding.
-///   TODO: Keychain Services integration for hardware-backed keys on Apple Silicon.
+/// macOS: Keychain Services (security CLI / System Keychain; Secure Enclave on Apple Silicon).
+/// Android: Android Keystore (TEE/StrongBox) via platform bridge when available.
 ///
 /// Key file format:
 ///   Unprotected (legacy): raw base64 key

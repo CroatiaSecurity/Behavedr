@@ -86,6 +86,9 @@ public static class PlatformMonitors
 
             // v0.1.2: Scheduled task and WMI persistence monitoring (RT-10)
             monitors.Add(new ScheduledTaskMonitor());
+
+            // v0.2.2: BYOVD / vulnerable driver load detection (from Sentinel)
+            monitors.Add(new DriverLoadMonitor());
         }
 
         // v0.1.5: Linux full detection suite (cross-platform parity)

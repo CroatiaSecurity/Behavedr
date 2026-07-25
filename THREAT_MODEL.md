@@ -1,14 +1,14 @@
 # Behavedr — Threat Model
 
-Version: 0.1.4
-Last updated: 2026-07-21
+Version: 0.2.2
+Last updated: 2026-07-25
 Classification: Public
 
 ---
 
 ## 1. System Overview
 
-Behavedr is a userland behavioral endpoint detection and response (EDR) agent. It runs as a Windows Service (SYSTEM context) or standalone daemon on Linux/macOS. It collects telemetry from ETW providers, WMI, and direct system APIs, scores behavioral signals against correlation rules, and executes response actions (process termination, file quarantine) when thresholds are exceeded.
+Behavedr is a userland behavioral endpoint detection and response (EDR) agent. It runs as a Windows Service (SYSTEM context), standalone daemon on Linux/macOS, or MAUI foreground service on Android (iOS preview). It collects telemetry from ETW providers, WMI, /proc, kqueue, and platform APIs, scores behavioral signals against correlation rules, and executes response actions (process termination, file quarantine, network isolation) when thresholds are exceeded.
 
 ### Components
 

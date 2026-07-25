@@ -7,7 +7,9 @@ dist/
 .DS_Store
 .vs/
 TestResults/
-packages.lock.json
+
+# Package lock files ARE committed for supply-chain reproducibility
+# (RestorePackagesWithLockFile + CI --locked-mode)
 
 # Certificates — never commit private keys or PFX files
 certs/
