@@ -83,10 +83,23 @@ try
         responsePolicy = ResponsePolicy.Default;
     }
     builder.Services.AddSingleton(responsePolicy);
-    builder.Services.AddSingleton<ResponseEngine>();
+    builder.Services.AddSingleton<ResponseAuditWriter>();
+    builder.Services.AddSingleton<Behavedr.Core.Telemetry.BehavedrMetrics>();
+    builder.Services.AddSingleton<ResponseEngine>(sp =>
+        new ResponseEngine(
+            sp.GetRequiredService<ResponsePolicy>(),
+            sp.GetService<ILogger<ResponseEngine>>(),
+            sp.GetRequiredService<ResponseAuditWriter>(),
+            sp.GetRequiredService<Behavedr.Core.Telemetry.BehavedrMetrics>()));
     builder.Services.AddSingleton<ProcessKillAction>();
     builder.Services.AddSingleton<FileQuarantineAction>();
     builder.Services.AddSingleton<IsolationResponseEngine>();
+
+    // v0.2.6: Windows userland network isolation (advfirewall)
+    if (OperatingSystem.IsWindows())
+    {
+        builder.Services.AddSingleton<WindowsNetworkIsolation>();
+    }
 
     // v0.2.0: Linux nftables-based network isolation
     if (OperatingSystem.IsLinux())
@@ -169,6 +182,12 @@ try
     responseEngine.RegisterAction(host.Services.GetRequiredService<FileQuarantineAction>());
     // v0.2.2 fix: IsolationResponseEngine was DI-registered but never wired into ResponseEngine
     responseEngine.RegisterAction(host.Services.GetRequiredService<IsolationResponseEngine>());
+
+    // v0.2.6: Windows network isolation
+    if (OperatingSystem.IsWindows())
+    {
+        responseEngine.RegisterAction(host.Services.GetRequiredService<WindowsNetworkIsolation>());
+    }
 
     // v0.2.0: Register Linux network isolation response action
     if (OperatingSystem.IsLinux())

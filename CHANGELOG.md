@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.2.6] — 2026-07-25
+
+### Protection grade lift (steady 0.2.x — no major version jump)
+
+Userland protection depth and response completeness. **Still not** EndpointSecurity, eBPF CO-RE, commercial OS certs, or iOS product EDR — those remain structural ceilings.
+
+#### Response & isolation
+
+- **`WindowsNetworkIsolation`**: advfirewall block of C2 IPs and process image outbound (userland substitute for WFP callout).
+- **Android VPN auto-isolate + Device Owner disable** via `AndroidResponseEngine.PlatformResponseHook` wired in `AndroidAgentRuntime`.
+- **`IsolationResponseEngine`**: parse ISO paths and Docker container IDs from signals; VM threat path.
+- **`ProcessKillAction`**: Unix system-path allowlist; Windows name re-check immediately before kill.
+- **`ResponseAuditWriter`**: append-only HMAC-capable JSONL audit of every response outcome.
+
+#### Detection / self-protect
+
+- **AntiTamperGuard**: SafeBoot persistence key missing + multi-profile firewall OFF signals.
+- **MacOSKqueueMonitor**: PID discovery **200ms** (was 500ms).
+- **Distinct policy RSA key** baked into `PolicySignatureVerifier` (no longer dual-use with update key). Public: `policy-signing-key.pub.pem`.
+
+#### Observability & packaging
+
+- **`BehavedrMetrics` wired** into `MonitoringService` and `ResponseEngine` (was dead code).
+- **`docs/MITRE_COVERAGE.md`**: technique → monitor map.
+- **Windows** `packaging/windows/verify-install-acls.ps1` post-install ACL check.
+- **macOS** `packaging/unix/pf-behavedr-block.conf` pf anchor template.
+
+#### Tests
+
+- Response hardening tests: isolation parse, audit writer, policy key distinct, Windows isolation support.
+
+#### Honest residual gaps
+
+- No EndpointSecurity / eBPF / WFP kernel filter / iOS production / paid Authenticode-notarize without certs.
+
 ## [0.2.5] — 2026-07-25
 
 ### Update signing key material (no commercial certificates required)

@@ -28,6 +28,13 @@ public class ProcessKillAction : IResponseAction
     private static readonly string WinDir =
         Environment.GetFolderPath(Environment.SpecialFolder.Windows).TrimEnd('\\') + "\\";
 
+    private static readonly string[] UnixSystemPrefixes =
+    {
+        "/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
+        "/usr/libexec/", "/System/", "/Library/Apple/",
+        "/lib/", "/lib64/", "/usr/lib/",
+    };
+
     public ProcessKillAction(ILogger<ProcessKillAction>? logger = null)
     {
         _logger = logger ?? NullLogger<ProcessKillAction>.Instance;
@@ -70,10 +77,9 @@ public class ProcessKillAction : IResponseAction
                     try
                     {
                         using var checkProc = Process.GetProcessById(checkPid);
-                        var imagePath = checkProc.MainModule?.FileName;
-                        isLegitimateSystemProcess = imagePath != null &&
-                            (imagePath.StartsWith(WinDir, StringComparison.OrdinalIgnoreCase) ||
-                             imagePath.Contains("Behavedr", StringComparison.OrdinalIgnoreCase));
+                        var imagePath = checkProc.MainModule?.FileName
+                            ?? TryResolveUnixExe(checkPid);
+                        isLegitimateSystemProcess = imagePath != null && IsSystemImagePath(imagePath);
                     }
                     catch
                     {
@@ -144,6 +150,25 @@ public class ProcessKillAction : IResponseAction
                 var verifyResult = VerifyMacOSProcessBeforeKill(pid, processName);
                 if (verifyResult is not null)
                     return Task.FromResult(verifyResult);
+            }
+
+            // Windows: re-check name + image immediately before Kill to shrink PID-reuse window
+            if (OperatingSystem.IsWindows())
+            {
+                try
+                {
+                    process.Refresh();
+                    if (!process.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Task.FromResult(ResponseOutcome.Skipped(Name,
+                            $"PID reused before kill: expected {processName}, found {process.ProcessName}"));
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    return Task.FromResult(ResponseOutcome.Ok(Name,
+                        $"Process {processName} (PID {pid}) already exited"));
+                }
             }
 
             _logger.LogWarning("KILLING process: {Process} (PID {Pid}) — score={Score:F1}",
@@ -321,4 +346,35 @@ public class ProcessKillAction : IResponseAction
     /// </summary>
     [DllImport("libproc.dylib", EntryPoint = "proc_pidpath")]
     private static extern int proc_pidpath(int pid, byte[] buffer, uint buffersize);
+
+    private static bool IsSystemImagePath(string imagePath)
+    {
+        if (imagePath.Contains("Behavedr", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (OperatingSystem.IsWindows())
+            return imagePath.StartsWith(WinDir, StringComparison.OrdinalIgnoreCase);
+
+        var normalized = imagePath.Replace('\\', '/');
+        foreach (var prefix in UnixSystemPrefixes)
+        {
+            if (normalized.StartsWith(prefix, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
+    private static string? TryResolveUnixExe(int pid)
+    {
+        if (!OperatingSystem.IsLinux())
+            return null;
+        try
+        {
+            return File.ResolveLinkTarget($"/proc/{pid}/exe", returnFinalTarget: true)?.ToString();
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }

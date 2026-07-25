@@ -77,6 +77,8 @@ public class AntiTamperGuard : IPlatformMonitor
             CheckServiceRegistration(signals);
             CheckEtwSessionHealth(signals);
             CheckCriticalFunctionIntegrity(signals);
+            CheckSafeBootPersistence(signals);
+            CheckFirewallTamper(signals);
             _lastCheck = DateTime.UtcNow;
         }
 
@@ -166,6 +168,79 @@ public class AntiTamperGuard : IPlatformMonitor
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to re-register service");
+        }
+    }
+
+    /// <summary>
+    /// Detect removal of SafeBoot Minimal/Network service keys that keep Behavedr alive in Safe Mode.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private void CheckSafeBootPersistence(List<Signal> signals)
+    {
+        try
+        {
+            foreach (var mode in new[] { "Minimal", "Network" })
+            {
+                var path = $@"SYSTEM\CurrentControlSet\Control\SafeBoot\{mode}\Behavedr";
+                using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(path);
+                if (key is null)
+                {
+                    signals.Add(new Signal($"safeboot_persistence_missing:{mode}", 80, 0.85));
+                    _logger.LogWarning("SECURITY: SafeBoot {Mode} persistence key missing for Behavedr", mode);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[AntiTamper] SafeBoot check error");
+        }
+    }
+
+    /// <summary>
+    /// Detect sudden disablement of Windows Firewall profiles (common silencing technique).
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private void CheckFirewallTamper(List<Signal> signals)
+    {
+        try
+        {
+            using var proc = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "netsh",
+                    Arguments = "advfirewall show allprofiles state",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true,
+                },
+            };
+            proc.Start();
+            var output = proc.StandardOutput.ReadToEnd();
+            if (!proc.WaitForExit(3000))
+            {
+                try { proc.Kill(); } catch { }
+                return;
+            }
+
+            // Count "OFF" states across Domain/Private/Public
+            var offCount = 0;
+            foreach (var line in output.Split('\n'))
+            {
+                if (line.Contains("State", StringComparison.OrdinalIgnoreCase) &&
+                    line.Contains("OFF", StringComparison.OrdinalIgnoreCase))
+                    offCount++;
+            }
+
+            if (offCount >= 2)
+            {
+                signals.Add(new Signal($"firewall_profiles_disabled:{offCount}", 70, 0.8));
+                _logger.LogWarning("SECURITY: Multiple Windows Firewall profiles are OFF ({Count})", offCount);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[AntiTamper] Firewall check error");
         }
     }
 

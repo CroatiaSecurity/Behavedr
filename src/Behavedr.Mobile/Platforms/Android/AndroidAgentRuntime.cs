@@ -1,10 +1,13 @@
 #if ANDROID
+using Android.Content;
 using Behavedr.Core;
 using Behavedr.Core.Monitors;
 using Behavedr.Core.Models;
 using Behavedr.Core.Response;
+using Behavedr.Mobile.PlatformInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Text.RegularExpressions;
 
 namespace Behavedr.Mobile;
 
@@ -101,12 +104,89 @@ public static class AndroidAgentRuntime
             _responseEngine = new ResponseEngine(policy);
             _responseEngine.RegisterAction(new AndroidResponseEngine());
 
+            // v0.2.6: VPN auto-isolate + Device Owner disable on high score (non-root path)
+            WirePlatformResponseHook();
+
             _initialized = true;
             _logger.LogInformation(
-                "[AndroidAgentRuntime] Initialized: {MonitorCount} monitors, injection={HasInjection}, response=Active",
+                "[AndroidAgentRuntime] Initialized: {MonitorCount} monitors, injection={HasInjection}, response=Active, platformHook=on",
                 _engine.RegisteredMonitors.Count,
                 _androidMonitor is not null);
         }
+    }
+
+    private static void WirePlatformResponseHook()
+    {
+        AndroidResponseEngine.PlatformResponseHook = async (uid, packageOrProcess, result, ct) =>
+        {
+            await Task.Yield();
+            var parts = new List<string>();
+
+            try
+            {
+                // Block domains mentioned in signals (DGA / C2 style)
+                var domainRx = new Regex(
+                    @"\b([a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?)+)\b",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                var blocked = 0;
+                foreach (var signal in result.Signals)
+                {
+                    foreach (Match m in domainRx.Matches(signal.Type))
+                    {
+                        var d = m.Value.ToLowerInvariant();
+                        if (d is "localhost" or "localdomain") continue;
+                        if (d.EndsWith(".local", StringComparison.Ordinal)) continue;
+                        BehavedrVpnService.BlockDomain(d);
+                        blocked++;
+                        if (blocked >= 16) break;
+                    }
+                    if (blocked >= 16) break;
+                }
+                if (blocked > 0)
+                    parts.Add($"VPN blocked {blocked} domain(s)");
+
+                if (uid > 0 && uid != 0)
+                {
+                    BehavedrVpnService.IsolateUid(uid);
+                    parts.Add($"VPN isolated UID {uid}");
+                }
+
+                // Device Owner: disable the package when enrolled
+                var ctx = Android.App.Application.Context;
+                if (ctx is not null)
+                {
+                    var dom = new DeviceOwnerManager(ctx, _logger);
+                    if (dom.IsDeviceOwner || dom.IsProfileOwner)
+                    {
+                        var pkg = GuessPackageName(packageOrProcess);
+                        if (!string.IsNullOrEmpty(pkg) &&
+                            !string.Equals(pkg, ctx.PackageName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            var disable = dom.DisableApplication(pkg);
+                            if (disable.Success)
+                                parts.Add($"DO disabled {pkg}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[AndroidAgentRuntime] Platform response hook error");
+            }
+
+            return parts.Count > 0 ? string.Join("; ", parts) : null;
+        };
+    }
+
+    private static string GuessPackageName(string processOrPackage)
+    {
+        // Android process names are often package or package:suffix
+        if (string.IsNullOrWhiteSpace(processOrPackage))
+            return "";
+        var p = processOrPackage.Trim();
+        var colon = p.IndexOf(':');
+        if (colon > 0) p = p[..colon];
+        return p;
     }
 
     /// <summary>

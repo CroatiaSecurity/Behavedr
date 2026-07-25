@@ -124,12 +124,12 @@ public class UpdateSecurityTests
     }
 
     [Fact]
-    public void PolicySignatureVerifier_IsConfigured_AndDetectsSharedUpdateKey()
+    public void PolicySignatureVerifier_IsConfigured_AndDistinctFromUpdateKey()
     {
         Assert.True(PolicySignatureVerifier.IsProductionKeyConfigured());
         Assert.NotNull(PolicySignatureVerifier.GetPublicKeyPem());
-        // Until offline ceremony rotates a distinct policy key, dual-use is expected and reported.
-        Assert.True(PolicySignatureVerifier.IsUsingSharedUpdateKey());
+        // v0.2.6: distinct policy key baked in (blast-radius isolation).
+        Assert.False(PolicySignatureVerifier.IsUsingSharedUpdateKey());
     }
 
     [Fact]

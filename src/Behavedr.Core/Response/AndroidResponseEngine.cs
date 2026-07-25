@@ -28,6 +28,13 @@ public class AndroidResponseEngine : IResponseAction
     private int _activeIptablesRules;
     private const int MaxIptablesRules = 50;
 
+    /// <summary>
+    /// Optional platform hook (wired by MAUI): VPN isolate, Device Owner disable, etc.
+    /// Args: uid (or -1), package/process name, detection result.
+    /// Returns human-readable outcome message or null if hook did nothing.
+    /// </summary>
+    public static Func<int, string, DetectionResult, CancellationToken, Task<string?>>? PlatformResponseHook { get; set; }
+
     public string Name => "AndroidResponse";
     public bool IsSupported => OperatingSystem.IsAndroid();
 
@@ -56,6 +63,21 @@ public class AndroidResponseEngine : IResponseAction
             return ResponseOutcome.Skipped(Name, $"Protected system process: {processName}");
 
         _hasRoot ??= CheckRootAccess();
+        var uid = GetProcessUid(pidInt);
+
+        // Always try non-root platform isolation (VPN / Device Owner) on high scores
+        string? platformMsg = null;
+        if (PlatformResponseHook is not null && result.Score >= 50.0)
+        {
+            try
+            {
+                platformMsg = await PlatformResponseHook(uid, processName, result, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[AndroidResponse] Platform hook failed");
+            }
+        }
 
         if (_hasRoot == true)
         {
@@ -65,11 +87,21 @@ public class AndroidResponseEngine : IResponseAction
                 // Also isolate network for the app UID to prevent re-connection
                 await IsolateNetworkRoot(pidInt, ct);
             }
+            if (platformMsg is not null && killResult.Success)
+                return ResponseOutcome.Ok(Name, $"{killResult.Message}; {platformMsg}");
             return killResult;
         }
         else
         {
-            return await ForceStopApp(processName, ct);
+            var force = await ForceStopApp(processName, ct);
+            if (platformMsg is not null)
+            {
+                var combined = force.Success
+                    ? $"{force.Message}; {platformMsg}"
+                    : $"{platformMsg} (force-stop: {force.Message})";
+                return ResponseOutcome.Ok(Name, combined);
+            }
+            return force;
         }
     }
 

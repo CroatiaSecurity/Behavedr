@@ -7,13 +7,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 /// <summary>
 /// Verifies RSA-PSS SHA-256 signatures on server-issued policy updates.
 ///
-/// Key separation (v0.2.4+):
-/// Policy verification uses its own public key PEM so a compromise of the
-/// <em>update</em> signing key does not automatically authorize policy injection,
-/// and vice versa. Until a distinct policy key is provisioned, the policy key
-/// intentionally matches the update key and <see cref="IsUsingSharedUpdateKey"/>
-/// returns true. Operators should rotate to a dedicated policy key pair for
-/// production multi-control environments (see docs/SUPPLY_CHAIN.md).
+/// Key separation (v0.2.6+):
+/// Policy verification uses a <b>distinct</b> RSA-4096 public key from package
+/// updates so compromise of the update signing key does not authorize policy
+/// injection. Private policy key: policy-signing-key.pem (gitignored).
 ///
 /// Signing workflow (server side):
 ///   1. Canonicalize policy JSON (exclude Signature field)
@@ -22,23 +19,22 @@ using Microsoft.Extensions.Logging.Abstractions;
 /// </summary>
 public static class PolicySignatureVerifier
 {
-    // Dedicated policy public key. When equal to the update key PEM, dual-use is active.
-    // Replace with a distinct RSA-4096 public key after offline ceremony.
-    // Interim: same free RSA-4096 material as update signing until a second pair is provisioned.
+    // Distinct RSA-4096 policy public key (v0.2.6). Private: policy-signing-key.pem (never commit).
+    // Blast-radius isolation from update-signing-key material.
     private const string PublicKeyPem = """
         -----BEGIN PUBLIC KEY-----
-        MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAw7vJ6R8Cd9Nm5nSnefrr
-        t7pXvPw8bYC3vn7n14l3S34MdhGzxOCdyU+kkCggNbNLmj8GGqex+EPt0pfEzvzj
-        h+mi0doKMkHCEB5h/eu5bZn86xc2twbKbhXU5FWSh0BZMejcltAEhVCig/o5LlIv
-        is0Xf/On4IIUW1KAd7/mJAkjW/4OpyyhJ7KKpttCXa6loR0atCu9JA6YAne7yrsZ
-        EdA9jOV+i5EsMassQ2RLhMTm7tLoWBDFL6hu06v5KPqR0dRPrVnq/QTePpVQq0fj
-        Ax4QLld8oPto1F6Bwv82Ch9U4ZE+uyzdp8uxCbdbPsOeV92bTUdq8gVH0kZOTeUQ
-        4NNoYJIozA5hOtn09oy9wJKaODF+5YzV44la8roaAMgWBfUMIcmZOUWtVidbcB0W
-        oo6Pe4rFbW6Pcwd5oTY0Zjff3zuN+Yxy15V6csQwV23HWZRrvdFvucthNbyCVCjd
-        ZR8Yg4I3NkTzUiBbwe6/XA7FwlOYX6/2CqE4kaXKKjR893Kh7dSVXIF3LUEdBN8t
-        rlNybhR6yjNrcOdZ0C8OIXrwqQK5Tt+T4b/JdMvZeYHmL6uc5+XpL0hHvqSYqqWZ
-        PIr5ASAaFo77CPr02MSvQA3VQe3bA8LhFPh8mO6t7MyZtq/WysMPLPomHCo6BeAP
-        uMbu9EG1q/hZqhtso8g4iT0CAwEAAQ==
+        MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA0qUtBHABZdNU0jDxqO4J
+        UvYMec6CsNIzYfFS74wxkIsAivjmzmP85nAfifxmMvIULGIbP9eFvNQ11GgUClQp
+        GbBNF8VkrjmmO81JD1o0oiIM8EA0RQp1479hdmFLen8WTbdj7jHTMbw7516fS8fV
+        2QAcByVtrGtAkHOGmHPbWUF1rKMeWIWscfrAgxF+9QeFWAb6LxCzu1igThMiGYsc
+        dTgi1O0IcjI2YZmKQIVpQZlEiSG7/QMKizYI17Psiwsxb6KRWqzW4nqv3w/Lx1St
+        Pf647XjpnMB/w7Ip8W3AEnJ6I8UiPRGbh6OygyRsKrXa3+hi8J+tNWsxkC/GEY48
+        VfjH4WL/aWBNlKmSbjiixbvKbxIAYBn20qAighgtygq8sa9ynj4ZW6Jy1S8HUend
+        e9NNNnSr1R7Q2qKfZNyVXqVSMsRCs/2GU8ErpVcic2ulhjBrSn2eIWfmL86Eb9Ku
+        ydFEMEfhDS6T0E/ybjMVZIab4RM+/AGE/DU7EPWobwUPUG79YMUlsS4bHPvvZvP9
+        zQwQDWipDUrJ0JcYnKMCP4TuNfXwbfpebdldrfTmMheYuExS5B+1YuTLQzdnYqV1
+        xvkIYT8r9GlLvTH2h+49LQ2Le2wbObNlbTAxFNKUZgtgv4uiGn1PcnQjXVngosvi
+        WBLLP2mOEPOy/Cs3HW58K0kCAwEAAQ==
         -----END PUBLIC KEY-----
         """;
 

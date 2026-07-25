@@ -2,7 +2,7 @@
 
 Behavioral endpoint detection and response agent. Monitors process activity, network connections, and system integrity in real time. Produces scored detections and executes configurable response actions.
 
-**Current version: 0.2.5**
+**Current version: 0.2.6**
 
 ## Platforms
 
@@ -58,6 +58,7 @@ dotnet publish src/Behavedr.Agent/Behavedr.Agent.csproj -c Release -r win-x64 --
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Threat model, attack surface, trust boundaries |
 | [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md) | Build integrity, signing, secrets, operator verification |
 | [docs/RELEASE.md](docs/RELEASE.md) | Release runbook |
+| [docs/MITRE_COVERAGE.md](docs/MITRE_COVERAGE.md) | ATT&CK technique map (userland) |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 | [docs/](docs/) | Architecture decisions, audit reports |
 

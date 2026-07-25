@@ -178,9 +178,14 @@ public sealed class StartupSelfTest : IHostedService
                 passed++;
                 if (PolicySignatureVerifier.IsUsingSharedUpdateKey())
                 {
+                    _logger.LogWarning(
+                        "[StartupSelfTest] Policy and update signing keys are STILL shared — " +
+                        "rotate to distinct keys (see docs/SUPPLY_CHAIN.md)");
+                }
+                else
+                {
                     _logger.LogInformation(
-                        "[StartupSelfTest] Policy and update signing keys are currently shared — " +
-                        "rotate to distinct keys for blast-radius isolation (see docs/SUPPLY_CHAIN.md)");
+                        "[StartupSelfTest] Policy signing key is distinct from update key (blast-radius isolation)");
                 }
             }
             else

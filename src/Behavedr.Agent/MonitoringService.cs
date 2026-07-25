@@ -1,10 +1,12 @@
 namespace Behavedr.Agent;
 
+using System.Diagnostics;
 using Behavedr.Core;
 using Behavedr.Core.Communication;
 using Behavedr.Core.Models;
 using Behavedr.Core.Platform;
 using Behavedr.Core.Response;
+using Behavedr.Core.Telemetry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -20,6 +22,7 @@ public sealed class MonitoringService : BackgroundService
     private readonly IBehavedrClient _client;
     private readonly OfflineBuffer _offlineBuffer;
     private readonly CommunicationConfig _commConfig;
+    private readonly BehavedrMetrics _metrics;
     private readonly ILogger<MonitoringService> _logger;
     private readonly TimeSpan _interval;
 
@@ -29,6 +32,7 @@ public sealed class MonitoringService : BackgroundService
         IBehavedrClient client,
         OfflineBuffer offlineBuffer,
         CommunicationConfig commConfig,
+        BehavedrMetrics metrics,
         IConfiguration configuration,
         ILogger<MonitoringService> logger)
     {
@@ -37,6 +41,7 @@ public sealed class MonitoringService : BackgroundService
         _client = client;
         _offlineBuffer = offlineBuffer;
         _commConfig = commConfig;
+        _metrics = metrics;
         _logger = logger;
 
         var seconds = configuration.GetValue("Agent:MonitoringIntervalSeconds", 5);
@@ -86,6 +91,7 @@ public sealed class MonitoringService : BackgroundService
     {
         // Update watchdog heartbeat
         AgentWatchdog.LastMonitoringHeartbeat = DateTime.UtcNow;
+        var sw = Stopwatch.StartNew();
 
         // Create a synthetic event representing the current monitoring cycle
         var evt = DetectionEvent.Create(
@@ -96,6 +102,14 @@ public sealed class MonitoringService : BackgroundService
             isUserTargeted: false);
 
         var result = await _engine.ProcessEventAsync(evt, ct);
+
+        _metrics.RecordCycleCompleted();
+        _metrics.RecordSignalsCollected(result.Signals.Count);
+        _metrics.RecordScore(result.Score);
+        if (result.Score > _responseEngine.Policy.AlertThreshold)
+            _metrics.RecordDetectionTriggered();
+        if (result.PresidentKill)
+            _metrics.RecordPresidentKill();
 
         // v0.1.3 (C-1 fix): Execute response actions when score warrants it
         var responses = await _responseEngine.RespondAsync(result, ct);
@@ -143,6 +157,9 @@ public sealed class MonitoringService : BackgroundService
                 await _offlineBuffer.EnqueueAsync(report, ct);
             }
         }
+
+        sw.Stop();
+        _metrics.RecordCycleDuration(sw.Elapsed.TotalMilliseconds);
 
         if (result.Signals.Count > 0)
         {

@@ -13,6 +13,8 @@ public class ResponseEngine
     private readonly List<IResponseAction> _actions = new();
     private readonly ILogger<ResponseEngine> _logger;
     private readonly ResponsePolicy _policy;
+    private readonly ResponseAuditWriter _audit;
+    private readonly Telemetry.BehavedrMetrics? _metrics;
 
     // Rate limiting: track recent response targets to prevent re-executing on same PID/path
     private readonly Dictionary<string, DateTime> _recentTargets = new();
@@ -22,10 +24,16 @@ public class ResponseEngine
     // v0.2.2 (from Sentinel): global kill budget per rolling minute to stop kill-storms / FP weaponization
     private readonly Queue<DateTime> _recentKills = new();
 
-    public ResponseEngine(ResponsePolicy? policy = null, ILogger<ResponseEngine>? logger = null)
+    public ResponseEngine(
+        ResponsePolicy? policy = null,
+        ILogger<ResponseEngine>? logger = null,
+        ResponseAuditWriter? audit = null,
+        Telemetry.BehavedrMetrics? metrics = null)
     {
         _policy = policy ?? ResponsePolicy.Default;
         _logger = logger ?? NullLogger<ResponseEngine>.Instance;
+        _audit = audit ?? new ResponseAuditWriter(logger: _logger);
+        _metrics = metrics;
     }
 
     public IReadOnlyList<IResponseAction> RegisteredActions => _actions;
@@ -62,6 +70,7 @@ public class ResponseEngine
                 _logger.LogWarning("ALERT (alert-only mode): {ProcessName} scored {Score:F1} — would trigger {Level}",
                     result.Event.ProcessName, result.Score, level);
                 outcomes.Add(ResponseOutcome.Skipped("policy", $"Alert-only mode active. Score={result.Score:F1}, level={level}"));
+                _audit.Append(result, outcomes, _policy.Mode.ToString());
             }
             return outcomes;
         }
@@ -119,6 +128,8 @@ public class ResponseEngine
 
                 var outcome = await action.ExecuteAsync(result, ct);
                 outcomes.Add(outcome);
+                _metrics?.RecordResponseExecuted(
+                    outcome.Success && !outcome.Message.StartsWith("Skipped:", StringComparison.Ordinal));
 
                 _logger.LogInformation("Response action {Action}: {Success} — {Message}",
                     action.Name, outcome.Success ? "SUCCESS" : "FAILED", outcome.Message);
@@ -127,9 +138,11 @@ public class ResponseEngine
             {
                 _logger.LogError(ex, "Response action {Action} threw exception", action.Name);
                 outcomes.Add(ResponseOutcome.Failed(action.Name, ex.Message));
+                _metrics?.RecordResponseExecuted(false);
             }
         }
 
+        _audit.Append(result, outcomes, _policy.Mode.ToString());
         return outcomes;
     }
 

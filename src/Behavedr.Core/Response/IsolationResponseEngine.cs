@@ -29,24 +29,83 @@ public class IsolationResponseEngine : IResponseAction
     /// </summary>
     public async Task<ResponseOutcome> ExecuteAsync(DetectionResult result, CancellationToken ct = default)
     {
-        // Check for ISO-mounted threat signals
+        // ISO-mounted threat: type may embed path as iso_mount:/path/to.iso or iso_path:...
         var isoSignal = result.Signals.FirstOrDefault(s =>
-            s.Type.Contains("iso_mount", StringComparison.OrdinalIgnoreCase));
+            s.Type.Contains("iso_mount", StringComparison.OrdinalIgnoreCase) ||
+            s.Type.Contains("iso_path", StringComparison.OrdinalIgnoreCase));
         if (isoSignal is not null && int.TryParse(result.Event.ProcessId, out var isoPid))
         {
-            await HandleIsoThreatAsync(isoPid, "");
-            return ResponseOutcome.Ok(Name, $"ISO threat handled for PID {isoPid}");
+            var isoPath = ExtractIsoPath(isoSignal.Type) ?? ExtractIsoPath(result.Event.ProcessName);
+            await HandleIsoThreatAsync(isoPid, isoPath ?? "");
+            return ResponseOutcome.Ok(Name,
+                string.IsNullOrEmpty(isoPath)
+                    ? $"ISO threat process killed (PID {isoPid}); path unknown for dismount"
+                    : $"ISO threat handled for PID {isoPid}, path {isoPath}");
         }
 
-        // Check for Docker-based threat signals
+        // Docker: type contains docker:containerId or docker_id:xxx
         var dockerSignal = result.Signals.FirstOrDefault(s =>
             s.Type.Contains("docker", StringComparison.OrdinalIgnoreCase));
         if (dockerSignal is not null)
         {
-            return ResponseOutcome.Skipped(Name, "Docker container ID not available in signal");
+            var containerId = ExtractDockerId(dockerSignal.Type);
+            if (containerId is null)
+                return ResponseOutcome.Skipped(Name, "Docker signal present but container ID not parseable");
+
+            await HandleDockerThreatAsync(containerId);
+            return ResponseOutcome.Ok(Name, $"Docker container isolation attempted: {containerId}");
+        }
+
+        // VM host process: vm_threat / hypervisor signals with PID
+        var vmSignal = result.Signals.FirstOrDefault(s =>
+            s.Type.Contains("vm_threat", StringComparison.OrdinalIgnoreCase) ||
+            s.Type.Contains("hypervisor", StringComparison.OrdinalIgnoreCase));
+        if (vmSignal is not null && int.TryParse(result.Event.ProcessId, out var vmPid) && vmPid > 4)
+        {
+            await HandleVmThreatAsync(vmPid, result.Event.ProcessName);
+            return ResponseOutcome.Ok(Name, $"VM host process terminated: PID {vmPid}");
         }
 
         return ResponseOutcome.Skipped(Name, "No isolation-related threat signals");
+    }
+
+    private static string? ExtractIsoPath(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return null;
+        // Prefer explicit path after iso_mount: or iso_path:
+        foreach (var marker in new[] { "iso_mount:", "iso_path:", "path:" })
+        {
+            var idx = text.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = text[(idx + marker.Length)..].Trim();
+            var end = rest.IndexOfAny([' ', '\t', '|', ';']);
+            var path = end > 0 ? rest[..end] : rest;
+            if (path.EndsWith(".iso", StringComparison.OrdinalIgnoreCase) || path.Contains('/') || path.Contains('\\'))
+                return path;
+        }
+        // Bare .iso path token
+        foreach (var token in text.Split([' ', '|', ';', ','], StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (token.EndsWith(".iso", StringComparison.OrdinalIgnoreCase))
+                return token;
+        }
+        return null;
+    }
+
+    private static string? ExtractDockerId(string type)
+    {
+        // docker:abc123 or docker_id:abc123 or container:abc123
+        foreach (var marker in new[] { "docker_id:", "docker:", "container:" })
+        {
+            var idx = type.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = type[(idx + marker.Length)..];
+            var end = rest.IndexOfAny([' ', '|', ';', ',']);
+            var id = (end > 0 ? rest[..end] : rest).Trim();
+            if (id.Length >= 8 && IsValidDockerId(id))
+                return id;
+        }
+        return null;
     }
 
     /// <summary>
