@@ -15,11 +15,12 @@ namespace Behavedr.Mobile.PlatformInjection;
 internal static class AndroidCertPins
 {
     /// <summary>
-    /// Optional publisher pins (comma-separated hex SHA-256 of the APK signing cert).
-    /// Leave empty for zero-config self-pin. Fill once per release keystore.
-    /// Real cert fingerprints are 64 hex chars from: apksigner verify --print-certs
+    /// Publisher APK signing cert SHA-256 (hex, no colons).
+    /// Source: keys/android/behavedr-release (CN=Behavedr Android Release / CroatiaSecurity).
+    /// Verify: openssl dgst -sha256 -hex keys/android/behavedr-release.cert.der
     /// </summary>
-    private const string BakedInPins = "326499";
+    private const string BakedInPins =
+        "7581EDDD52412F72786AA9B3274B5855801FF73293EC97DB2FBBCE8F5988B66F";
 
     public static string[] VendorFingerprints
     {
@@ -44,7 +45,7 @@ internal static class AndroidCertPins
                 .Replace(" ", "", StringComparison.Ordinal)
                 .Trim()
                 .ToUpperInvariant();
-            if (n.Length >= 1 && !list.Contains(n, StringComparer.OrdinalIgnoreCase))
+            if (n.Length >= 32 && !list.Contains(n, StringComparer.OrdinalIgnoreCase))
                 list.Add(n);
         }
     }
