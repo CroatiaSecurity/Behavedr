@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.2.8] — 2026-07-25
+
+### “0.5-depth” capabilities as next patch (not named 0.5)
+
+Continues platform depth toward full product bar while keeping **0.2.x patch versioning**.
+
+#### Linux eBPF suite expansion
+- `LinuxEbpfFileMonitor` — sensitive path open sampling (`/etc/shadow`, ld.so.preload, ssh keys, …)
+- `LinuxEbpfNetMonitor` — connect-storm + suspicious port telemetry from `/proc/net/*`
+- Complements exec eBPF + cn_proc + fanotify
+
+#### macOS EndpointSecurity AUTH path
+- Optional `BEHAVEDR_ES_AUTH=1` subscribes AUTH_EXEC/AUTH_OPEN
+- Bridge denies only conservative denylist (tmp droppers / known tool names); default allow
+- System Extension packaging scaffold: `packaging/unix/macos-system-extension.md`
+
+#### iOS MDM companion (honest sandbox SKU)
+- `IosSelfProtection`, `IosNetworkMonitor`, `IosAppAttestMonitor`
+- `IosResponseEngine` — container quarantine + platform/MDM hook (no fake full EDR)
+- Wired in `PlatformMonitors` + agent response registration
+
+#### Android
+- Play Integrity **fail-closed** when project number set or `BEHAVEDR_REQUIRE_PLAY_INTEGRITY=1`
+
+#### Ops / quality
+- `docs/OPERATOR_GUIDE.md` — AlertOnly vs Active, platform activation
+- False-positive guard tests (protected process names, self-kill, alert-only)
+- 95 unit tests
+
+#### Still out of scope without external deps
+- Kernel rootkit win, paid OS certs, full App Store System Extension binary in-tree, external pen-test
+
 ## [0.2.7] — 2026-07-25
 
 ### Large platform epics (single steady bump)

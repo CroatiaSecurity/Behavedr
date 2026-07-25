@@ -118,6 +118,12 @@ try
     {
         builder.Services.AddSingleton<AndroidResponseEngine>();
     }
+
+    // v0.2.8: iOS MDM companion response (sandbox quarantine + hooks)
+    if (OperatingSystem.IsIOS() || OperatingSystem.IsMacCatalyst())
+    {
+        builder.Services.AddSingleton<IosResponseEngine>();
+    }
     builder.Services.AddSingleton<ChainTracer>(sp =>
         new ChainTracer(PlatformMonitors.SharedAncestryCache,
             sp.GetService<ILogger<ChainTracer>>()));
@@ -205,6 +211,12 @@ try
     if (OperatingSystem.IsAndroid())
     {
         responseEngine.RegisterAction(host.Services.GetRequiredService<AndroidResponseEngine>());
+    }
+
+    // v0.2.8: iOS response
+    if (OperatingSystem.IsIOS() || OperatingSystem.IsMacCatalyst())
+    {
+        responseEngine.RegisterAction(host.Services.GetRequiredService<IosResponseEngine>());
     }
 
     await host.RunAsync();

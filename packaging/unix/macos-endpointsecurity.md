@@ -36,11 +36,17 @@ will see `es_new_client` fail — that is expected; kqueue continues to operate.
 
 Grant FDA to `/opt/behavedr/Behavedr` in System Settings → Privacy & Security.
 
+## AUTH mode (optional)
+
+Set `BEHAVEDR_ES_AUTH=1` to subscribe AUTH_EXEC/AUTH_OPEN. The bridge **allows by
+default** and **denies** only a conservative denylist (`/tmp` droppers, known tool
+name substrings). Without the env var, subscription is NOTIFY-only.
+
 ## Production shape (optional System Extension)
 
-For App Store / enterprise-hardened deployment, host the ES client inside an
-Endpoint Security **System Extension** and XPC to the agent. The bridge API
-(`behavedr_es_*`) is intentionally small so it can move into an extension later.
+For enterprise-hardened deployment, host the ES client inside an Endpoint Security
+**System Extension** and XPC to the agent. See `macos-system-extension.md`.
+The bridge API (`behavedr_es_*`) is intentionally small so it can live in the extension.
 
 ## Verification
 

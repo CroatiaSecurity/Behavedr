@@ -111,8 +111,10 @@ public static class PlatformMonitors
             monitors.Add(new LinuxKernelModuleMonitor());
             monitors.Add(new LinuxAuthMonitor());
 
-            // v0.2.7: eBPF exec epic (falls back soft if CAP_BPF / object missing)
+            // v0.2.7–0.2.8: eBPF suite (exec + file + net depth; soft-fail)
             monitors.Add(new LinuxEbpfExecMonitor());
+            monitors.Add(new LinuxEbpfFileMonitor());
+            monitors.Add(new LinuxEbpfNetMonitor());
         }
 
         // v0.1.5: macOS full detection suite (cross-platform parity)
@@ -152,10 +154,13 @@ public static class PlatformMonitors
             monitors.Add(new AndroidAntiTamperGuard());
         }
 
-        // v0.1.5: iOS full detection suite
+        // v0.1.5–0.2.8: iOS MDM companion suite (sandbox-honest; not full EDR)
         if (OperatingSystem.IsIOS() || OperatingSystem.IsMacCatalyst())
         {
             monitors.Add(new IosPersistenceMonitor());
+            monitors.Add(new IosSelfProtection());
+            monitors.Add(new IosNetworkMonitor());
+            monitors.Add(new IosAppAttestMonitor());
         }
 
         return monitors;

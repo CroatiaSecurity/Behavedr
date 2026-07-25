@@ -78,8 +78,8 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
                 return false;
             }
 
-            // Subscribe NOTIFY_EXEC, FORK, EXIT, OPEN (high-value)
-            uint[] events =
+            // NOTIFY for telemetry; AUTH for high-value paths when entitlements allow (0.2.8)
+            var events = new List<uint>
             {
                 ES_EVENT_TYPE_NOTIFY_EXEC,
                 ES_EVENT_TYPE_NOTIFY_FORK,
@@ -87,7 +87,17 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
                 ES_EVENT_TYPE_NOTIFY_OPEN,
             };
 
-            if (!NativeEs.TrySubscribe(_client, events, out err))
+            // Optional AUTH mode via env BEHAVEDR_ES_AUTH=1 (requires full ES capability)
+            var authMode = string.Equals(
+                Environment.GetEnvironmentVariable("BEHAVEDR_ES_AUTH"), "1", StringComparison.Ordinal);
+            if (authMode)
+            {
+                events.Add(ES_EVENT_TYPE_AUTH_EXEC);
+                events.Add(ES_EVENT_TYPE_AUTH_OPEN);
+                _logger.LogWarning("[ES] AUTH mode requested (BEHAVEDR_ES_AUTH=1) — will deny only denylist paths");
+            }
+
+            if (!NativeEs.TrySubscribe(_client, events.ToArray(), out err))
             {
                 _logger.LogWarning("[ES] es_subscribe failed ({Err})", err);
                 NativeEs.DeleteClient(_client);
@@ -99,7 +109,9 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
             _stop = false;
             _pump = new Thread(PumpLoop) { IsBackground = true, Name = "Behavedr-ES-pump" };
             _pump.Start();
-            _logger.LogInformation("[ES] EndpointSecurity client subscribed (EXEC/FORK/EXIT/OPEN)");
+            _logger.LogInformation(
+                "[ES] EndpointSecurity client subscribed (NOTIFY{Auth})",
+                authMode ? "+AUTH" : "");
             return true;
         }
         catch (DllNotFoundException)
@@ -204,9 +216,11 @@ public sealed class MacOSEndpointSecurityMonitor : IPlatformMonitor, IDisposable
     private static string Truncate(string s, int n) =>
         s.Length <= n ? s : s[..n];
 
-    // Event type constants from ESMessage.h
+    // Event type constants from ESMessage.h (values stable across recent SDKs)
+    private const uint ES_EVENT_TYPE_AUTH_EXEC = 8;
     private const uint ES_EVENT_TYPE_NOTIFY_EXEC = 9;
     private const uint ES_EVENT_TYPE_NOTIFY_OPEN = 10;
+    private const uint ES_EVENT_TYPE_AUTH_OPEN = 11;
     private const uint ES_EVENT_TYPE_NOTIFY_FORK = 13;
     private const uint ES_EVENT_TYPE_NOTIFY_EXIT = 14;
 

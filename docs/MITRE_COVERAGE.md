@@ -1,6 +1,6 @@
 # Behavedr MITRE ATT&CK Coverage (Userland)
 
-**Version:** 0.2.7  
+**Version:** 0.2.8  
 **Scope:** Techniques addressed by monitors/response in this tree. Not a claim of 100% ATT&CK completeness.
 
 | Technique | ID | Primary implementation |
@@ -49,7 +49,7 @@
 ## Explicit gaps (not covered)
 
 - Kernel rootkits that fully hide from userland / eBPF
-- EndpointSecurity **AUTH** (blocking) mode — NOTIFY only in 0.2.7
+- EndpointSecurity **AUTH** (blocking) mode — NOTIFY only in 0.2.8
 - eBPF without CAP_BPF or without built `behavedr_exec.bpf.o` (falls back to cn_proc)
 - Full iOS EDR product
 - OS code-signing trust without commercial certs

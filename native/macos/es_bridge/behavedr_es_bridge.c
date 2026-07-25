@@ -27,9 +27,20 @@ static void get_proc_name(pid_t pid, char *buf, size_t len)
         snprintf(buf, len, "pid-%d", (int)pid);
 }
 
+static int path_is_denylisted(const char *path)
+{
+    if (!path || !path[0]) return 0;
+    /* High-confidence dropper locations only — AUTH mode is optional and conservative */
+    if (strstr(path, "/tmp/") == path) return 1;
+    if (strstr(path, "/private/tmp/") == path) return 1;
+    if (strstr(path, "/Users/Shared/") != NULL && strstr(path, ".dmg") != NULL) return 1;
+    if (strstr(path, "mimikatz") != NULL) return 1;
+    if (strstr(path, "meterpreter") != NULL) return 1;
+    return 0;
+}
+
 static void handle_msg(es_client_t *client, const es_message_t *msg)
 {
-    (void)client;
     if (!g_cb || !msg || !msg->process)
         return;
 
@@ -40,10 +51,16 @@ static void handle_msg(es_client_t *client, const es_message_t *msg)
     const char *kind = "event";
     char pathbuf[1024];
     pathbuf[0] = '\0';
+    int is_auth = 0;
 
     switch (msg->event_type) {
+    case ES_EVENT_TYPE_AUTH_EXEC:
+        is_auth = 1;
+        kind = "auth_exec";
+        /* fall through path extract */
     case ES_EVENT_TYPE_NOTIFY_EXEC:
-        kind = "exec";
+        if (msg->event_type == ES_EVENT_TYPE_NOTIFY_EXEC)
+            kind = "exec";
         if (msg->event.exec.target && msg->event.exec.target->executable) {
             es_string_token_t p = msg->event.exec.target->executable->path;
             if (p.data && p.length > 0) {
@@ -59,8 +76,13 @@ static void handle_msg(es_client_t *client, const es_message_t *msg)
     case ES_EVENT_TYPE_NOTIFY_EXIT:
         kind = "exit";
         break;
+    case ES_EVENT_TYPE_AUTH_OPEN:
+        is_auth = 1;
+        kind = "auth_open";
+        /* fall through */
     case ES_EVENT_TYPE_NOTIFY_OPEN:
-        kind = "open";
+        if (msg->event_type == ES_EVENT_TYPE_NOTIFY_OPEN)
+            kind = "open";
         if (msg->event.open.file) {
             es_string_token_t p = msg->event.open.file->path;
             if (p.data && p.length > 0) {
@@ -75,6 +97,14 @@ static void handle_msg(es_client_t *client, const es_message_t *msg)
     }
 
     g_cb(kind, (int)pid, name, pathbuf);
+
+    if (is_auth) {
+        /* Conservative: allow by default; deny only denylisted paths */
+        es_auth_result_t result = path_is_denylisted(pathbuf)
+            ? ES_AUTH_RESULT_DENY
+            : ES_AUTH_RESULT_ALLOW;
+        es_respond_auth_result(client, msg, result, false);
+    }
 }
 
 int behavedr_es_create(behavedr_es_cb cb, es_client_t **out_client)

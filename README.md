@@ -2,7 +2,7 @@
 
 Behavioral endpoint detection and response agent. Monitors process activity, network connections, and system integrity in real time. Produces scored detections and executes configurable response actions.
 
-**Current version: 0.2.7**
+**Current version: 0.2.8**
 
 Versioning: every release is the **next patch** on `0.2.x` (e.g. `0.2.8`), regardless of how large the change is. Feature depth is described in the changelog, not in major/minor jumps. See [docs/RELEASE.md](docs/RELEASE.md) §0.
 
@@ -11,10 +11,10 @@ Versioning: every release is the **next patch** on `0.2.x` (e.g. `0.2.8`), regar
 | Platform | Status |
 |----------|--------|
 | Windows (x64) | Production — ETW detection, BYOVD, WFP isolation (+ advfirewall fallback) |
-| Linux (x64) | Production — cn_proc, fanotify, **eBPF exec** (when CAP_BPF/object present), nftables, hardened systemd |
-| macOS (ARM64) | Production — kqueue + **EndpointSecurity** (entitlement + dylib), VNODE, codesign, pf/route isolation |
-| Android | Production — Detection + response pipeline, VPN inspection, Keystore (Device Owner recommended) |
-| iOS | Deferred / preview only — not a release focus |
+| Linux (x64) | Production — cn_proc, fanotify, **eBPF suite** (exec/file/net depth), nftables, hardened systemd |
+| macOS (ARM64) | Production — kqueue + **EndpointSecurity** (NOTIFY; optional AUTH), VNODE, codesign, pf/route |
+| Android | Production — detect/respond, VPN isolate, Play Integrity fail-closed option, Device Owner |
+| iOS | MDM companion — sandbox response, App Attest hooks; not full-device EDR |
 
 “Production” means the platform is intended for operational deployment **within the limits of a userland agent**. It does not mean kernel omnipotence, notarized Apple distribution, or that every release is Authenticode-signed. Release trust details: [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md).
 
@@ -61,6 +61,7 @@ dotnet publish src/Behavedr.Agent/Behavedr.Agent.csproj -c Release -r win-x64 --
 | [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md) | Build integrity, signing, secrets, operator verification |
 | [docs/RELEASE.md](docs/RELEASE.md) | Release runbook |
 | [docs/MITRE_COVERAGE.md](docs/MITRE_COVERAGE.md) | ATT&CK technique map (userland) |
+| [docs/OPERATOR_GUIDE.md](docs/OPERATOR_GUIDE.md) | AlertOnly vs Active, platform activation |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 | [docs/](docs/) | Architecture decisions, audit reports |
 

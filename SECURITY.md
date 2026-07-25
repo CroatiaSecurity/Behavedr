@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.2.7   | Yes       |
-| < 0.2.7 | No        |
+| 0.2.8   | Yes       |
+| < 0.2.8 | No        |
 
 Only the latest release receives security patches. Upgrade promptly when a new version is published.
 
@@ -55,7 +55,7 @@ We will credit reporters in release notes unless anonymity is preferred. We do n
 - Third-party dependency vulnerabilities (report upstream; notify us for tracking)
 - Social engineering against CroatiaSecurity personnel
 - Denial of service against CI/CD infrastructure
-- iOS production EDR claims (iOS is deferred / preview only)
+- iOS full-device EDR claims (MDM companion SKU only)
 
 ## Security Architecture
 
@@ -155,16 +155,16 @@ These are current, intentional, or residual limits — not a backlog disguised a
 
 - **No kernel-level visibility.** Kernel rootkits can hide from userland monitors. Operational “10/10” is defined as best-in-class userland + supply chain, not omnipotence against ring-0 adversaries.
 - **Native ETW requires elevation** (SYSTEM/admin). Falls back to WMI polling without it.
-- **macOS real-time:** EndpointSecurity client is implemented (`MacOSEndpointSecurityMonitor` + `libbehavedr_es.dylib`). Without Apple ES entitlement the client fails soft and **kqueue** remains active. NOTIFY-only (no AUTH block) in 0.2.7.
+- **macOS real-time:** EndpointSecurity client is implemented (`MacOSEndpointSecurityMonitor` + `libbehavedr_es.dylib`). Without Apple ES entitlement the client fails soft and **kqueue** remains active. NOTIFY-only (no AUTH block) in 0.2.8.
 - **Linux real-time:** eBPF exec path is implemented (`LinuxEbpfExecMonitor` + `native/linux/ebpf`). Without CAP_BPF / object file, **cn_proc** remains primary.
 - **Single-process agent architecture.** A successful privileged kill terminates protection until SCM/systemd/watchdog restart (seconds, not continuous multiproc resilience).
 - **Health-check auto-rollback** restores from `.previous` when post-update crypto health fails. It does **not** cover every possible failure mode (e.g. partial file locks on Windows may require manual recovery or reinstall).
 - **DPAPI entropy fallback** to a fixed value when the filesystem is unwritable (containers). Logged as CRITICAL.
 - **WFP user-mode filters** via `WindowsWfpEngine` (fwpuclnt); advfirewall fallback. **No callout driver** / deep packet inspection.
 - **OS code-signing is optional** and depends on repository secrets. Releases without Authenticode/codesign/keystore must not be described as OS-trusted. Agent-enforced RSA-PSS is independent of OS trust.
-- **Policy and update keys are distinct as of 0.2.7** (separate RSA-4096 pairs). Server must sign policies with `policy-signing-key.pem`.
+- **Policy and update keys are distinct as of 0.2.8** (separate RSA-4096 pairs). Server must sign policies with `policy-signing-key.pem`.
 - **Play Integrity** may degrade if the official dependency / cloud project number is not fully wired for a given build; treat attestation quality as deployment-specific.
-- **iOS is deferred / preview.** Not a production EDR platform in this product line at 0.2.7.
+- **iOS is an MDM companion SKU**, not full-device EDR (sandbox quarantine, App Attest hooks; NE/MDM for real network control).
 - **Default response mode is AlertOnly.** Active kill/isolate is an operator decision with legal and operational consequences.
 
 ## Further Reading

@@ -25,3 +25,8 @@ CapabilityBoundingSet=â€¦ CAP_BPF CAP_PERFMON â€¦
 ```
 
 Older kernels may still need `CAP_SYS_ADMIN` for some attach paths.
+// Additional attach points (build separate or multi-section object):
+//   tp/syscalls/sys_enter_openat  — file opens (needs larger event struct)
+//   tp/syscalls/sys_enter_connect — outbound connects
+// Managed monitors LinuxEbpfFileMonitor / LinuxEbpfNetMonitor provide depth
+// until these sections are linked into behavedr_exec.bpf.o.

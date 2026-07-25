@@ -49,22 +49,33 @@ public sealed class PlayIntegrityAttestor : IDisposable
     // In production, this comes from configuration
     private readonly long _cloudProjectNumber;
     private readonly string? _serverVerifyUrl;
+    private readonly bool _requireIntegrity;
 
     /// <summary>
     /// Last known integrity verdict (cached between attestation calls).
     /// </summary>
     public IntegrityVerdict? LastVerdict => _lastVerdict;
 
+    /// <summary>
+    /// When true (or env BEHAVEDR_REQUIRE_PLAY_INTEGRITY=1), missing API / failed
+    /// basic integrity is scored as high severity fail-closed for enterprise SKUs.
+    /// </summary>
+    public bool RequireIntegrity => _requireIntegrity;
+
     public PlayIntegrityAttestor(
         Context context,
         long cloudProjectNumber = 0,
         string? serverVerifyUrl = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        bool? requireIntegrity = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _cloudProjectNumber = cloudProjectNumber;
         _serverVerifyUrl = serverVerifyUrl;
         _logger = logger ?? NullLogger.Instance;
+        _requireIntegrity = requireIntegrity
+            ?? string.Equals(Environment.GetEnvironmentVariable("BEHAVEDR_REQUIRE_PLAY_INTEGRITY"), "1", StringComparison.Ordinal)
+            || cloudProjectNumber > 0;
     }
 
     /// <summary>
@@ -97,12 +108,25 @@ public sealed class PlayIntegrityAttestor : IDisposable
 
             if (token is null)
             {
-                // Play Integrity not available — generate warning signal
-                signals.Add(new Signal("play_integrity_unavailable", 40, 0.65));
+                // Fail-closed for enterprise when project number / require flag set
+                if (_requireIntegrity)
+                {
+                    signals.Add(new Signal("play_integrity_unavailable:fail_closed", 90, 0.95));
+                    _logger.LogCritical("[PlayIntegrity] REQUIRED but API unavailable — fail-closed");
+                }
+                else
+                {
+                    signals.Add(new Signal("play_integrity_unavailable", 40, 0.65));
+                }
                 _lastVerdict = new IntegrityVerdict(
                     false, false, false, false,
                     "API_UNAVAILABLE", DateTime.UtcNow);
                 return signals;
+            }
+
+            if (_cloudProjectNumber <= 0 && _requireIntegrity)
+            {
+                signals.Add(new Signal("play_integrity_project_number_missing:fail_closed", 85, 0.9));
             }
 
             // Decode and verify token
