@@ -49,13 +49,13 @@ public class AndroidResponseEngine : IResponseAction
             return ResponseOutcome.Skipped(Name, "Not Android");
 
         var pid = result.Event.ProcessId;
-        var processName = result.Event.ProcessName;
+        var processName = result.Event.ProcessName ?? "unknown";
 
         if (!int.TryParse(pid, out var pidInt) || pidInt <= 0)
             return ResponseOutcome.Skipped(Name, $"Invalid PID: {pid}");
 
         // Shared safety rails (self / parent / agent image)
-        if (ResponseSafety.ShouldRefuseKill(pidInt, processName ?? "", out var safetyReason))
+        if (ResponseSafety.ShouldRefuseKill(pidInt, processName, out var safetyReason))
             return ResponseOutcome.Skipped(Name, $"Safety: {safetyReason}");
 
         // Never kill/force-stop our package
