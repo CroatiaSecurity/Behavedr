@@ -5,6 +5,7 @@ using Behavedr.Core.Platform;
 using Behavedr.Core.Response;
 using Behavedr.Core.Security;
 using Behavedr.Core.Update;
+using Behavedr.Core.Telemetry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -83,14 +84,28 @@ try
         responsePolicy = ResponsePolicy.Default;
     }
     builder.Services.AddSingleton(responsePolicy);
+
+    // v0.2.9: optional platform depth flags
+    var platformFeatures = builder.Configuration
+        .GetSection("Platform")
+        .Get<PlatformFeatures>() ?? PlatformFeatures.Default;
+    platformFeatures = PlatformFeatures.FromEnvironment(platformFeatures);
+    builder.Services.AddSingleton(platformFeatures);
+    if (platformFeatures.EnableEndpointSecurityAuth)
+        Environment.SetEnvironmentVariable("BEHAVEDR_ES_AUTH", "1");
+    if (platformFeatures.EnableFanotifyPerm)
+        Environment.SetEnvironmentVariable("BEHAVEDR_FANOTIFY_PERM", "1");
+    if (platformFeatures.RequirePlayIntegrity)
+        Environment.SetEnvironmentVariable("BEHAVEDR_REQUIRE_PLAY_INTEGRITY", "1");
+
     builder.Services.AddSingleton<ResponseAuditWriter>();
-    builder.Services.AddSingleton<Behavedr.Core.Telemetry.BehavedrMetrics>();
+    builder.Services.AddSingleton<BehavedrMetrics>();
     builder.Services.AddSingleton<ResponseEngine>(sp =>
         new ResponseEngine(
             sp.GetRequiredService<ResponsePolicy>(),
             sp.GetService<ILogger<ResponseEngine>>(),
             sp.GetRequiredService<ResponseAuditWriter>(),
-            sp.GetRequiredService<Behavedr.Core.Telemetry.BehavedrMetrics>()));
+            sp.GetRequiredService<BehavedrMetrics>()));
     builder.Services.AddSingleton<ProcessKillAction>();
     builder.Services.AddSingleton<FileQuarantineAction>();
     builder.Services.AddSingleton<IsolationResponseEngine>();
@@ -176,10 +191,25 @@ try
     // v0.2.2: Register platform monitors before hosted services start (was deferred to
     // MonitoringService, so StartupSelfTest / early cycles could see zero monitors).
     var detectionEngine = host.Services.GetRequiredService<DetectionEngine>();
+    var metrics = host.Services.GetRequiredService<BehavedrMetrics>();
     if (detectionEngine.RegisteredMonitors.Count == 0)
     {
         foreach (var monitor in PlatformMonitors.Supported())
+        {
             detectionEngine.RegisterMonitor(monitor);
+            metrics.RecordMonitorRegistered();
+        }
+    }
+
+    // v0.2.9: optional Landlock write sandbox (after monitors registered; read stays open)
+    var features = host.Services.GetRequiredService<PlatformFeatures>();
+    if (features.EnableLandlock && OperatingSystem.IsLinux())
+    {
+        if (!LinuxLandlock.TryApplyDefaultProfile())
+        {
+            metrics.RecordPlatformSoftFail("landlock");
+            Log.Warning("Landlock requested but not applied (kernel/caps)");
+        }
     }
 
     // v0.1.3: Register response actions after build (C-1 fix)

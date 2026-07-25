@@ -30,6 +30,7 @@ public class LinuxFanotifyMonitor : IPlatformMonitor
     private readonly ILogger<LinuxFanotifyMonitor> _logger;
     private int _fanotifyFd = -1;
     private bool _initialized;
+    private bool _permMode;
     private readonly Queue<FanotifyExecEvent> _events = new();
     private readonly object _lock = new();
     private const int MaxBufferedEvents = 300;
@@ -69,44 +70,58 @@ public class LinuxFanotifyMonitor : IPlatformMonitor
 
         try
         {
-            // fanotify_init(FAN_CLASS_NOTIF | FAN_NONBLOCK, O_RDONLY | O_LARGEFILE)
+            // Optional PERM mode: BEHAVEDR_FANOTIFY_PERM=1 (allowlist trusted paths, deny tmp droppers)
+            _permMode = string.Equals(
+                Environment.GetEnvironmentVariable("BEHAVEDR_FANOTIFY_PERM"), "1", StringComparison.Ordinal);
+
             const uint FAN_CLASS_NOTIF = 0x00000000;
+            const uint FAN_CLASS_CONTENT = 0x00000004; // required for PERM events
             const uint FAN_NONBLOCK = 0x00000002;
             const int O_RDONLY = 0;
             const int O_LARGEFILE = 0x8000;
 
-            _fanotifyFd = fanotify_init(FAN_CLASS_NOTIF | FAN_NONBLOCK, O_RDONLY | O_LARGEFILE);
+            uint cls = _permMode ? FAN_CLASS_CONTENT : FAN_CLASS_NOTIF;
+            _fanotifyFd = fanotify_init(cls | FAN_NONBLOCK, O_RDONLY | O_LARGEFILE);
+            if (_fanotifyFd < 0 && _permMode)
+            {
+                // Fall back to notify-only
+                _permMode = false;
+                _fanotifyFd = fanotify_init(FAN_CLASS_NOTIF | FAN_NONBLOCK, O_RDONLY | O_LARGEFILE);
+                _logger.LogWarning("[LinuxFanotify] PERM class init failed — using NOTIF only");
+            }
+
             if (_fanotifyFd < 0)
             {
                 _logger.LogWarning(
                     "[LinuxFanotify] fanotify_init failed (errno {Errno}). " +
                     "Requires CAP_SYS_ADMIN. Falling back to polling.",
-                    Marshal.GetLastWin32Error());
+                    Marshal.GetLastPInvokeError());
                 return false;
             }
 
-            // Mark root filesystem for FAN_OPEN_EXEC events
             const ulong FAN_OPEN_EXEC = 0x00001000;
+            const ulong FAN_OPEN_EXEC_PERM = 0x00040000;
             const uint FAN_MARK_ADD = 0x00000001;
             const uint FAN_MARK_MOUNT = 0x00000010;
             const int AT_FDCWD = -100;
 
-            var result = fanotify_mark(_fanotifyFd, FAN_MARK_ADD | FAN_MARK_MOUNT,
-                FAN_OPEN_EXEC, AT_FDCWD, "/");
+            ulong mask = _permMode ? (FAN_OPEN_EXEC | FAN_OPEN_EXEC_PERM) : FAN_OPEN_EXEC;
+            var result = fanotify_mark(_fanotifyFd, FAN_MARK_ADD | FAN_MARK_MOUNT, mask, AT_FDCWD, "/");
 
             if (result < 0)
             {
                 _logger.LogWarning(
                     "[LinuxFanotify] fanotify_mark failed for / (errno {Errno}). " +
                     "FAN_OPEN_EXEC requires kernel 5.1+.",
-                    Marshal.GetLastWin32Error());
+                    Marshal.GetLastPInvokeError());
                 close(_fanotifyFd);
                 _fanotifyFd = -1;
                 return false;
             }
 
             _logger.LogInformation(
-                "[LinuxFanotify] Initialized — real-time file execution monitoring active on /");
+                "[LinuxFanotify] Initialized — exec monitoring on / ({Mode})",
+                _permMode ? "NOTIFY+PERM allowlist" : "NOTIFY");
             return true;
         }
         catch (Exception ex)
@@ -175,9 +190,28 @@ public class LinuxFanotifyMonitor : IPlatformMonitor
                 if (fd >= 0)
                 {
                     var filePath = ResolveFdPath(fd);
-                    close(fd); // Must close the event fd
 
-                    if (filePath is not null)
+                    // PERM events require an explicit response before close
+                    const ulong FAN_OPEN_EXEC_PERM = 0x00040000;
+                    if (_permMode && (mask & FAN_OPEN_EXEC_PERM) != 0)
+                    {
+                        bool allow = ShouldAllowExec(filePath);
+                        WriteFanotifyResponse(fd, allow);
+                        if (!allow && filePath is not null)
+                        {
+                            lock (_lock)
+                            {
+                                if (_events.Count >= MaxBufferedEvents)
+                                    _events.Dequeue();
+                                _events.Enqueue(new FanotifyExecEvent(pid, filePath + ":DENIED",
+                                    Environment.TickCount64));
+                            }
+                        }
+                    }
+
+                    close(fd);
+
+                    if (filePath is not null && !filePath.EndsWith(":DENIED", StringComparison.Ordinal))
                     {
                         lock (_lock)
                         {
@@ -198,6 +232,15 @@ public class LinuxFanotifyMonitor : IPlatformMonitor
     {
         // Skip our own process and trusted paths
         if (evt.Pid == Environment.ProcessId) return;
+
+        if (evt.FilePath.EndsWith(":DENIED", StringComparison.Ordinal))
+        {
+            signals.Add(new Signal(
+                $"fanotify_exec_denied:{Path.GetFileName(evt.FilePath.Replace(":DENIED", "", StringComparison.Ordinal))}:pid:{evt.Pid}",
+                88, 0.95));
+            return;
+        }
+
         if (TrustedExecPaths.Any(p => evt.FilePath.StartsWith(p, StringComparison.Ordinal)))
             return;
 
@@ -238,6 +281,50 @@ public class LinuxFanotifyMonitor : IPlatformMonitor
         catch { return null; }
     }
 
+    /// <summary>
+    /// PERM policy: allow trusted system prefixes; deny exec from tmp/devshm and hidden droppers.
+    /// Default-allow for unknown paths to limit business impact.
+    /// </summary>
+    private static bool ShouldAllowExec(string? filePath)
+    {
+        if (string.IsNullOrEmpty(filePath))
+            return true;
+        if (TrustedExecPaths.Any(p => filePath.StartsWith(p, StringComparison.Ordinal)))
+            return true;
+        if (filePath.Contains("memfd:", StringComparison.Ordinal) ||
+            filePath.Contains("(deleted)", StringComparison.Ordinal))
+            return false;
+        if (SuspiciousExecPaths.Any(p => filePath.StartsWith(p, StringComparison.Ordinal)))
+        {
+            // Deny only clearly dropper-like names under suspicious roots
+            var name = Path.GetFileName(filePath);
+            if (name.StartsWith('.') || name.EndsWith(".elf", StringComparison.OrdinalIgnoreCase))
+                return false;
+            // tmp binaries with no extension still high risk
+            if (filePath.StartsWith("/tmp/", StringComparison.Ordinal) ||
+                filePath.StartsWith("/dev/shm/", StringComparison.Ordinal))
+                return false;
+        }
+        return true;
+    }
+
+    private void WriteFanotifyResponse(int fd, bool allow)
+    {
+        // struct fanotify_response { __s32 fd; __u32 response; }
+        // FAN_ALLOW=0x01, FAN_DENY=0x02
+        try
+        {
+            Span<byte> buf = stackalloc byte[8];
+            BitConverter.TryWriteBytes(buf[..4], fd);
+            BitConverter.TryWriteBytes(buf.Slice(4, 4), allow ? 0x01u : 0x02u);
+            write(_fanotifyFd, buf.ToArray(), 8);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[LinuxFanotify] PERM response failed");
+        }
+    }
+
     // P/Invoke for fanotify syscalls
     [DllImport("libc", EntryPoint = "fanotify_init", SetLastError = true)]
     private static extern int fanotify_init(uint flags, int event_f_flags);
@@ -247,6 +334,9 @@ public class LinuxFanotifyMonitor : IPlatformMonitor
 
     [DllImport("libc", EntryPoint = "read", SetLastError = true)]
     private static extern int read(int fd, byte[] buf, int count);
+
+    [DllImport("libc", EntryPoint = "write", SetLastError = true)]
+    private static extern int write(int fd, byte[] buf, int count);
 
     [DllImport("libc", EntryPoint = "close")]
     private static extern int close(int fd);

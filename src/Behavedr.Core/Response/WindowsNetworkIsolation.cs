@@ -89,7 +89,10 @@ public sealed partial class WindowsNetworkIsolation : IResponseAction, IDisposab
         }
 
         // Prefer real WFP filter engine; fall back to advfirewall (also WFP-backed) via netsh.
-        if (IPAddress.TryParse(ip, out var addr) && _wfp.BlockRemoteAddress(addr, $"Behavedr:{processName}"))
+        var preferWfp = !string.Equals(
+            Environment.GetEnvironmentVariable("BEHAVEDR_PREFER_WFP"), "0", StringComparison.Ordinal);
+
+        if (preferWfp && IPAddress.TryParse(ip, out var addr) && _wfp.BlockRemoteAddress(addr, $"Behavedr:{processName}"))
         {
             _logger.LogWarning("[WinNetIsolation] WFP blocked remote IP {Ip} ({Process})", ip, processName);
             return true;

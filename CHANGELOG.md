@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.9] — 2026-07-25
+
+### Next depth layer (still 0.2.x)
+
+#### Linux
+- **Landlock** write-restrict profile (`LinuxLandlock`, `BEHAVEDR_LANDLOCK=1` / `Platform:EnableLandlock`) — agent retains full read of host
+- **fanotify PERM** optional allowlist (`BEHAVEDR_FANOTIFY_PERM=1`) — deny tmp/memfd droppers; default allow otherwise
+- **Debian package script** `packaging/unix/build-deb.sh`
+
+#### Config / metrics
+- `Platform` section in `appsettings.json` + env overrides
+- Metrics: isolation actions, signature failures, platform soft-fails
+
+#### Docs / tests
+- Platform feature unit tests; operator flags documented in OPERATOR_GUIDE
+
 ## [0.2.8] — 2026-07-25
 
 ### “0.5-depth” capabilities as next patch (not named 0.5)

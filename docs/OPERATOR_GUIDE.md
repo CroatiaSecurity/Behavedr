@@ -1,6 +1,6 @@
 # Behavedr Operator Guide
 
-**Version:** 0.2.8  
+**Version:** 0.2.9  
 
 ## Response modes
 
@@ -20,7 +20,7 @@ Leave AlertOnly until you have baselined false positives for the environment.
 | President-kill | scoring config | Process kill class (desktop) |
 | `MaxKillsPerMinute` | 15 | Kill-storm budget |
 
-## Platform activation (0.2.8–0.2.8 depth)
+## Platform activation (0.2.9–0.2.9 depth)
 
 | Feature | Enable |
 |---------|--------|
@@ -30,6 +30,9 @@ Leave AlertOnly until you have baselined false positives for the environment.
 | Android Play Integrity fail-closed | `BEHAVEDR_REQUIRE_PLAY_INTEGRITY=1` or non-zero cloud project number |
 | Android VPN isolate | Active response + VPN permission / service running |
 | iOS companion | MDM + optional Network Extension; local quarantine only in-app |
+| Linux Landlock | `Platform:EnableLandlock` or `BEHAVEDR_LANDLOCK=1` (write sandbox) |
+| Linux fanotify PERM | `Platform:EnableFanotifyPerm` or `BEHAVEDR_FANOTIFY_PERM=1` (deny tmp droppers) |
+| Disable Windows WFP prefer | `BEHAVEDR_PREFER_WFP=0` (advfirewall only) |
 
 ## Legal / safety
 

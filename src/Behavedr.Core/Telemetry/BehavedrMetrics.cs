@@ -26,7 +26,7 @@ public sealed class BehavedrMetrics
 
     public BehavedrMetrics()
     {
-        _meter = new Meter(MeterName, "0.2.6");
+        _meter = new Meter(MeterName, "0.2.9");
 
         _detectionCycles = _meter.CreateCounter<long>(
             "behavedr.detection.cycles",
@@ -73,7 +73,23 @@ public sealed class BehavedrMetrics
         _activeMonitors = _meter.CreateUpDownCounter<int>(
             "behavedr.monitors.active",
             description: "Number of active platform monitors");
+
+        _isolationActions = _meter.CreateCounter<long>(
+            "behavedr.isolation.actions",
+            description: "Network isolation actions attempted");
+
+        _signatureFailures = _meter.CreateCounter<long>(
+            "behavedr.security.signature_failures",
+            description: "Update/policy signature verification failures");
+
+        _platformFeatureSoftFail = _meter.CreateCounter<long>(
+            "behavedr.platform.soft_fail",
+            description: "Optional platform depth features that soft-failed (eBPF/ES/Landlock)");
     }
+
+    private readonly Counter<long> _isolationActions;
+    private readonly Counter<long> _signatureFailures;
+    private readonly Counter<long> _platformFeatureSoftFail;
 
     public void RecordCycleCompleted() => _detectionCycles.Add(1);
 
@@ -103,4 +119,11 @@ public sealed class BehavedrMetrics
     public void RecordMonitorRegistered() => _activeMonitors.Add(1);
 
     public void RecordMonitorUnregistered() => _activeMonitors.Add(-1);
+
+    public void RecordIsolationAction() => _isolationActions.Add(1);
+
+    public void RecordSignatureFailure() => _signatureFailures.Add(1);
+
+    public void RecordPlatformSoftFail(string feature) =>
+        _platformFeatureSoftFail.Add(1, new KeyValuePair<string, object?>("feature", feature));
 }
