@@ -55,16 +55,6 @@ public class AndroidMonitor : IPlatformMonitor
         "/system/app/SuperSU.apk", "/system/app/KingRoot.apk",
     ];
 
-    // Known malware/offensive tool process names
-    private static readonly HashSet<string> SuspiciousProcessNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "xmrig", "ccminer", "cpuminer", "bfgminer", "cgminer",  // Crypto miners
-        "meterpreter", "payload", "exploit", "reverse_tcp",       // RAT/exploit
-        "droidjack", "ahmyth", "spynote", "androrat", "cerberus", // Android RATs
-        "tcpdump", "packet_capture", "tpacketcapture",            // Network sniffing
-        "frida", "frida-server", "objection",                     // Instrumentation
-    };
-
     // Dangerous permission combinations indicating malicious intent
     private static readonly string[] DangerousPermissions =
     [
@@ -241,25 +231,35 @@ public class AndroidMonitor : IPlatformMonitor
                 {
                     var commPath = Path.Combine(procDir, "comm");
                     if (!File.Exists(commPath)) continue;
+                    if (pid == Environment.ProcessId) continue;
                     var processName = File.ReadAllText(commPath).Trim();
 
-                    if (SuspiciousProcessNames.Any(s =>
-                        processName.Contains(s, StringComparison.OrdinalIgnoreCase)))
+                    string? exePath = null;
+                    try
                     {
-                        signals.Add(new Signal(
-                            $"suspicious_process:{processName}:pid:{pid}", 88, 0.9));
+                        exePath = File.ResolveLinkTarget(Path.Combine(procDir, "exe"), returnFinalTarget: true)?.FullName;
                     }
+                    catch { /* permission */ }
 
-                    // Detect Frida server (common instrumentation for bypassing security)
+                    var cmdline = "";
                     var cmdlinePath = Path.Combine(procDir, "cmdline");
                     if (File.Exists(cmdlinePath))
+                        cmdline = File.ReadAllText(cmdlinePath).Replace('\0', ' ');
+
+                    var off = ThreatHeuristics.Evaluate(processName, exePath ?? cmdline);
+                    if (off is { } o)
                     {
-                        var cmdline = File.ReadAllText(cmdlinePath).Replace('\0', ' ');
-                        if (cmdline.Contains("frida", StringComparison.OrdinalIgnoreCase))
-                        {
-                            signals.Add(new Signal(
-                                $"frida_server_detected:pid:{pid}", 90, 0.92));
-                        }
+                        signals.Add(new Signal(
+                            $"suspicious_process:{o.Tag}:{o.Detail}:pid:{pid}",
+                            o.Weight, o.Confidence));
+                    }
+
+                    // Frida/instrumentation is high confidence when present in cmdline
+                    if (cmdline.Contains("frida", StringComparison.OrdinalIgnoreCase) ||
+                        cmdline.Contains("gadget", StringComparison.OrdinalIgnoreCase))
+                    {
+                        signals.Add(new Signal(
+                            $"instrumentation_framework:pid:{pid}", 90, 0.92));
                     }
                 }
                 catch { }

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.9] — 2026-07-25
+
+### Platform epics: in-repo complete
+
+- Android monitors/connectors on `ThreatHeuristics` + path (no high-weight name-only lists)
+- iOS quarantine respects `ResponseSafety`
+- WSL patterns emphasize behavior/staging paths
+- `docs/EPICS_STATUS.md`: honest “in-repo done / field activation remaining” close-out
+- Operator + threat model versions aligned
+
 ## [0.3.8] — 2026-07-25
 
 ### Rename-resistant detection across primary monitors

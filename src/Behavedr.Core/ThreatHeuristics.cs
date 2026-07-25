@@ -9,11 +9,15 @@ public static class ThreatHeuristics
     /// <summary>Known offensive tool name fragments — telemetry only when alone.</summary>
     public static readonly string[] KnownToolNameFragments =
     [
+        // Desktop / cross-platform (name alone = low weight in Evaluate)
         "mimikatz", "meterpreter", "empire", "sliver", "cobalt", "cobaltstrike",
         "chisel", "ligolo", "linpeas", "winpeas", "bloodhound", "rubeus",
         "sharpshooter", "seatbelt", "lazagne", "nanodump", "hashcat",
         "crackmapexec", "impacket", "secretsdump", "psexec",
         "swiftbelt", "bifrost", "osascript_backdoor",
+        // Android-oriented
+        "frida", "frida-server", "objection", "droidjack", "ahmyth", "spynote",
+        "androrat", "cerberus", "xmrig", "ccminer", "magisk",
     ];
 
     /// <summary>

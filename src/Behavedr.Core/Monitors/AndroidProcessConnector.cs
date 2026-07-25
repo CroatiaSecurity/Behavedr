@@ -35,16 +35,6 @@ public class AndroidProcessConnector : IPlatformMonitor
     private readonly Dictionary<int, long> _execTimestamps = new();
     private const int EphemeralThresholdMs = 2000;
 
-    private static readonly HashSet<string> SuspiciousProcessNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "xmrig", "ccminer", "cpuminer", "bfgminer", "cgminer",
-        "meterpreter", "payload", "exploit", "reverse_tcp",
-        "droidjack", "ahmyth", "spynote", "androrat", "cerberus",
-        "tcpdump", "packet_capture", "tpacketcapture",
-        "frida", "frida-server", "objection",
-        "su", "magisk", "busybox", "nc", "ncat", "socat",
-    };
-
     public string PlatformName => "AndroidProcessConnector";
     public bool IsSupported => OperatingSystem.IsAndroid();
 
@@ -199,16 +189,27 @@ public class AndroidProcessConnector : IPlatformMonitor
             return;
         }
 
-        // Offensive tool detection
-        if (SuspiciousProcessNames.Any(s =>
-            evt.Comm.Contains(s, StringComparison.OrdinalIgnoreCase) ||
-            (evt.Cmdline?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)))
+        if (evt.Pid == Environment.ProcessId) return;
+
+        string? exePath = null;
+        try
+        {
+            exePath = File.ResolveLinkTarget($"/proc/{evt.Pid}/exe", returnFinalTarget: true)?.FullName;
+        }
+        catch { /* permission */ }
+
+        if (Response.ResponseSafety.IsOwnAgentImage(exePath)) return;
+
+        // Path + staging heuristics (rename-resistant); name alone stays low weight
+        var off = ThreatHeuristics.Evaluate(evt.Comm, exePath ?? evt.Cmdline);
+        if (off is { } o)
         {
             signals.Add(new Signal(
-                $"realtime_suspicious_android:{evt.Comm}:pid:{evt.Pid}", 85, 0.92));
+                $"realtime_offensive_android:{o.Tag}:{o.Detail}:pid:{evt.Pid}",
+                o.Weight, o.Confidence));
         }
 
-        // Reverse shell detection
+        // Behavioral cmdline patterns (not tool product names)
         if (evt.Cmdline is not null &&
             (evt.Cmdline.Contains("/dev/tcp/", StringComparison.Ordinal) ||
              (evt.Cmdline.Contains("sh", StringComparison.Ordinal) &&
@@ -219,7 +220,6 @@ public class AndroidProcessConnector : IPlatformMonitor
                 $"reverse_shell_android:{evt.Comm}:pid:{evt.Pid}", 92, 0.94));
         }
 
-        // Base64-encoded execution
         if (evt.Cmdline is not null &&
             evt.Cmdline.Contains("base64", StringComparison.OrdinalIgnoreCase) &&
             (evt.Cmdline.Contains("| sh", StringComparison.Ordinal) ||

@@ -22,12 +22,14 @@ public class WslMonitor : IPlatformMonitor
     private readonly HashSet<int> _alertedPids = new();
     private bool _baselined;
 
+    // Behavioral cmdline patterns (not product names alone — rename-resistant where possible)
     private static readonly string[] SuspiciousPatterns =
     {
         "nc -", "ncat ", "socat ", "/dev/tcp/", "bash -i",
         "curl http", "wget http", "python -c", "python3 -c",
-        "perl -e", "ruby -e", "meterpreter", "reverse_tcp",
+        "perl -e", "ruby -e", "reverse_tcp",
         "base64 -d", "nmap ", "masscan", "/etc/shadow",
+        "/tmp/", "/dev/shm/",
     };
 
     public string PlatformName => "WslMonitor";

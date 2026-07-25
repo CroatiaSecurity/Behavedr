@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 namespace Behavedr.Tests;
 
 /// <summary>
-/// Guards that epic source trees and production loaders remain present (0.3.3).
+/// Guards that epic source trees and production loaders remain present (0.3.9).
 /// Does not require Linux/macOS attach success on Windows CI.
 /// </summary>
 public class EpicCompletenessTests
@@ -52,10 +52,10 @@ public class EpicCompletenessTests
         var root = FindRepoRoot();
         Assert.True(File.Exists(Path.Combine(root, "docs", "EPICS_STATUS.md")));
         var doc = File.ReadAllText(Path.Combine(root, "docs", "EPICS_STATUS.md"));
-        Assert.Contains("0.3.8", doc, StringComparison.Ordinal);
-        Assert.Contains("System Extension *product*", doc, StringComparison.Ordinal);
-        Assert.Contains("Partial", doc, StringComparison.Ordinal);
-        Assert.Contains("JSONL", doc, StringComparison.Ordinal);
+        Assert.Contains("0.3.9", doc, StringComparison.Ordinal);
+        Assert.Contains("In-repo", doc, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("complete", doc, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("field activation", doc, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

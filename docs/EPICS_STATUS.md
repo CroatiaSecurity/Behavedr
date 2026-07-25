@@ -1,69 +1,49 @@
-# Platform epics — honest status (0.3.8)
+# Platform epics — status (0.3.9)
 
-Source of truth for **production code** vs **field activation**. No marketing.
+**In-repo implementation for the platform epics is complete.**  
+What remains is **field activation** (host artifacts, vendor enrollment), not more scaffolds.
 
 ## Summary
 
-| Epic | Production code | Auto-on without extras | Field activation |
-|------|-----------------|------------------------|------------------|
-| Windows isolation | **Yes** — Firewall COM + WFP + netsh + safety rails | **Yes** (SYSTEM) | Elevation (service) |
-| Linux eBPF suite | **Yes** — filtered suite + pin/map loader | **No** | `.o` + bpftool + CAP_BPF + unit allows bpffs |
-| macOS EndpointSecurity (in-process) | **Yes** — dylib poll + framework subscribe | **No** | dylib + ES entitlement |
-| macOS ES host → agent | **Yes** — JSONL fallback reader in agent | **No** | host publishing events |
-| macOS System Extension *product* | **Partial** — host binary + bundle shell | **No** | Apple SE capability, OSSystemExtensionRequest, notarize, user approve |
-| Android cert pin + CI sign | **Yes** — real release pin + GH secrets auto-sign | Soft | Release workflow with keystore secrets (configured) |
-| Android Play Integrity | **Yes** — reflection + fail-closed + opt-in NuGet | Soft | Cloud project / package |
-| Response safety / anti-bypass | **Yes** — `ResponseSafety` + `ThreatHeuristics` (0.3.6) | **Yes** | Always on |
-| iOS full EDR | **No** (Apple policy) | Companion only | MDM + NE product SKU |
-| Kernel callout / rootkit win | **No** | N/A | Out of scope (userland EDR) |
-| OS Authenticode/notarize | Hooks only | No | Paid certs |
+| Epic | In-repo code | Auto-on | Field activation (you / vendor) |
+|------|--------------|---------|----------------------------------|
+| Windows isolation (COM + WFP + netsh) | **Done** | Yes (SYSTEM) | Run agent elevated |
+| Linux eBPF suite | **Done** | No | Build/install `.o`, bpftool, CAP_BPF |
+| Linux cn_proc / fanotify | **Done** | Soft | CAP_NET_ADMIN / CAP_SYS_ADMIN |
+| macOS ES (dylib + poll + JSONL) | **Done** | No | Entitlement + dylib or ES host |
+| macOS System Extension product | **Partial** | No | Apple SE capability + install UX |
+| Android pin + CI APK sign | **Done** | Soft | Release workflow secrets (set) |
+| Response safety / rename-aware detect | **Done** | Yes | Always on |
+| iOS full EDR | **Out of scope** | Companion only | Apple policy |
+| Kernel callout / rootkit | **Out of scope** | N/A | Userland EDR only |
+| Paid Authenticode / notarize | Hooks only | No | Paid certs |
 
-## What 0.3.8 added
+## What “done” means
 
-- Primary monitors (cn_proc, kqueue, Windows/Linux/macOS poll monitors) use path-aware `ThreatHeuristics`
-- Android response uses shared safety rails + own-package protection
+- Production code paths (not stubs): loaders, bridges, isolation engines, safety rails  
+- Soft-fail when field extras missing (cn_proc / kqueue / netsh remain)  
+- Public threat model assumes attackers read the source: rename-resistant heuristics, no easy self-kill  
 
-## What 0.3.7 added (kept)
-
-- fanotify / cn_proc ABI documented from kernel uapi (no guessed flags)
-- Linux isolation never UID-blocks the agent user; fanotify never denies agent install path  
-- Fanotify + eBPF/ES continue rename-aware `ThreatHeuristics`
-
-## What 0.3.6 added
-
-- **ResponseSafety**: no self-kill, no agent quarantine/net-block, no spoofed system-name immunity under Temp  
-- **ThreatHeuristics**: rename-aware scoring (staging path > tool name alone)  
-- AUTH denylist: staging paths only; never deny `/opt/behavedr/`  
-- Policy caps against kill-storm signed policies  
-
-## What 0.3.5 added
-
-- deb/rpm can ship eBPF object; Recommends bpftool  
-- Agent consumes SE host JSONL when in-process ES fails  
-- Android release keystore pin + CI auto-sign secrets  
-
-## Field activation (operators)
+## Field activation cheatsheet
 
 ```bash
 # Linux eBPF
-./native/build-native.sh dist/native
+./native/build-native.sh dist/native   # on Linux
 sudo cp dist/native/behavedr_exec.bpf.o /opt/behavedr/
 sudo systemctl restart behavedr
 
 # macOS ES (in-process)
-sudo cp dist/native/libbehavedr_es.dylib /opt/behavedr/
-# sign agent with com.apple.developer.endpoint-security.client
+# build dylib on Darwin, install to /opt/behavedr/, sign with ES entitlement
 
-# Android release
-# Secrets ANDROID_KEYSTORE_* already used by release.yml when set
+# Android release APK
+# ANDROID_KEYSTORE_* secrets → release.yml auto-signs (already documented)
 ```
 
-## What we will not claim
+## Will not claim
 
-- eBPF/ES active without host artifacts/entitlements  
-- Full System Extension product  
-- iOS full EDR  
-- That name-based detection alone stops renamed tools (we use path/behavior for that)  
-- That userland EDR stops kernel rootkits  
+- eBPF/ES active on every install without host extras  
+- Full App Store System Extension product without Apple enrollment  
+- iOS device-wide EDR  
+- Kernel-level rootkit defeat  
 
-If a path is not field-active, the agent **soft-fails** and keeps older real-time sources.
+See also: `docs/PLATFORM_ABI.md`, `docs/OPERATOR_GUIDE.md`, `THREAT_MODEL.md` §T-4b.

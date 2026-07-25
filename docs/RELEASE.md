@@ -11,7 +11,7 @@ This is the operational runbook for cutting a Behavedr release. Follow it in ord
 
 | Kind | When | Example |
 |------|------|---------|
-| **Patch** | Normal incremental work | `0.3.0` → `0.3.1` → `0.3.2` → `0.3.3` |
+| **Patch** | Normal incremental work | `0.3.0` → … → `0.3.9` |
 | **Minor** | Product-line capability step (cumulative depth) | `0.2.x` → **`0.3.0`** |
 | **Major** | Breaking product/API contract (rare pre-1.0) | `0.x` → `1.0.0` |
 

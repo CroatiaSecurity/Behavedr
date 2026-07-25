@@ -49,6 +49,11 @@ public sealed class IosResponseEngine : IResponseAction
                 parts.Add($"refuse-out-of-sandbox:{Path.GetFileName(path)}");
                 continue;
             }
+            if (ResponseSafety.ShouldRefuseQuarantine(path, out var refuse))
+            {
+                parts.Add($"refuse-safety:{refuse}");
+                continue;
+            }
 
             try
             {
