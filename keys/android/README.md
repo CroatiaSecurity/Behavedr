@@ -36,19 +36,33 @@ apksigner verify --print-certs Behavedr-release.apk
 # SHA-256 must match the pin above
 ```
 
-## GitHub Actions secrets
+## GitHub Actions secrets (auto-sign on release)
 
-```
-ANDROID_KEYSTORE_BASE64 = base64 of behavedr-release.p12
-ANDROID_KEYSTORE_PASSWORD = contents of behavedr-release.password.txt
-ANDROID_KEY_ALIAS = behavedr
-```
+Release workflow (`release.yml`) **automatically re-signs** the APK when these
+secrets exist. No user action at install time.
 
-Generate base64 (PowerShell):
+| Secret | Value |
+|--------|--------|
+| `ANDROID_KEYSTORE_BASE64` | base64 of `behavedr-release.p12` |
+| `ANDROID_KEYSTORE_PASSWORD` | contents of `behavedr-release.password.txt` |
+| `ANDROID_KEY_ALIAS` | `behavedr` (optional; defaulted in workflow) |
+| `ANDROID_KEY_PASSWORD` | same as keystore password if omitted |
+
+### Upload secrets (from this machine)
 
 ```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("behavedr-release.p12"))
+# From repo root, with GitHub CLI authenticated:
+$ks = "keys/android/behavedr-release.p12"
+$pw = Get-Content -Raw "keys/android/behavedr-release.password.txt"
+$b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path $ks)))
+$b64 | gh secret set ANDROID_KEYSTORE_BASE64 --repo CroatiaSecurity/Behavedr
+$pw  | gh secret set ANDROID_KEYSTORE_PASSWORD --repo CroatiaSecurity/Behavedr
+"behavedr" | gh secret set ANDROID_KEY_ALIAS --repo CroatiaSecurity/Behavedr
+$pw  | gh secret set ANDROID_KEY_PASSWORD --repo CroatiaSecurity/Behavedr
 ```
+
+After that, every `v*` tag / release workflow run produces
+`Behavedr-<version>-android.apk` signed with this keystore (matches baked pin).
 
 ## Recreate keystore (only if compromised)
 

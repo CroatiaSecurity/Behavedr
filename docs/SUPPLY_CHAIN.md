@@ -169,8 +169,13 @@ The release workflow implements conditional signing. When secrets are absent, th
 | `MACOS_CERTIFICATE_P12_BASE64` | Developer ID Application certificate (P12) |
 | `MACOS_CERTIFICATE_PASSWORD` | P12 password |
 | `MACOS_CODESIGN_IDENTITY` | Identity string for `codesign --sign` |
-| `ANDROID_KEYSTORE_BASE64` | Release keystore |
+| `ANDROID_KEYSTORE_BASE64` | Release PKCS#12 (`keys/android/behavedr-release.p12`, base64) |
 | `ANDROID_KEYSTORE_PASSWORD` | Keystore password |
+| `ANDROID_KEY_ALIAS` | Key alias (default `behavedr` if unset) |
+| `ANDROID_KEY_PASSWORD` | Key password (defaults to keystore password if unset) |
+
+When those secrets are set, **release.yml auto-signs** the Android APK with the
+release keystore so it matches `AndroidCertPins`. See `keys/android/README.md`.
 | `ANDROID_KEY_ALIAS` | Key alias |
 | `ANDROID_KEY_PASSWORD` | Key password |
 

@@ -325,7 +325,11 @@ jobs:
         -p:ApplicationDisplayVersion=${{ steps.ver.outputs.version }}
         -o publish/android
 
-    - name: Optional release-keystore signing
+    # Signs with CroatiaSecurity release PKCS#12 when secrets are present.
+    # Secrets: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD
+    # Optional: ANDROID_KEY_ALIAS (default: behavedr), ANDROID_KEY_PASSWORD (default: keystore password)
+    # Matches pin in AndroidCertPins / keys/android/behavedr-release.sha256.txt
+    - name: Release keystore signing (auto when secrets set)
       env:
         ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -333,33 +337,55 @@ jobs:
         ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
       run: |
         set -euo pipefail
-        if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]; then
-          echo "::warning::ANDROID_KEYSTORE_BASE64 not set — shipping MSBuild-signed APK. Configure Play App Signing / release keystore for production trust. See docs/SUPPLY_CHAIN.md."
+        if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ] || [ -z "${ANDROID_KEYSTORE_PASSWORD:-}" ]; then
+          echo "::warning::ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD not set — APK keeps MSBuild debug/dev signature. See keys/android/README.md"
           exit 0
         fi
-        echo "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "${RUNNER_TEMP}/release.keystore"
-        APK=$(find publish/android -type f \( -name '*Signed.apk' -o -name '*.apk' \) | head -1)
+        ALIAS="${ANDROID_KEY_ALIAS:-behavedr}"
+        KEYPASS="${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}"
+        KS="${RUNNER_TEMP}/behavedr-release.p12"
+        echo "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "$KS"
+        # Prefer unsigned artifact if MAUI produced one; else re-sign any APK
+        APK=$(find publish/android -type f -name '*-Signed.apk' | head -1 || true)
         if [ -z "$APK" ]; then
-          echo "::error::No APK found to re-sign"
+          APK=$(find publish/android -type f -name '*.apk' ! -name '*-unsigned.apk' | head -1 || true)
+        fi
+        if [ -z "$APK" ]; then
+          echo "::error::No APK found to sign"
           exit 1
         fi
-        OUT="publish/android/Behavedr-release-signed.apk"
-        # apksigner from build-tools
+        echo "Signing $APK with alias=${ALIAS} (PKCS12)"
         APKSIGNER=$(find "${ANDROID_HOME:-$HOME/Android/Sdk}" -name apksigner -type f 2>/dev/null | head -1 || true)
+        ZIPALIGN=$(find "${ANDROID_HOME:-$HOME/Android/Sdk}" -name zipalign -type f 2>/dev/null | head -1 || true)
         if [ -z "$APKSIGNER" ]; then
-          echo "::error::apksigner not found"
+          echo "::error::apksigner not found in Android SDK"
           exit 1
         fi
+        ALIGNED="${RUNNER_TEMP}/behavedr-aligned.apk"
+        OUT="publish/android/Behavedr-release-signed.apk"
+        if [ -n "$ZIPALIGN" ]; then
+          "$ZIPALIGN" -f -p 4 "$APK" "$ALIGNED"
+          IN_APK="$ALIGNED"
+        else
+          IN_APK="$APK"
+        fi
+        # PKCS#12 from openssl (keys/android/behavedr-release.p12)
         "$APKSIGNER" sign \
-          --ks "${RUNNER_TEMP}/release.keystore" \
-          --ks-key-alias "${ANDROID_KEY_ALIAS}" \
+          --v1-signing-enabled true \
+          --v2-signing-enabled true \
+          --v3-signing-enabled true \
+          --ks "$KS" \
+          --ks-type PKCS12 \
+          --ks-key-alias "$ALIAS" \
           --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
-          --key-pass "pass:${ANDROID_KEY_PASSWORD}" \
+          --key-pass "pass:${KEYPASS}" \
           --out "$OUT" \
-          "$APK"
-        cp -v "$OUT" "$APK"
-        rm -f "${RUNNER_TEMP}/release.keystore"
-        echo "APK re-signed with release keystore"
+          "$IN_APK"
+        "$APKSIGNER" verify --verbose --print-certs "$OUT"
+        # Ensure release package step picks the signed APK
+        cp -v "$OUT" "publish/android/Behavedr-android-release.apk"
+        rm -f "$KS" "$ALIGNED"
+        echo "APK signed with release keystore (pin target: 7581EDDD52412F72786AA9B3274B5855801FF73293EC97DB2FBBCE8F5988B66F)"
 
     - name: Package Android
       run: |
