@@ -102,7 +102,7 @@ public class LinuxNetworkIsolation : IResponseAction
         }
 
         // Non-root different from agent: isolate by UID
-        return await IsolateByUid(uid, pid, result.Event.ProcessName, ct);
+        return await IsolateByUid(uid, pid, result.Event.ProcessName ?? "unknown", ct);
     }
 
     [SupportedOSPlatform("linux")]
