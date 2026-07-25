@@ -14,7 +14,7 @@
     <ApplicationId>com.croatiasecurity.behavedr</ApplicationId>
     <ApplicationDisplayVersion>0.4.0</ApplicationDisplayVersion>
     <!-- Android versionCode (integer). Must increase for every Play upload. -->
-    <ApplicationVersion>40</ApplicationVersion>
+    <ApplicationVersion>41</ApplicationVersion>
 
     <!-- Publisher APK cert pin (not end users). Optional for release.
          Hex SHA256 of release signing cert, no colons. Comma-separate for Play upload key.
