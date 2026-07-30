@@ -52,7 +52,9 @@ public class EpicCompletenessTests
         var root = FindRepoRoot();
         Assert.True(File.Exists(Path.Combine(root, "docs", "EPICS_STATUS.md")));
         var doc = File.ReadAllText(Path.Combine(root, "docs", "EPICS_STATUS.md"));
-        Assert.Contains("0.4.0", doc, StringComparison.Ordinal);
+        Assert.True(
+            doc.Contains("0.4.1", StringComparison.Ordinal) || doc.Contains("0.4.0", StringComparison.Ordinal),
+            "EPICS_STATUS should reference the 0.4.x line");
         Assert.Contains("In-repo", doc, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("complete", doc, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("field activation", doc, StringComparison.OrdinalIgnoreCase);

@@ -1,4 +1,4 @@
-# Behavedr — Windows Installer Build Script
+# Behavedr - Windows Installer Build Script
 # Copyright (c) 2026 CroatiaSecurity. All rights reserved.
 #
 # Produces a signed-ready installer from source without external CI dependencies.
@@ -22,7 +22,7 @@ $ScriptRoot = $PSScriptRoot
 $RepoRoot = (Resolve-Path (Join-Path $ScriptRoot "..")).Path
 
 Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host "  Behavedr — Installer Build ($Runtime)" -ForegroundColor Cyan
+Write-Host "  Behavedr - Installer Build ($Runtime)" -ForegroundColor Cyan
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -37,7 +37,7 @@ if (-not (Test-Path $PropsFile)) {
 [xml]$PropsXml = Get-Content $PropsFile -Raw
 $Version = $PropsXml.Project.PropertyGroup[0].Version
 if ([string]::IsNullOrWhiteSpace($Version)) {
-    throw "Could not read <Version> from Directory.Build.props"
+    throw "Could not read Version from Directory.Build.props"
 }
 
 Write-Host "[version]  $Version" -ForegroundColor Green

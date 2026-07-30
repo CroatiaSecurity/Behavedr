@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.4.1] — 2026-07-30
+
+### Protection-rating lift — 2026 threat landscape
+
+Cross-product monitors for AI-orchestrated abuse, supply-chain runtime, and Windows kill-chain parity.
+
+#### New monitors (desktop)
+
+| Monitor | Scope | Purpose |
+|---------|-------|---------|
+| `AgenticProcessMonitor` | Win/Linux/macOS | AI agent parent → high-risk child / credential-path / burst spawn |
+| `PackageRuntimeMonitor` | Win/Linux/macOS | Package-manager LOLBins, package-tree exe drops, AI config poison |
+| `CanaryFileMonitor` | All | Hidden canary files; delete/modify → high-confidence ransomware |
+| `CloudSyncExfilMonitor` | Win/Linux/macOS | Cloud-sync folder bursts + rclone/megasync-class tools |
+| `NamedPipeMonitor` | Windows | C2/lateral named pipes (CS, PsExec, Sliver, …) |
+| `LnkShortcutMonitor` | Windows | Malicious `.lnk` UNC / protocol / LOLBin remote |
+| `ScriptExecutionMonitor` | Windows | Encoded PS, AMSI bypass, download cradles |
+
+#### Hardening
+
+- `FileActivityMonitor` ransomware I/O: lower rename threshold + create-burst composite
+- MITRE map + threat model updated; tests in `ProtectionLift041Tests`
+
 ## [0.4.0] — 2026-07-25
 
 ### Platform epics line close + CI hard green

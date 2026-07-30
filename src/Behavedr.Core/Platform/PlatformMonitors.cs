@@ -47,6 +47,12 @@ public static class PlatformMonitors
         monitors.Add(new UnixCredentialCanary());
         monitors.Add(new UnixGhostProcessMonitor());
 
+        // v0.4.1: AI agent + supply-chain runtime + ransomware canaries (desktop)
+        monitors.Add(new AgenticProcessMonitor());
+        monitors.Add(new PackageRuntimeMonitor());
+        monitors.Add(new CanaryFileMonitor());
+        monitors.Add(new CloudSyncExfilMonitor());
+
         // v0.0.7+: Windows-only behavioral detection & anti-tamper monitors
         if (OperatingSystem.IsWindows())
         {
@@ -89,6 +95,11 @@ public static class PlatformMonitors
 
             // v0.2.2: BYOVD / vulnerable driver load detection (from Sentinel)
             monitors.Add(new DriverLoadMonitor());
+
+            // v0.4.1: Windows parity kill-chain monitors (from Sentinel threat brief)
+            monitors.Add(new NamedPipeMonitor());
+            monitors.Add(new LnkShortcutMonitor());
+            monitors.Add(new ScriptExecutionMonitor());
         }
 
         // v0.1.5: Linux full detection suite (cross-platform parity)

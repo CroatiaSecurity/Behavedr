@@ -1,11 +1,17 @@
 # Behavedr MITRE ATT&CK Coverage (Userland)
 
-**Version:** 0.4.0  
+**Version:** 0.4.1  
 **Scope:** Techniques addressed by monitors/response in this tree. Not a claim of 100% ATT&CK completeness.
 
 | Technique | ID | Primary implementation |
 |-----------|-----|------------------------|
-| Process execution (real-time) | T1059 | Windows ETW; Linux cn_proc + **eBPF** (`LinuxEbpfExecMonitor`); macOS kqueue + **EndpointSecurity** (`MacOSEndpointSecurityMonitor`) |
+| Process execution (real-time) | T1059 | Windows ETW; Linux cn_proc + **eBPF** (`LinuxEbpfExecMonitor`); macOS kqueue + **EndpointSecurity** (`MacOSEndpointSecurityMonitor`); **ScriptExecutionMonitor** (encoded PS/AMSI) |
+| Agentic / automated tool abuse | T1059 / T1106 | **AgenticProcessMonitor** (AI agents → shell/LOLBin/cred tools) |
+| Supply chain runtime | T1195 | **PackageRuntimeMonitor** (pkg mgr children, package-tree drops, AI config poison) |
+| Ransomware canary | T1486 | **CanaryFileMonitor** + FileActivity rename/write bursts |
+| Cloud exfil staging | T1567 | **CloudSyncExfilMonitor** |
+| Named pipe C2 | T1559.001 | **NamedPipeMonitor** (Windows) |
+| Malicious shortcut | T1204.002 / T1566.002 | **LnkShortcutMonitor** (Windows) |
 | Process injection / hollow | T1055 | MemoryAnalyzer, ThreadStartAddressScanner, BehavioralMonitor |
 | Credential dump (LSASS) | T1003.001 | LsassDumpMonitor, CredentialGuardMonitor |
 | Token impersonation | T1134 | TokenIntegrityMonitor, LinuxTokenMonitor |

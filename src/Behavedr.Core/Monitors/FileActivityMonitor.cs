@@ -20,6 +20,7 @@ public class FileActivityMonitor : IPlatformMonitor, IDisposable
     private readonly List<Signal> _pendingSignals = new();
     private readonly object _lock = new();
     private int _recentRenames;
+    private int _recentCreates;
     private DateTime _renameWindowStart = DateTime.UtcNow;
     private bool _initialized;
 
@@ -57,22 +58,29 @@ public class FileActivityMonitor : IPlatformMonitor, IDisposable
             signals = new List<Signal>(_pendingSignals);
             _pendingSignals.Clear();
 
-            // Check for ransomware rename burst
-            if (_recentRenames > 20)
+            // Ransomware I/O depth (v0.4.1): lower thresholds + write/create burst composite
+            var elapsed = (DateTime.UtcNow - _renameWindowStart).TotalSeconds;
+            if (_recentRenames >= 12 && elapsed < 20)
             {
-                var elapsed = (DateTime.UtcNow - _renameWindowStart).TotalSeconds;
-                if (elapsed < 30)
-                {
-                    signals.Add(new Signal(
-                        $"ransomware_rename_burst:{_recentRenames}_in_{elapsed:F0}s",
-                        90, 0.92));
-                }
+                signals.Add(new Signal(
+                    $"ransomware_rename_burst:{_recentRenames}_in_{elapsed:F0}s",
+                    92, 0.93));
                 _recentRenames = 0;
+                _recentCreates = 0;
                 _renameWindowStart = DateTime.UtcNow;
             }
-            else if ((DateTime.UtcNow - _renameWindowStart).TotalSeconds > 30)
+            else if (_recentCreates >= 50 && elapsed < 20)
+            {
+                signals.Add(new Signal(
+                    $"ransomware_write_burst:{_recentCreates}_creates_in_{elapsed:F0}s",
+                    85, 0.85));
+                _recentCreates = 0;
+                _renameWindowStart = DateTime.UtcNow;
+            }
+            else if (elapsed > 30)
             {
                 _recentRenames = 0;
+                _recentCreates = 0;
                 _renameWindowStart = DateTime.UtcNow;
             }
         }
@@ -132,6 +140,8 @@ public class FileActivityMonitor : IPlatformMonitor, IDisposable
 
         lock (_lock)
         {
+            _recentCreates++;
+
             // Executable dropped in temp
             if (ExecutableExtensions.Contains(ext) && dir.Contains("Temp", StringComparison.OrdinalIgnoreCase))
             {

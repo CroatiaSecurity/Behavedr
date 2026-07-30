@@ -1,4 +1,4 @@
-# Platform epics — status (0.4.0)
+# Platform epics — status (0.4.1)
 
 **In-repo implementation for the platform epics is complete.**  
 What remains is **field activation** (host artifacts, vendor enrollment), not more scaffolds.
