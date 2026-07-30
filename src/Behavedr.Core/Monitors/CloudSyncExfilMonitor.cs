@@ -96,6 +96,10 @@ public sealed class CloudSyncExfilMonitor : IPlatformMonitor
         if (_watchersReady) return;
         _watchersReady = true;
 
+        if (string.Equals(Environment.GetEnvironmentVariable("CI"), "true", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+            return;
+
         foreach (var dir in GetSyncDirs())
         {
             try

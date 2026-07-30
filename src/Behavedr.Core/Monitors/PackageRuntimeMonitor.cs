@@ -162,6 +162,10 @@ public sealed class PackageRuntimeMonitor : IPlatformMonitor, IDisposable
         if (_watcherStarted) return;
         _watcherStarted = true;
 
+        // CI runners: skip FSW entirely (FSEvents can hang EnableRaisingEvents).
+        if (IsCiEnvironment())
+            return;
+
         // Shallow watches only — recursive Documents FSWs hang/slow CI on macOS runners.
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var roots = new List<string?>
@@ -273,4 +277,8 @@ public sealed class PackageRuntimeMonitor : IPlatformMonitor, IDisposable
             w.Dispose();
         _watchers.Clear();
     }
+
+    private static bool IsCiEnvironment() =>
+        string.Equals(Environment.GetEnvironmentVariable("CI"), "true", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase);
 }

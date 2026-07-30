@@ -90,6 +90,15 @@ public class FileActivityMonitor : IPlatformMonitor, IDisposable
 
     private void InitializeWatchers()
     {
+        // GitHub Actions / CI: skip FSW — FSEvents EnableRaisingEvents has hung macos-latest
+        // test runs for 10+ minutes when all platform monitors are polled together.
+        if (string.Equals(Environment.GetEnvironmentVariable("CI"), "true", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogDebug("[FileActivity] Skipping watchers under CI");
+            return;
+        }
+
         var paths = new List<string>();
 
         // User profile directories

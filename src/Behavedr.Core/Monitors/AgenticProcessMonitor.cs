@@ -198,22 +198,27 @@ public sealed class AgenticProcessMonitor : IPlatformMonitor
         var map = new Dictionary<int, int>();
         try
         {
-            // Single process table dump — never per-PID `ps` (that hung GitHub macos-latest for 15+ min).
+            // Single process table dump. Read stdout BEFORE WaitForExit so the pipe
+            // cannot fill and deadlock (classic redirect hang on macOS CI runners).
             var psi = new ProcessStartInfo("ps", "-axo pid=,ppid=")
             {
                 RedirectStandardOutput = true,
+                RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
             using var p = Process.Start(psi);
             if (p == null) return map;
-            if (!p.WaitForExit(15_000))
+
+            var stdout = p.StandardOutput.ReadToEnd();
+            _ = p.StandardError.ReadToEnd();
+            if (!p.WaitForExit(5_000))
             {
                 try { p.Kill(entireProcessTree: true); } catch { /* ignore */ }
                 return map;
             }
-            string? line;
-            while ((line = p.StandardOutput.ReadLine()) != null)
+
+            foreach (var line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
                 if (ct.IsCancellationRequested) break;
                 var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);

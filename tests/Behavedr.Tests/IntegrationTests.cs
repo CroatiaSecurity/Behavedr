@@ -141,7 +141,7 @@ public class IntegrationTests
     [Fact]
     public async Task PlatformMonitors_CurrentPlatform_Works()
     {
-        // Run the actual platform monitor for the current OS
+        // Run the actual platform monitors for the current OS (bounded — never hang CI).
         var engine = AgentBootstrap.CreateEngine();
         Assert.True(engine.RegisteredMonitors.Count >= 1);
 
@@ -149,7 +149,8 @@ public class IntegrationTests
             Environment.ProcessId.ToString(),
             "behavedr-test", "integration", "test");
 
-        var result = await engine.ProcessEventAsync(evt);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result = await engine.ProcessEventAsync(evt, cts.Token).WaitAsync(cts.Token);
 
         // Should get at least some signals from the real monitor
         Assert.NotNull(result);

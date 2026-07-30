@@ -1,3 +1,4 @@
+using Behavedr.Core.Models;
 using Behavedr.Core.Monitors;
 using Behavedr.Core.Platform;
 
@@ -42,15 +43,21 @@ public class ProtectionLift041Tests
     [Fact]
     public async Task NewMonitors_GetSignalsDoesNotThrow()
     {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+
         var agentic = new AgenticProcessMonitor();
         var pkg = new PackageRuntimeMonitor();
         var canary = new CanaryFileMonitor();
         var cloud = new CloudSyncExfilMonitor();
 
-        var s1 = await agentic.GetSignalsAsync();
-        var s2 = await pkg.GetSignalsAsync();
-        var s3 = await canary.GetSignalsAsync();
-        var s4 = await cloud.GetSignalsAsync();
+        // Bound wall-clock on a worker thread (sync monitors ignore CancellationToken).
+        static Task<IEnumerable<Signal>> Bounded(IPlatformMonitor m, CancellationToken ct) =>
+            Task.Run(() => m.GetSignalsAsync(ct), ct).WaitAsync(ct);
+
+        var s1 = await Bounded(agentic, cts.Token);
+        var s2 = await Bounded(pkg, cts.Token);
+        var s3 = await Bounded(canary, cts.Token);
+        var s4 = await Bounded(cloud, cts.Token);
 
         Assert.NotNull(s1);
         Assert.NotNull(s2);
@@ -62,9 +69,9 @@ public class ProtectionLift041Tests
             var pipes = new NamedPipeMonitor();
             var lnk = new LnkShortcutMonitor();
             var script = new ScriptExecutionMonitor();
-            Assert.NotNull(await pipes.GetSignalsAsync());
-            Assert.NotNull(await lnk.GetSignalsAsync());
-            Assert.NotNull(await script.GetSignalsAsync());
+            Assert.NotNull(await Bounded(pipes, cts.Token));
+            Assert.NotNull(await Bounded(lnk, cts.Token));
+            Assert.NotNull(await Bounded(script, cts.Token));
             lnk.Dispose();
         }
 

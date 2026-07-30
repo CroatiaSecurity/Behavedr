@@ -79,7 +79,9 @@ public class PlatformEpicTests
         if (OperatingSystem.IsMacOS())
         {
             var es = new MacOSEndpointSecurityMonitor();
-            var sigs = await es.GetSignalsAsync();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var sigs = await Task.Run(() => es.GetSignalsAsync(cts.Token), cts.Token)
+                .WaitAsync(cts.Token);
             Assert.NotNull(sigs);
             es.Dispose();
         }

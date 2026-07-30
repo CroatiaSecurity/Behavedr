@@ -87,9 +87,11 @@ public class DetectionEngine
     private async Task<List<Signal>> CollectSignalsAsync(CancellationToken ct)
     {
         var allSignals = new List<Signal>();
-        var monitorTimeout = TimeSpan.FromSeconds(10);
+        // Keep short: most monitors are sync and ignore CancellationToken until they return.
+        var monitorTimeout = TimeSpan.FromSeconds(5);
 
-        // Run all supported monitors concurrently
+        // Run all supported monitors concurrently on the thread pool so a blocking
+        // GetSignalsAsync (macOS FSW / ps / kqueue) cannot stall the whole cycle forever.
         var tasks = _monitors
             .Where(m => m.IsSupported)
             .Select(async monitor =>
@@ -99,8 +101,20 @@ public class DetectionEngine
                     using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     timeoutCts.CancelAfter(monitorTimeout);
 
-                    var signals = await monitor.GetSignalsAsync(timeoutCts.Token);
-                    return (monitor, signals: signals.ToList(), error: (Exception?)null);
+                    // WaitAsync abandons a hung sync monitor after monitorTimeout.
+                    var signals = await Task.Run(
+                            async () => (await monitor.GetSignalsAsync(timeoutCts.Token).ConfigureAwait(false)).ToList(),
+                            timeoutCts.Token)
+                        .WaitAsync(monitorTimeout, ct)
+                        .ConfigureAwait(false);
+
+                    return (monitor, signals, error: (Exception?)null);
+                }
+                catch (TimeoutException)
+                {
+                    _logger.LogWarning("Monitor {Monitor} timed out after {Timeout}s (abandoned)",
+                        monitor.PlatformName, monitorTimeout.TotalSeconds);
+                    return (monitor, signals: new List<Signal>(), error: (Exception?)null);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
@@ -119,7 +133,7 @@ public class DetectionEngine
             })
             .ToList();
 
-        var results = await Task.WhenAll(tasks);
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
 
         foreach (var (monitor, signals, error) in results)
         {
