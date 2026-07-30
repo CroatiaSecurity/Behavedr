@@ -103,7 +103,8 @@ public sealed class CloudSyncExfilMonitor : IPlatformMonitor
                 if (!Directory.Exists(dir)) continue;
                 var w = new FileSystemWatcher(dir)
                 {
-                    IncludeSubdirectories = true,
+                    // Top-level only: recursive watchers on cloud trees stall macOS CI runners.
+                    IncludeSubdirectories = false,
                     NotifyFilter = NotifyFilters.FileName | NotifyFilters.CreationTime | NotifyFilters.LastWrite
                 };
                 w.Created += (_, _) => { lock (_lock) { _pendingWrites++; } };

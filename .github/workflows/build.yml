@@ -11,6 +11,8 @@ permissions:
 jobs:
   desktop:
     name: Desktop (${{ matrix.rid }})
+    # Prevent indefinite hangs (e.g. pathological test/process scans on macos-latest).
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -81,6 +83,8 @@ jobs:
       run: dotnet build tests/Behavedr.Tests/Behavedr.Tests.csproj -c Release --no-restore
 
     - name: Run tests
+      # Cap wall-clock so a single hung suite cannot burn the full job timeout.
+      timeout-minutes: 10
       run: dotnet test tests/Behavedr.Tests/Behavedr.Tests.csproj -c Release --no-build --verbosity normal
 
     - name: Publish Agent

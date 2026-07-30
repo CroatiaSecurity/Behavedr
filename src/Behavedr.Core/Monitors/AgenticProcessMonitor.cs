@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 /// <summary>
 /// Cross-platform detection of AI coding agents / MCP toolchains abused for
 /// autonomous recon, credential access, and LOLBin/shell spawning.
+/// Parent PIDs are resolved with a single batch query (not per-process spawns).
 /// </summary>
 public sealed class AgenticProcessMonitor : IPlatformMonitor
 {
@@ -62,21 +63,17 @@ public sealed class AgenticProcessMonitor : IPlatformMonitor
                 _lastPrune = DateTime.UtcNow;
             }
 
+            // One batch parent map — never spawn `ps`/WMI per PID (hangs CI on macOS).
+            var parentMap = BuildParentMap(ct);
             Process[] procs;
             try { procs = Process.GetProcesses(); }
             catch { return Task.FromResult<IEnumerable<Signal>>(signals); }
 
             var idToName = new Dictionary<int, string>();
-            var idToPpid = new Dictionary<int, int>();
-
             foreach (var p in procs)
             {
                 if (ct.IsCancellationRequested) break;
-                try
-                {
-                    idToName[p.Id] = Normalize(p.ProcessName);
-                    idToPpid[p.Id] = GetParentPid(p.Id);
-                }
+                try { idToName[p.Id] = Normalize(p.ProcessName); }
                 catch { /* skip */ }
             }
 
@@ -89,7 +86,8 @@ public sealed class AgenticProcessMonitor : IPlatformMonitor
             foreach (var (pid, name) in idToName)
             {
                 if (ct.IsCancellationRequested) break;
-                if (!idToPpid.TryGetValue(pid, out var ppid)) continue;
+                if (!parentMap.TryGetValue(pid, out var ppid)) continue;
+
                 var parentName = idToName.GetValueOrDefault(ppid, "");
                 var parentIsAgent = _agentPids.Contains(ppid) || IsAgentName(parentName);
                 if (!parentIsAgent) continue;
@@ -133,6 +131,101 @@ public sealed class AgenticProcessMonitor : IPlatformMonitor
         return Task.FromResult<IEnumerable<Signal>>(signals);
     }
 
+    private static Dictionary<int, int> BuildParentMap(CancellationToken ct)
+    {
+        if (OperatingSystem.IsWindows())
+            return BuildWindowsParentMap(ct);
+        if (OperatingSystem.IsLinux())
+            return BuildLinuxParentMap(ct);
+        if (OperatingSystem.IsMacOS())
+            return BuildMacParentMap(ct);
+        return new Dictionary<int, int>();
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static Dictionary<int, int> BuildWindowsParentMap(CancellationToken ct)
+    {
+        var map = new Dictionary<int, int>();
+        try
+        {
+            using var searcher = new System.Management.ManagementObjectSearcher(
+                "SELECT ProcessId, ParentProcessId FROM Win32_Process");
+            foreach (var obj in searcher.Get())
+            {
+                if (ct.IsCancellationRequested) break;
+                try
+                {
+                    var pid = Convert.ToInt32(obj["ProcessId"]);
+                    var ppid = Convert.ToInt32(obj["ParentProcessId"]);
+                    map[pid] = ppid;
+                }
+                catch { /* skip */ }
+            }
+        }
+        catch { /* WMI unavailable */ }
+        return map;
+    }
+
+    private static Dictionary<int, int> BuildLinuxParentMap(CancellationToken ct)
+    {
+        var map = new Dictionary<int, int>();
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories("/proc"))
+            {
+                if (ct.IsCancellationRequested) break;
+                var name = Path.GetFileName(dir);
+                if (!int.TryParse(name, out var pid)) continue;
+                try
+                {
+                    foreach (var line in File.ReadLines(Path.Combine(dir, "status")))
+                    {
+                        if (!line.StartsWith("PPid:", StringComparison.Ordinal)) continue;
+                        if (int.TryParse(line.AsSpan("PPid:".Length).Trim(), out var ppid))
+                            map[pid] = ppid;
+                        break;
+                    }
+                }
+                catch { /* gone */ }
+            }
+        }
+        catch { /* /proc unavailable */ }
+        return map;
+    }
+
+    private static Dictionary<int, int> BuildMacParentMap(CancellationToken ct)
+    {
+        var map = new Dictionary<int, int>();
+        try
+        {
+            // Single process table dump — never per-PID `ps` (that hung GitHub macos-latest for 15+ min).
+            var psi = new ProcessStartInfo("ps", "-axo pid=,ppid=")
+            {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            if (p == null) return map;
+            if (!p.WaitForExit(15_000))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                return map;
+            }
+            string? line;
+            while ((line = p.StandardOutput.ReadLine()) != null)
+            {
+                if (ct.IsCancellationRequested) break;
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2) continue;
+                if (int.TryParse(parts[0], out var pid) && int.TryParse(parts[1], out var ppid))
+                    map[pid] = ppid;
+            }
+        }
+        catch { /* ps unavailable */ }
+        return map;
+    }
+
     private static string Normalize(string name)
     {
         if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
@@ -148,68 +241,6 @@ public sealed class AgenticProcessMonitor : IPlatformMonitor
         return n.Contains("claude", StringComparison.OrdinalIgnoreCase) ||
                n.Contains("cursor", StringComparison.OrdinalIgnoreCase) ||
                n.Contains("codex", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static int GetParentPid(int pid)
-    {
-        if (OperatingSystem.IsWindows())
-            return WindowsParentPid(pid);
-        if (OperatingSystem.IsLinux())
-            return LinuxParentPid(pid);
-        if (OperatingSystem.IsMacOS())
-            return MacParentPid(pid);
-        return 0;
-    }
-
-    [SupportedOSPlatform("windows")]
-    private static int WindowsParentPid(int pid)
-    {
-        try
-        {
-            using var searcher = new System.Management.ManagementObjectSearcher(
-                $"SELECT ParentProcessId FROM Win32_Process WHERE ProcessId={pid}");
-            foreach (var obj in searcher.Get())
-            {
-                return Convert.ToInt32(obj["ParentProcessId"]);
-            }
-        }
-        catch { /* ignore */ }
-        return 0;
-    }
-
-    private static int LinuxParentPid(int pid)
-    {
-        try
-        {
-            var status = File.ReadAllText($"/proc/{pid}/status");
-            foreach (var line in status.Split('\n'))
-            {
-                if (line.StartsWith("PPid:", StringComparison.Ordinal))
-                    return int.Parse(line["PPid:".Length..].Trim());
-            }
-        }
-        catch { /* ignore */ }
-        return 0;
-    }
-
-    private static int MacParentPid(int pid)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo("ps", $"-o ppid= -p {pid}")
-            {
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var p = Process.Start(psi);
-            if (p == null) return 0;
-            var output = p.StandardOutput.ReadToEnd().Trim();
-            p.WaitForExit(1000);
-            if (int.TryParse(output, out var ppid)) return ppid;
-        }
-        catch { /* ignore */ }
-        return 0;
     }
 
     private static string? GetImagePath(Process p)

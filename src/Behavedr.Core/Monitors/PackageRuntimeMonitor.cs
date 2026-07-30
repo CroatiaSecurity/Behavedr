@@ -162,6 +162,7 @@ public sealed class PackageRuntimeMonitor : IPlatformMonitor, IDisposable
         if (_watcherStarted) return;
         _watcherStarted = true;
 
+        // Shallow watches only — recursive Documents FSWs hang/slow CI on macOS runners.
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var roots = new List<string?>
         {
@@ -180,10 +181,10 @@ public sealed class PackageRuntimeMonitor : IPlatformMonitor, IDisposable
                 if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) continue;
                 var w = new FileSystemWatcher(root)
                 {
-                    IncludeSubdirectories = true,
+                    IncludeSubdirectories = false,
                     NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime,
                     Filter = "*.*",
-                    InternalBufferSize = 64 * 1024
+                    InternalBufferSize = 16 * 1024
                 };
                 w.Created += OnConfigEvent;
                 w.Changed += OnConfigEvent;
